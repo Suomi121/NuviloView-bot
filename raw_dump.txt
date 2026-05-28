@@ -1,0 +1,1 @@
+UserName=GUEST_APP&SongName=フォーリングスター&Score=1005323&key=stella_hx1_secret&Level=7&Flag=COMP

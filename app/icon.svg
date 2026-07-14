@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="coffee-gradient" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4fd1e8"/>
+      <stop offset="1" stop-color="#3778ed"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="url(#coffee-gradient)"/>
+  <path d="M18 27h26v12.5C44 46.4 39 51 32 51s-12-4.6-12-11.5V27Z" fill="none" stroke="#fff" stroke-linejoin="round" stroke-width="4"/>
+  <path d="M44 31h3.5a5.5 5.5 0 0 1 0 11H44" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+  <path d="M25 18c0 2.8-2.5 3.7-2.5 6.2M34 18c0 2.8-2.5 3.7-2.5 6.2" fill="none" stroke="#fff" stroke-linecap="round" stroke-width="3.5"/>
+</svg>

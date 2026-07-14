@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NuviloView Companion</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="titlebar">
+        <div class="brand"><span class="brand-mark">N</span><span>NuviloView</span><span class="brand-tag">COMPANION</span></div>
+        <div class="window-actions"><button id="minimize" aria-label="最小化">−</button><button id="close" aria-label="閉じる">×</button></div>
+      </header>
+
+      <nav class="mode-tabs" aria-label="Companionの機能"><button class="mode-tab active" data-mode="presence">RICH PRESENCE</button><button class="mode-tab" data-mode="ai">LOCAL AI</button></nav>
+
+      <section id="presence-view" class="mode-view">
+      <section class="hero">
+        <div class="orb orb-one"></div><div class="orb orb-two"></div>
+        <p class="eyebrow">DISCORD RICH PRESENCE</p>
+        <h1>分析の時間を、<br /><span>Discordにも。</span></h1>
+        <p class="hero-copy">NuviloViewを使っていることを、さりげなく美しく表示します。</p>
+      </section>
+
+      <section class="presence-card" aria-label="Rich Presenceのプレビュー">
+        <div class="presence-icon">N</div>
+        <div class="presence-content"><strong>NuviloViewをプレイ中！</strong><span id="preview-server">サーバーを分析中</span><small>● Discordに接続すると表示されます</small></div>
+      </section>
+
+      <form id="presence-form" class="settings-card">
+        <label>Discord Application ID
+          <input id="client-id" name="clientId" inputmode="numeric" autocomplete="off" placeholder="DDPのApplication ID（数字）" required />
+        </label>
+        <p class="hint">DDP → General Information → Application ID。Bot Tokenではありません。</p>
+        <label>表示するサーバー名 <span>任意</span>
+          <input id="server-name" name="serverName" maxlength="80" placeholder="例：NuviloView Community" />
+        </label>
+        <p class="hint">DDPのRich Presence → Art Assetsで <code>nuviloview_logo</code> の画像も登録してください。</p>
+        <button class="connect-button" id="connect" type="submit"><span class="button-dot"></span> Discordへ表示する</button>
+      </form>
+
+      <div id="status" class="status" role="status">Discord Desktopを起動してから接続してください。</div>
+      <button id="dashboard" class="dashboard-link" type="button">ダッシュボードを開く ↗</button>
+      </section>
+
+      <section id="ai-view" class="mode-view hidden">
+        <section class="ai-hero"><p class="eyebrow">LOCAL AI ASSISTANT</p><h1>あなたのキーで、<br /><span>あなたの問いに答える。</span></h1><p>キーと会話はNuviloViewのサーバー・DB・Botへ保存されません。</p></section>
+        <form id="ai-form" class="settings-card ai-card">
+          <div class="provider-row"><button class="provider active" type="button" data-provider="openai">OpenAI</button><button class="provider" type="button" data-provider="gemini">Gemini</button></div>
+          <label>APIキー <span>このアプリを閉じると消去</span><input id="ai-key" type="password" autocomplete="off" spellcheck="false" placeholder="APIキーを貼り付け" required /></label>
+          <label>モデル <span>任意</span><input id="ai-model" maxlength="80" autocomplete="off" placeholder="gpt-5-mini" /></label>
+          <label>質問<textarea id="ai-prompt" maxlength="12000" placeholder="例：今週のメッセージ数が減ったとき、確認すべきことを教えて" required></textarea></label>
+          <button class="connect-button" id="ask-ai" type="submit"><span class="button-dot"></span> AIに質問する</button>
+          <button class="clear-key" id="clear-ai" type="button">入力とキーを消去</button>
+        </form>
+        <section class="ai-result" aria-live="polite"><p class="result-label">AI RESPONSE <span id="ai-status">入力内容は保存されません</span></p><div id="ai-answer">質問すると、ここに回答が表示されます。</div></section>
+        <p class="ai-footnote">質問本文は選んだAI提供元へ送信されます。各提供元側の利用・保持設定は、あなたのAPI契約に従います。</p>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

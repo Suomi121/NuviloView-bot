@@ -1367,7 +1367,7 @@ client.on("interactionCreate", async (interaction) => {
     const page = Math.min(Math.max(requestedPage, 1), totalPages);
     const currentGuilds = guilds.slice((page - 1) * pageSize, page * pageSize);
     const embeds = await Promise.all(
-      currentGuilds.map(async (guild, index) => {
+      currentGuilds.map(async (guild) => {
         const owner = await guild.fetchOwner().catch(() => null);
         const ownerName = owner
           ? formatGuildName(owner.displayName || owner.user.username)
@@ -1378,7 +1378,7 @@ client.on("interactionCreate", async (interaction) => {
         const iconUrl = guild.iconURL({ extension: "png", size: 128 });
         const embed = new EmbedBuilder()
           .setColor(0x7877ff)
-          .setTitle(`${(page - 1) * pageSize + index + 1}. ${formatGuildName(guild.name)}`)
+          .setTitle(formatGuildName(guild.name))
           .addFields(
             { name: "コピー用ID", value: `\`${guild.id}\``, inline: true },
             {

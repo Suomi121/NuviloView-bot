@@ -263,6 +263,8 @@ try {
       "showMessages" boolean NOT NULL DEFAULT true,
       "showVoice" boolean NOT NULL DEFAULT true,
       "showChannels" boolean NOT NULL DEFAULT true,
+      "snapshot" jsonb NOT NULL DEFAULT '{}'::jsonb,
+      "publishedAt" timestamptz,
       "updatedAt" timestamptz NOT NULL DEFAULT now(),
       CONSTRAINT "guild_public_report_user_guild_unique" UNIQUE ("userId", "guildId")
     )

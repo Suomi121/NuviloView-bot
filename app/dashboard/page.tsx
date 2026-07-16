@@ -159,6 +159,7 @@ export default function DashboardPage() {
   const [lastLiveRefreshAt, setLastLiveRefreshAt] = useState<number | null>(
     null,
   );
+  const [isGuildLoading, setIsGuildLoading] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchMode, setSearchMode] = useState<"features" | "messages">(
     "features",
@@ -449,6 +450,18 @@ export default function DashboardPage() {
     canvas.toBlob((blob) => { if (!blob) return; const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `nuviloview-${safeGuildName}-snapshot.png`; link.click(); URL.revokeObjectURL(url); }, "image/png");
   };
 
+  const switchGuild = (nextGuildId: string) => {
+    if (nextGuildId === guildId) return;
+    setGuildId(nextGuildId);
+    // Never leave another server's values on screen while the new request is
+    // in flight. The selected name changes immediately and the cards reset.
+    setIsGuildLoading(true);
+    setChartPoints([]); setMemberPoints([]); setActiveMemberPoints([]); setReactionPoints([]); setLabels([]);
+    setMemberCount(0); setMessageCount(0); setTotalMessageCount(0); setActiveMemberCount(0);
+    setVoiceTotalSeconds(0); setMaxVoiceSessionSeconds(0); setActivities([]); setChannelInsights([]);
+    setLastLiveRefreshAt(null);
+  };
+
   useEffect(() => {
     if (!guildId) {
       setGoals([]);
@@ -535,9 +548,11 @@ export default function DashboardPage() {
             : [],
         });
         setLastLiveRefreshAt(Date.now());
+        setIsGuildLoading(false);
       } catch {
         // Keep the last successful data on screen. A short-lived refresh
         // failure should not interrupt dashboard use with a large warning.
+        if (active) setIsGuildLoading(false);
       } finally {
         loading = false;
       }
@@ -715,7 +730,7 @@ export default function DashboardPage() {
                 {selectedGuild?.name ?? "サーバーを選択"}
               </span>
               <span className="block text-[11px] text-muted-foreground">
-                {memberCount.toLocaleString()} メンバー
+                {isGuildLoading ? "読み込み中…" : `${memberCount.toLocaleString()} メンバー`}
               </span>
             </span>
             <ChevronDown
@@ -728,7 +743,7 @@ export default function DashboardPage() {
                 <button
                   key={guild.id}
                   onClick={() => {
-                    setGuildId(guild.id);
+                    switchGuild(guild.id);
                     setServerOpen(false);
                   }}
                   className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left hover:bg-secondary"
@@ -1099,7 +1114,7 @@ export default function DashboardPage() {
                   <button
                     key={guild.id}
                     onClick={() => {
-                      setGuildId(guild.id);
+                      switchGuild(guild.id);
                       setServerOpen(false);
                     }}
                     className="flex w-full items-center gap-2.5 rounded-lg px-3 py-3 text-left hover:bg-secondary"

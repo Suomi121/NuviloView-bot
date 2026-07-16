@@ -297,6 +297,29 @@ export const userNotification = pgTable("user_notification", {
   deletedAt: timestamp("deletedAt", { withTimezone: true }),
 });
 
+// Operational alerts are created by the Bot per guild. Dashboard notifications
+// are derived from these rows for every authorized manager, so no Discord
+// account details need to be exposed to the Bot.
+export const guildAlertEvent = pgTable("guild_alert_event", {
+  id: serial("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  type: text("type").notNull(),
+  severity: text("severity").notNull().default("warning"),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Goals are personal to a signed-in manager, but scoped to one Discord guild.
+// This prevents one administrator from silently changing another's targets.
+export const guildGoal = pgTable("guild_goal", {
+  userId: text("userId").notNull().references(() => user.id, { onDelete: "cascade" }),
+  guildId: text("guildId").notNull(),
+  type: text("type").notNull(),
+  target: integer("target").notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("guild_goal_user_guild_type_unique").on(table.userId, table.guildId, table.type)]);
+
 // A dashboard user can request a bounded, rate-limited import of messages that
 // existed before the bot was added. The local bot claims and processes jobs.
 export const historyImportJob = pgTable("history_import_job", {

@@ -38,6 +38,27 @@ export async function GET(request: Request) {
           `「${guild.name}」にはNuviloView:OEM Botがいないか、Botが停止しています。分析を始めるにはBotを導入してください。`,
         ])
       }
+
+      // Bot-originated alerts are fanned out only to people who are currently
+      // authorized to manage the relevant guild. A dismissed alert remains
+      // dismissed because its event-specific notification key is stable.
+      const alerts = await pool.query<{
+        id: number; guildId: string; title: string; body: string
+      }>(`
+        SELECT "id", "guildId", "title", "body"
+        FROM "guild_alert_event"
+        WHERE "guildId" = ANY($1::text[])
+          AND "createdAt" >= now() - interval '7 days'
+        ORDER BY "createdAt" DESC
+        LIMIT 50
+      `, [guildIds])
+      for (const alert of alerts.rows) {
+        await pool.query(`
+          INSERT INTO "user_notification" ("userId", "guildId", "type", "title", "body")
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT ("userId", "guildId", "type") DO NOTHING
+        `, [session.user.id, alert.guildId, `alert:${alert.id}`, alert.title, alert.body])
+      }
     }
 
     const result = await pool.query<{

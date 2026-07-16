@@ -20,6 +20,12 @@ type InsightCard = {
   body: string
 }
 
+type ChannelInsight = {
+  channelName: string
+  messageCount: number
+  previousMessageCount: number
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -254,6 +260,35 @@ export async function GET(request: Request) {
       peakHour: null,
       peakHourMessages: 0,
     }
+    const channelInsightResult = await pool.query<ChannelInsight>(`
+      WITH channel_names AS (
+        SELECT DISTINCT "channelName" FROM "bot_channel_access"
+        WHERE "guildId" = $1 AND "canRead" = true
+        UNION
+        SELECT DISTINCT "channelName" FROM "discord_message" WHERE "guildId" = $1
+      ), counts AS (
+        SELECT
+          names."channelName",
+          COUNT(messages."id") FILTER (WHERE messages."createdAt" >= now() - ($2::int * interval '1 day'))::int AS "messageCount",
+          COUNT(messages."id") FILTER (
+            WHERE messages."createdAt" >= now() - ($2::int * 2 * interval '1 day')
+              AND messages."createdAt" < now() - ($2::int * interval '1 day')
+          )::int AS "previousMessageCount"
+        FROM channel_names names
+        LEFT JOIN "discord_message" messages
+          ON messages."guildId" = $1 AND messages."channelName" = names."channelName"
+        GROUP BY names."channelName"
+      )
+      SELECT "channelName", COALESCE("messageCount", 0)::int AS "messageCount", COALESCE("previousMessageCount", 0)::int AS "previousMessageCount"
+      FROM counts
+      ORDER BY "messageCount" DESC, "channelName" ASC
+      LIMIT 20
+    `, [guildId, days])
+    const channelInsights = channelInsightResult.rows.map((row) => ({
+      channelName: row.channelName,
+      messageCount: Number(row.messageCount ?? 0),
+      previousMessageCount: Number(row.previousMessageCount ?? 0),
+    }))
 
     // 💡 まだデータがない場合の初期値
     if (rows.length === 0) {
@@ -285,6 +320,7 @@ export async function GET(request: Request) {
           { kind: 'time', title: english ? 'Peak time' : '会話が集中する時間帯', body: english ? 'Waiting for stored messages.' : '保存済みメッセージを待っています。' },
           { kind: 'members', title: english ? 'Member flow' : 'メンバーの増減', body: english ? 'Waiting for activity records.' : '参加・退出の記録を待っています。' },
         ] satisfies InsightCard[],
+        channelInsights,
         activities: activityResult.rows,
         botStatus,
       });
@@ -398,6 +434,7 @@ export async function GET(request: Request) {
       health,
       insight,
       insightCards,
+      channelInsights,
       activities: activityResult.rows,
       botStatus,
     });

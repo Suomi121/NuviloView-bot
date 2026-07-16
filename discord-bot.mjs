@@ -37,6 +37,8 @@ const translationMonthlyLimit = 600_000;
 const translationRequestWindowMs = 60 * 1000;
 const translationRequestLimit = 8;
 const translationRequestLifetimeMs = 5 * 60 * 1000;
+const inactivityAlertHours = 24;
+const departureAlertThreshold = 3;
 const botStartedAt = new Date();
 const botHeartbeatId = "primary";
 const client = new Client({
@@ -828,6 +830,76 @@ async function syncChannelAccess(guild) {
   `;
 }
 
+// Alerts live in the database rather than in Discord DMs. Every authorized
+// dashboard manager can then see the same operational warning without the Bot
+// needing to know anyone's account or contact details.
+async function emitGuildAlert({ guildId, type, severity = "warning", title, body, cooldownMinutes }) {
+  const recent = await sql`
+    SELECT "id" FROM "guild_alert_event"
+    WHERE "guildId" = ${guildId} AND "type" = ${type}
+      AND "createdAt" >= now() - (${cooldownMinutes} * interval '1 minute')
+    LIMIT 1
+  `;
+  if (recent.length) return;
+  await sql`
+    INSERT INTO "guild_alert_event" ("guildId", "type", "severity", "title", "body")
+    VALUES (${guildId}, ${type}, ${severity}, ${title}, ${body})
+  `;
+}
+
+async function checkGuildAlerts(guild) {
+  if (isGuildBlocked(guild.id)) return;
+  const [activityRows, departureRows, unreadableRows] = await Promise.all([
+    sql`
+      SELECT MAX("occurredAt") AS "lastMessageAt"
+      FROM "recent_activity"
+      WHERE "guildId" = ${guild.id} AND "type" = 'message'
+    `,
+    sql`
+      SELECT COUNT(*)::int AS count FROM "recent_activity"
+      WHERE "guildId" = ${guild.id} AND "type" = 'member_left'
+        AND "occurredAt" >= now() - interval '1 hour'
+    `,
+    sql`
+      SELECT COUNT(*)::int AS count FROM "bot_channel_access"
+      WHERE "guildId" = ${guild.id} AND "canRead" = false
+    `,
+  ]);
+  const lastMessageAt = activityRows[0]?.lastMessageAt ? new Date(activityRows[0].lastMessageAt) : null;
+  if (lastMessageAt && Date.now() - lastMessageAt.getTime() >= inactivityAlertHours * 60 * 60 * 1000) {
+    await emitGuildAlert({
+      guildId: guild.id,
+      type: "message_inactive",
+      severity: "notice",
+      title: "24時間メッセージがありません",
+      body: `「${guild.name}」では過去24時間、新しいメッセージを記録していません。`,
+      cooldownMinutes: 24 * 60,
+    });
+  }
+  const departures = Number(departureRows[0]?.count ?? 0);
+  if (departures >= departureAlertThreshold) {
+    await emitGuildAlert({
+      guildId: guild.id,
+      type: "member_departures_spike",
+      severity: "warning",
+      title: "メンバー退出が増えています",
+      body: `「${guild.name}」では直近1時間に${departures}人の退出を記録しました。`,
+      cooldownMinutes: 60,
+    });
+  }
+  const unreadable = Number(unreadableRows[0]?.count ?? 0);
+  if (unreadable > 0) {
+    await emitGuildAlert({
+      guildId: guild.id,
+      type: "channel_permission_missing",
+      severity: "warning",
+      title: "Botが記録できないチャンネルがあります",
+      body: `「${guild.name}」で${unreadable}件のチャンネルを読み取れません。/permissions で確認してください。`,
+      cooldownMinutes: 24 * 60,
+    });
+  }
+}
+
 async function recordActivity({
   guildId,
   type,
@@ -1076,6 +1148,7 @@ client.once("clientReady", async () => {
       client.guilds.cache.map(restoreTodayActiveMembers),
     );
     await Promise.allSettled(client.guilds.cache.map(syncChannelAccess));
+    await Promise.allSettled(client.guilds.cache.map(checkGuildAlerts));
     await Promise.allSettled(client.guilds.cache.map(syncServerVoiceSession));
     await purgeExpiredMessages();
     void pollHistoryImportJobs();
@@ -2049,6 +2122,7 @@ setInterval(
         await updateMemberCount(guild);
         await syncChannelAccess(guild);
         await syncGuildRegistry(guild);
+        await checkGuildAlerts(guild);
       }),
     );
   },

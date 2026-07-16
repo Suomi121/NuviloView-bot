@@ -228,6 +228,31 @@ try {
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_alert_event" (
+      "id" serial PRIMARY KEY,
+      "guildId" text NOT NULL,
+      "type" text NOT NULL,
+      "severity" text NOT NULL DEFAULT 'warning',
+      "title" text NOT NULL,
+      "body" text NOT NULL,
+      "createdAt" timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS "guild_alert_event_guild_created_at_idx"
+    ON "guild_alert_event" ("guildId", "createdAt" DESC)
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_goal" (
+      "userId" text NOT NULL REFERENCES "user"("id") ON DELETE CASCADE,
+      "guildId" text NOT NULL,
+      "type" text NOT NULL,
+      "target" integer NOT NULL CHECK ("target" > 0),
+      "updatedAt" timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT "guild_goal_user_guild_type_unique" UNIQUE ("userId", "guildId", "type")
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS "api_rate_limit" (
       "key" text NOT NULL,
       "bucketStart" timestamptz NOT NULL,

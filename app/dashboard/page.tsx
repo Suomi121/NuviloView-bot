@@ -22,6 +22,8 @@ import {
   ShieldCheck,
   Sparkles,
   Smartphone,
+  Target,
+  TrendingUp,
   Users,
   X,
 } from "lucide-react";
@@ -70,6 +72,13 @@ type DashboardNotification = {
   body: string;
   createdAt: string;
 };
+type ChannelInsight = {
+  channelName: string;
+  messageCount: number;
+  previousMessageCount: number;
+};
+type GoalType = "member_growth" | "messages" | "voice_seconds";
+type GrowthGoal = { type: GoalType; target: number; current: number };
 
 const appFeatures = [
   {
@@ -177,6 +186,12 @@ export default function DashboardPage() {
     "members" | "active" | "messages" | "reactions" | "voice"
   >("members");
   const [guildTheme, setGuildTheme] = useState<GuildTheme>(defaultGuildTheme);
+  const [channelInsights, setChannelInsights] = useState<ChannelInsight[]>([]);
+  const [goals, setGoals] = useState<GrowthGoal[]>([]);
+  const [goalTargets, setGoalTargets] = useState<Record<GoalType, string>>({
+    member_growth: "", messages: "", voice_seconds: "",
+  });
+  const [savingGoals, setSavingGoals] = useState(false);
 
   const selectedGuild = guilds.find((guild) => guild.id === guildId);
   const userName = session?.user?.name || "Discordユーザー";
@@ -344,6 +359,52 @@ export default function DashboardPage() {
     }
   };
 
+  const loadGoals = async (selectedGuildId: string) => {
+    const response = await fetch(`/api/goals?guildId=${encodeURIComponent(selectedGuildId)}`, { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    const nextGoals = Array.isArray(data.goals) ? data.goals as GrowthGoal[] : [];
+    setGoals(nextGoals);
+    setGoalTargets({
+      member_growth: String(nextGoals.find((goal) => goal.type === "member_growth")?.target ?? ""),
+      messages: String(nextGoals.find((goal) => goal.type === "messages")?.target ?? ""),
+      voice_seconds: String(Math.round((nextGoals.find((goal) => goal.type === "voice_seconds")?.target ?? 0) / 3600) || ""),
+    });
+  };
+
+  const saveGoals = async () => {
+    if (!guildId || savingGoals) return;
+    const numberOf = (type: GoalType) => Math.max(0, Math.floor(Number(goalTargets[type]) || 0));
+    setSavingGoals(true);
+    try {
+      const response = await fetch("/api/goals", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          guildId,
+          goals: [
+            { type: "member_growth", target: numberOf("member_growth") },
+            { type: "messages", target: numberOf("messages") },
+            { type: "voice_seconds", target: numberOf("voice_seconds") * 3600 },
+          ],
+        }),
+      });
+      if (response.ok) await loadGoals(guildId);
+    } finally {
+      setSavingGoals(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!guildId) {
+      setGoals([]);
+      return;
+    }
+    void loadGoals(guildId);
+  // `guildId` deliberately resets the displayed server goals.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guildId]);
+
   useEffect(() => {
     if (!guildId) return;
     let active = true;
@@ -400,6 +461,7 @@ export default function DashboardPage() {
               )
             : [],
         );
+        setChannelInsights(Array.isArray(data.channelInsights) ? data.channelInsights : []);
         if (data.health) setHealth(data.health);
         setActivities(Array.isArray(data.activities) ? data.activities : []);
         setBotStatus({
@@ -1660,9 +1722,113 @@ export default function DashboardPage() {
               </div>
             </section>
           </div>
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,0.85fr)]">
+            <ChannelInsightsPanel insights={channelInsights} en={en} periodLabel={periodLabel} />
+            <GrowthGoalsPanel
+              goals={goals}
+              targets={goalTargets}
+              onTargetChange={(type, value) => setGoalTargets((current) => ({ ...current, [type]: value }))}
+              onSave={() => void saveGoals()}
+              saving={savingGoals}
+              en={en}
+            />
+          </div>
         </section>
       </div>
     </main>
+  );
+}
+
+function ChannelInsightsPanel({ insights, en, periodLabel }: { insights: ChannelInsight[]; en: boolean; periodLabel: string }) {
+  const mostActive = insights.at(0);
+  const growing = [...insights]
+    .filter((item) => item.messageCount > item.previousMessageCount)
+    .sort((a, b) => (b.messageCount - b.previousMessageCount) - (a.messageCount - a.previousMessageCount))[0];
+  const quiet = [...insights]
+    .filter((item) => item.messageCount >= 0)
+    .sort((a, b) => a.messageCount - b.messageCount || a.channelName.localeCompare(b.channelName))[0];
+  const rows = [
+    { label: en ? "MOST ACTIVE" : "最も利用されている", icon: <MessageSquareText className="h-4 w-4" />, item: mostActive, accent: "text-primary" },
+    { label: en ? "GROWING" : "伸びている", icon: <TrendingUp className="h-4 w-4" />, item: growing, accent: "text-emerald-400" },
+    { label: en ? "QUIET" : "利用が少ない", icon: <Activity className="h-4 w-4" />, item: quiet, accent: "text-amber-400" },
+  ];
+  return (
+    <section className="rounded-2xl border border-border bg-card/55 p-5 sm:p-6">
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="font-bold">{en ? "Channel insights" : "チャンネル別インサイト"}</h2>
+          <p className="mt-1 text-xs text-muted-foreground">{en ? `Based on ${periodLabel.toLowerCase()}` : `${periodLabel}の保存済みメッセージを分析`}</p>
+        </div>
+        <Hash className="h-5 w-5 text-primary" />
+      </div>
+      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+        {rows.map((row) => (
+          <div key={row.label} className="rounded-xl border border-border/70 bg-background/40 p-3.5">
+            <div className={`flex items-center gap-2 text-[10px] font-bold tracking-wider ${row.accent}`}>{row.icon}{row.label}</div>
+            {row.item ? <>
+              <p className="mt-3 truncate text-sm font-bold">#{row.item.channelName}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {row.label === (en ? "GROWING" : "伸びている")
+                  ? `${row.item.messageCount - row.item.previousMessageCount >= 0 ? "+" : ""}${(row.item.messageCount - row.item.previousMessageCount).toLocaleString()} ${en ? "vs prior period" : "件・前期間比"}`
+                  : `${row.item.messageCount.toLocaleString()} ${en ? "messages" : "件"}`}
+              </p>
+            </> : <p className="mt-3 text-xs text-muted-foreground">{en ? "Waiting for data" : "データを収集中です"}</p>}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en }: {
+  goals: GrowthGoal[];
+  targets: Record<GoalType, string>;
+  onTargetChange: (type: GoalType, value: string) => void;
+  onSave: () => void;
+  saving: boolean;
+  en: boolean;
+}) {
+  const definitions: Array<{ type: GoalType; label: string; unit: string }> = [
+    { type: "member_growth", label: en ? "Member growth" : "メンバー増加", unit: en ? "members" : "人" },
+    { type: "messages", label: en ? "Messages" : "総メッセージ", unit: en ? "messages" : "件" },
+    { type: "voice_seconds", label: en ? "Voice time" : "通話時間", unit: en ? "hours" : "時間" },
+  ];
+  return (
+    <section className="rounded-2xl border border-primary/25 bg-gradient-to-br from-primary/[0.12] to-card/65 p-5 sm:p-6">
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="font-bold">{en ? "Monthly growth goals" : "今月の成長目標"}</h2>
+          <p className="mt-1 text-xs text-muted-foreground">{en ? "Goals are private to your dashboard account." : "目標はあなたのダッシュボード設定として保存されます。"}</p>
+        </div>
+        <Target className="h-5 w-5 text-primary" />
+      </div>
+      <div className="mt-4 space-y-3">
+        {definitions.map((definition) => {
+          const goal = goals.find((item) => item.type === definition.type);
+          const target = goal?.target ?? 0;
+          const current = goal?.current ?? 0;
+          const progress = target ? Math.min(100, Math.round((current / target) * 100)) : 0;
+          const displayCurrent = definition.type === "voice_seconds" ? Math.floor(current / 3600) : current;
+          return <div key={definition.type} className="rounded-xl border border-border/70 bg-background/40 px-3.5 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <label className="text-xs font-bold">{definition.label}</label>
+              <div className="flex items-center gap-1.5">
+                <input value={targets[definition.type]} onChange={(event) => onTargetChange(definition.type, event.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" placeholder="—" className="h-7 w-20 rounded-md border border-border bg-card px-2 text-right text-xs font-bold outline-none focus:border-primary" />
+                <span className="w-12 text-[11px] text-muted-foreground">{definition.unit}</span>
+              </div>
+            </div>
+            {target > 0 && <>
+              <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress}%` }} /></div>
+              <p className="mt-1.5 text-[11px] text-muted-foreground">{displayCurrent.toLocaleString()} / {(definition.type === "voice_seconds" ? Math.floor(target / 3600) : target).toLocaleString()} {definition.unit} · {progress}%</p>
+            </>}
+          </div>;
+        })}
+      </div>
+      <button onClick={onSave} disabled={saving} className="mt-4 w-full rounded-lg bg-primary px-3 py-2.5 text-xs font-bold text-primary-foreground transition-opacity disabled:opacity-60">
+        {saving ? (en ? "Saving..." : "保存中...") : (en ? "Save goals" : "目標を保存")}
+      </button>
+    </section>
   );
 }
 

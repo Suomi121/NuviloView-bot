@@ -388,19 +388,22 @@ export default function DashboardPage() {
     }
   };
 
-  const downloadActivityCard = () => {
+  const downloadActivityCard = async () => {
     if (!selectedGuild) return;
     const canvas = document.createElement("canvas");
     canvas.width = 1600; canvas.height = 900;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const gradient = ctx.createLinearGradient(0, 0, 1600, 900);
-    gradient.addColorStop(0, "#10111c"); gradient.addColorStop(1, "#242044");
+    gradient.addColorStop(0, "#0c0d16"); gradient.addColorStop(.55, "#181a31"); gradient.addColorStop(1, "#312452");
     ctx.fillStyle = gradient; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const glow = ctx.createRadialGradient(1360, 100, 10, 1360, 100, 560); glow.addColorStop(0, "rgba(116,130,255,.46)"); glow.addColorStop(1, "rgba(116,130,255,0)"); ctx.fillStyle = glow; ctx.fillRect(0, 0, 1600, 900);
     ctx.fillStyle = "#7584ff"; ctx.fillRect(0, 0, 18, canvas.height);
-    ctx.font = "700 32px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#9da8ff"; ctx.fillText("NUVILOVIEW:OEM  •  ACTIVITY SNAPSHOT", 92, 112);
-    ctx.font = "800 66px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#ffffff"; ctx.fillText(selectedGuild.name.slice(0, 28), 92, 205);
-    ctx.font = "400 28px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#a9acbf"; ctx.fillText(`${periodLabel}時点の活動実績`, 94, 256);
+    ctx.beginPath(); ctx.roundRect(92, 66, 70, 70, 18); ctx.fillStyle = "#6677ff"; ctx.fill();
+    ctx.font = "800 36px sans-serif"; ctx.fillStyle = "#fff"; ctx.fillText("☕", 108, 114);
+    ctx.font = "700 25px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#9da8ff"; ctx.fillText("NUVILOVIEW:OEM  /  ACTIVITY SNAPSHOT", 186, 108);
+    ctx.font = "800 64px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#ffffff"; ctx.fillText(selectedGuild.name.slice(0, 28), 92, 220);
+    ctx.font = "400 27px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#b7bacb"; ctx.fillText(`${periodLabel}の活動実績  •  ${new Date().toLocaleDateString("ja-JP")}`, 94, 268);
     const cards = [
       ["メンバー", `${memberCount.toLocaleString()}人`],
       ["メッセージ", `${periodMessageCount.toLocaleString()}件`],
@@ -408,12 +411,18 @@ export default function DashboardPage() {
       ["アクティブ", `${activeMemberCount.toLocaleString()}人`],
     ];
     cards.forEach(([label, value], index) => {
-      const x = 92 + (index % 2) * 710; const y = 350 + Math.floor(index / 2) * 210;
-      ctx.fillStyle = "rgba(255,255,255,.08)"; ctx.beginPath(); ctx.roundRect(x, y, 640, 160, 24); ctx.fill();
+      const x = 92 + (index % 2) * 545; const y = 350 + Math.floor(index / 2) * 190;
+      ctx.fillStyle = "rgba(255,255,255,.085)"; ctx.beginPath(); ctx.roundRect(x, y, 490, 142, 24); ctx.fill();
       ctx.font = "700 25px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#b7bcdd"; ctx.fillText(label, x + 36, y + 55);
-      ctx.font = "800 50px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#ffffff"; ctx.fillText(value, x + 36, y + 118);
+      ctx.font = "800 46px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#ffffff"; ctx.fillText(value, x + 36, y + 112);
     });
-    ctx.font = "500 22px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#8f93a9"; ctx.fillText("メッセージ本文・個人情報は含まれていません", 92, 810);
+    const points = chartPoints.length ? chartPoints : [0, 0]; const max = Math.max(...points, 1); const graphX = 1190; const graphY = 352; const graphW = 310; const graphH = 330;
+    ctx.font = "700 22px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#c5c9ff"; ctx.fillText("MESSAGE TREND", graphX, graphY);
+    ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.lineWidth = 2; [0, .5, 1].forEach((i) => { ctx.beginPath(); ctx.moveTo(graphX, graphY + 40 + graphH * i); ctx.lineTo(graphX + graphW, graphY + 40 + graphH * i); ctx.stroke(); });
+    ctx.beginPath(); points.forEach((point, index) => { const x = graphX + (index / Math.max(points.length - 1, 1)) * graphW; const y = graphY + 40 + graphH - (point / max) * graphH; index ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.strokeStyle = "#8492ff"; ctx.lineWidth = 7; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(92, 750, 1408, 76, 18); ctx.fillStyle = "rgba(255,255,255,.06)"; ctx.fill();
+    ctx.font = "700 22px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#a9adbf"; ctx.fillText(`SERVER INSIGHT  /  ${insight.title}`, 122, 799);
+    ctx.font = "500 19px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#888da4"; ctx.fillText("メッセージ本文・個人情報は含まれていません", 1110, 799);
     canvas.toBlob((blob) => { if (!blob) return; const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `nuviloview-${selectedGuild.name.replace(/[^a-z0-9_-]/gi, "-")}-snapshot.png`; link.click(); URL.revokeObjectURL(url); }, "image/png");
   };
 

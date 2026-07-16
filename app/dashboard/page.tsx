@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   Sparkles,
   Smartphone,
+  Share2,
   Target,
   TrendingUp,
   Users,
@@ -79,6 +80,7 @@ type ChannelInsight = {
 };
 type GoalType = "member_growth" | "messages" | "voice_seconds";
 type GrowthGoal = { type: GoalType; target: number; current: number };
+type PublicReport = { slug: string; enabled: boolean; description: string; showMembers: boolean; showMessages: boolean; showVoice: boolean; showChannels: boolean };
 
 const appFeatures = [
   {
@@ -192,6 +194,8 @@ export default function DashboardPage() {
     member_growth: "", messages: "", voice_seconds: "",
   });
   const [savingGoals, setSavingGoals] = useState(false);
+  const [publicReport, setPublicReport] = useState<PublicReport | null>(null);
+  const [sharingReport, setSharingReport] = useState(false);
 
   const selectedGuild = guilds.find((guild) => guild.id === guildId);
   const userName = session?.user?.name || "Discordユーザー";
@@ -395,12 +399,34 @@ export default function DashboardPage() {
     }
   };
 
+  const loadPublicReport = async (selectedGuildId: string) => {
+    const response = await fetch(`/api/public-report?guildId=${encodeURIComponent(selectedGuildId)}`, { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    setPublicReport(data.report ?? null);
+  };
+
+  const setPublicReportEnabled = async (enabled: boolean) => {
+    if (!guildId || sharingReport) return;
+    setSharingReport(true);
+    try {
+      const response = await fetch("/api/public-report", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildId, enabled, description: publicReport?.description ?? "", showMembers: true, showMessages: true, showVoice: true, showChannels: true }),
+      });
+      const data = await response.json();
+      if (response.ok) setPublicReport(data.report);
+    } finally { setSharingReport(false); }
+  };
+
   useEffect(() => {
     if (!guildId) {
       setGoals([]);
+      setPublicReport(null);
       return;
     }
     void loadGoals(guildId);
+    void loadPublicReport(guildId);
   // `guildId` deliberately resets the displayed server goals.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guildId]);
@@ -1734,6 +1760,12 @@ export default function DashboardPage() {
               en={en}
             />
           </div>
+          <PublicReportPanel
+            report={publicReport}
+            onToggle={(enabled) => void setPublicReportEnabled(enabled)}
+            busy={sharingReport}
+            en={en}
+          />
         </section>
       </div>
     </main>
@@ -1830,6 +1862,20 @@ function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en }
       </button>
     </section>
   );
+}
+
+function PublicReportPanel({ report, onToggle, busy, en }: { report: PublicReport | null; onToggle: (enabled: boolean) => void; busy: boolean; en: boolean }) {
+  const url = report?.slug ? `${window.location.origin}/report/${report.slug}` : "";
+  return <section className="mt-5 rounded-2xl border border-border bg-card/55 p-5 sm:p-6">
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary"><Share2 className="h-5 w-5" /></div>
+        <div><h2 className="font-bold">{en ? "Public server report" : "共有できる公開レポート"}</h2><p className="mt-1 text-xs text-muted-foreground">{en ? "Share approved aggregate statistics. Messages and member identities are never public." : "許可した集計データだけを公開します。メッセージ本文・個人情報は公開されません。"}</p></div>
+      </div>
+      <button onClick={() => onToggle(!report?.enabled)} disabled={busy} className={`rounded-lg px-4 py-2.5 text-xs font-bold disabled:opacity-60 ${report?.enabled ? "bg-rose-500/15 text-rose-300 hover:bg-rose-500/25" : "bg-primary text-primary-foreground"}`}>{busy ? (en ? "Updating..." : "更新中...") : report?.enabled ? (en ? "Stop sharing" : "公開を停止") : (en ? "Publish report" : "レポートを公開")}</button>
+    </div>
+    {report?.enabled && <div className="mt-4 flex flex-col gap-2 rounded-xl border border-primary/25 bg-primary/5 p-3 sm:flex-row sm:items-center"><code className="min-w-0 flex-1 truncate text-xs text-primary">{url}</code><button onClick={() => void navigator.clipboard.writeText(url)} className="rounded-md border border-border px-3 py-1.5 text-xs font-bold hover:bg-secondary">{en ? "Copy URL" : "URLをコピー"}</button><a href={url} target="_blank" rel="noreferrer" className="rounded-md border border-border px-3 py-1.5 text-center text-xs font-bold hover:bg-secondary">{en ? "Preview" : "確認"}</a></div>}
+  </section>;
 }
 
 function UserIdentity({ sessionImage, userName, userInitials, en }: { sessionImage?: string | null; userName: string; userInitials: string; en: boolean }) {

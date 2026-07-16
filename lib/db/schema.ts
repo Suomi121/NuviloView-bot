@@ -320,6 +320,24 @@ export const guildGoal = pgTable("guild_goal", {
   updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex("guild_goal_user_guild_type_unique").on(table.userId, table.guildId, table.type)]);
 
+// An opt-in, privacy-safe public snapshot. It never includes message bodies,
+// member identities, or operational information.
+export const guildPublicReport = pgTable("guild_public_report", {
+  userId: text("userId").notNull().references(() => user.id, { onDelete: "cascade" }),
+  guildId: text("guildId").notNull(),
+  slug: text("slug").notNull(),
+  enabled: boolean("enabled").notNull().default(false),
+  description: text("description").notNull().default(""),
+  showMembers: boolean("showMembers").notNull().default(true),
+  showMessages: boolean("showMessages").notNull().default(true),
+  showVoice: boolean("showVoice").notNull().default(true),
+  showChannels: boolean("showChannels").notNull().default(true),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("guild_public_report_user_guild_unique").on(table.userId, table.guildId),
+  uniqueIndex("guild_public_report_slug_unique").on(table.slug),
+]);
+
 // A dashboard user can request a bounded, rate-limited import of messages that
 // existed before the bot was added. The local bot claims and processes jobs.
 export const historyImportJob = pgTable("history_import_job", {

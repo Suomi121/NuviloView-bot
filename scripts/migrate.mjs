@@ -253,6 +253,21 @@ try {
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_public_report" (
+      "userId" text NOT NULL REFERENCES "user"("id") ON DELETE CASCADE,
+      "guildId" text NOT NULL,
+      "slug" text NOT NULL UNIQUE,
+      "enabled" boolean NOT NULL DEFAULT false,
+      "description" text NOT NULL DEFAULT '',
+      "showMembers" boolean NOT NULL DEFAULT true,
+      "showMessages" boolean NOT NULL DEFAULT true,
+      "showVoice" boolean NOT NULL DEFAULT true,
+      "showChannels" boolean NOT NULL DEFAULT true,
+      "updatedAt" timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT "guild_public_report_user_guild_unique" UNIQUE ("userId", "guildId")
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS "api_rate_limit" (
       "key" text NOT NULL,
       "bucketStart" timestamptz NOT NULL,

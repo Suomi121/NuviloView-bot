@@ -423,7 +423,14 @@ export default function DashboardPage() {
     ctx.beginPath(); ctx.roundRect(92, 750, 1408, 76, 18); ctx.fillStyle = "rgba(255,255,255,.06)"; ctx.fill();
     ctx.font = "700 22px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#a9adbf"; ctx.fillText(`SERVER INSIGHT  /  ${insight.title}`, 122, 799);
     ctx.font = "500 19px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#888da4"; ctx.fillText("メッセージ本文・個人情報は含まれていません", 1110, 799);
-    canvas.toBlob((blob) => { if (!blob) return; const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `nuviloview-${selectedGuild.name.replace(/[^a-z0-9_-]/gi, "-")}-snapshot.png`; link.click(); URL.revokeObjectURL(url); }, "image/png");
+    // Keep Japanese and emoji in the download name; remove only characters
+    // Windows does not allow in a filename and keep it comfortably short.
+    const safeGuildName = selectedGuild.name.normalize("NFKC")
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "")
+      .replace(/[. ]+$/g, "")
+      .trim()
+      .slice(0, 48) || "server";
+    canvas.toBlob((blob) => { if (!blob) return; const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `nuviloview-${safeGuildName}-snapshot.png`; link.click(); URL.revokeObjectURL(url); }, "image/png");
   };
 
   useEffect(() => {

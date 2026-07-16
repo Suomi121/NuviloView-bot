@@ -1124,6 +1124,14 @@ export default function DashboardPage() {
                 <Download className="h-4 w-4" />
                 {en ? "Report" : "レポート"}
               </button>
+              <button
+                onClick={downloadActivityCard}
+                disabled={!selectedGuild}
+                className="inline-flex items-center gap-2 rounded-lg border border-primary/35 bg-primary/10 px-3.5 py-2 text-sm font-medium text-primary hover:bg-primary/20 disabled:opacity-50"
+              >
+                <Download className="h-4 w-4" />
+                {en ? "Activity card" : "活動実績カード"}
+              </button>
               <select
                 value={period}
                 onChange={(event) => setPeriod(event.target.value)}
@@ -1763,7 +1771,6 @@ export default function DashboardPage() {
               en={en}
             />
           </div>
-          <ActivityCardPanel onDownload={downloadActivityCard} disabled={!selectedGuild} en={en} />
         </section>
       </div>
     </main>
@@ -1860,18 +1867,6 @@ function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en }
       </button>
     </section>
   );
-}
-
-function ActivityCardPanel({ onDownload, disabled, en }: { onDownload: () => void; disabled: boolean; en: boolean }) {
-  return <section className="mt-5 rounded-2xl border border-border bg-card/55 p-5 sm:p-6">
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary"><Download className="h-5 w-5" /></div>
-        <div><h2 className="font-bold">{en ? "Activity snapshot card" : "活動実績カード"}</h2><p className="mt-1 text-xs text-muted-foreground">{en ? "Create a PNG of the current selected metrics. No messages or member identities are included." : "選択中サーバーの現在の実績をPNGにします。メッセージ本文・個人情報は入りません。"}</p></div>
-      </div>
-      <button onClick={onDownload} disabled={disabled} className="rounded-lg bg-primary px-4 py-2.5 text-xs font-bold text-primary-foreground disabled:opacity-60">{en ? "Save PNG" : "PNGを保存"}</button>
-    </div>
-  </section>;
 }
 
 function UserIdentity({ sessionImage, userName, userInitials, en }: { sessionImage?: string | null; userName: string; userInitials: string; en: boolean }) {

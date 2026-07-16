@@ -1378,9 +1378,9 @@ client.on("interactionCreate", async (interaction) => {
         const iconUrl = guild.iconURL({ extension: "png", size: 128 });
         const embed = new EmbedBuilder()
           .setColor(0x7877ff)
-          .setTitle(`${(page - 1) * pageSize + index + 1}. ${formatGuildName(guild.name)}`)
+          .setTitle(`${(page - 1) * pageSize + index + 1}. ${formatGuildName(guild.name)} · ID: ${guild.id}`)
           .addFields(
-            { name: "サーバーID", value: `\`${guild.id}\``, inline: true },
+            { name: "コピー用ID", value: `\`${guild.id}\``, inline: true },
             {
               name: "メンバー数",
               value: `${guild.memberCount.toLocaleString("ja-JP")} members`,

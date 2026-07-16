@@ -184,6 +184,7 @@ export default function DashboardPage() {
   const [overviewMetric, setOverviewMetric] = useState<
     "members" | "active" | "messages" | "reactions" | "voice"
   >("members");
+  const [activeView, setActiveView] = useState<"overview" | "analytics" | "members" | "messages" | "insights">("overview");
   const [guildTheme, setGuildTheme] = useState<GuildTheme>(defaultGuildTheme);
   const [channelInsights, setChannelInsights] = useState<ChannelInsight[]>([]);
   const [goals, setGoals] = useState<GrowthGoal[]>([]);
@@ -749,18 +750,23 @@ export default function DashboardPage() {
         </p>
         <nav className="space-y-1">
           <NavItem
-            active
+            active={activeView === "overview"}
             icon={<LayoutDashboard />}
             label={en ? "Dashboard" : "ダッシュボード"}
+            onClick={() => setActiveView("overview")}
           />
           <NavItem
+            active={activeView === "analytics"}
             icon={<LineChart />}
             label={en ? "Analytics" : "アナリティクス"}
+            onClick={() => setActiveView("analytics")}
           />
-          <NavItem icon={<Users />} label={en ? "Members" : "メンバー"} />
+          <NavItem active={activeView === "members"} icon={<Users />} label={en ? "Members" : "メンバー"} onClick={() => setActiveView("members")} />
           <NavItem
+            active={activeView === "messages"}
             icon={<MessageSquareText />}
             label={en ? "Messages" : "メッセージ"}
+            onClick={() => setActiveView("messages")}
           />
         </nav>
         <p className="mb-2 mt-7 px-3 text-[10px] font-bold tracking-[0.14em] text-muted-foreground">
@@ -768,8 +774,10 @@ export default function DashboardPage() {
         </p>
         <nav className="space-y-1">
           <NavItem
+            active={activeView === "insights"}
             icon={<Sparkles />}
             label={en ? "Growth insights" : "成長インサイト"}
+            onClick={() => setActiveView("insights")}
           />
           <NavItem
             icon={<Settings />}
@@ -1397,6 +1405,8 @@ export default function DashboardPage() {
               </section>
             </div>
           )}
+          {activeView !== "overview" && <DashboardDetailView view={activeView} en={en} periodLabel={periodLabel} memberCount={memberCount} activeMemberCount={activeMemberCount} messageCount={messageCount} totalMessageCount={totalMessageCount} reactionRate={reactionRate} voiceTotalSeconds={voiceTotalSeconds} locale={locale} labels={labels} chartPoints={chartPoints} memberPoints={memberPoints} activities={activities} channelInsights={channelInsights} insight={insight} insightCards={insightCards} />}
+          {activeView === "overview" && <>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard
               label={en ? "Total members" : "総メンバー数"}
@@ -1788,11 +1798,28 @@ export default function DashboardPage() {
               en={en}
             />
           </div>
+          </>}
         </section>
       </div>
     </main>
   );
 }
+
+function DashboardDetailView({ view, en, periodLabel, memberCount, activeMemberCount, messageCount, totalMessageCount, reactionRate, voiceTotalSeconds, locale, labels, chartPoints, memberPoints, activities, channelInsights, insight, insightCards }: {
+  view: "analytics" | "members" | "messages" | "insights"; en: boolean; periodLabel: string; memberCount: number; activeMemberCount: number; messageCount: number; totalMessageCount: number; reactionRate: number; voiceTotalSeconds: number; locale: "ja" | "en"; labels: string[]; chartPoints: number[]; memberPoints: number[]; activities: RecentActivity[]; channelInsights: ChannelInsight[]; insight: Insight; insightCards: InsightCard[];
+}) {
+  const title = view === "analytics" ? (en ? "Analytics" : "アナリティクス") : view === "members" ? (en ? "Members" : "メンバー") : view === "messages" ? (en ? "Messages" : "メッセージ") : (en ? "Growth insights" : "成長インサイト");
+  const points = view === "members" ? memberPoints : chartPoints;
+  const maximum = Math.max(...points, 1);
+  return <section className="rounded-2xl border border-border bg-card/55 p-5 sm:p-7"><p className="text-xs font-bold tracking-[.15em] text-primary">{view.toUpperCase()}</p><h2 className="mt-1 text-2xl font-extrabold">{title}</h2><p className="mt-2 text-sm text-muted-foreground">{periodLabel}の実データです。</p>
+    {view === "analytics" && <><div className="mt-6 grid gap-3 sm:grid-cols-3"><DetailMetric label={en ? "Messages" : "メッセージ"} value={`${chartPoints.reduce((a,b)=>a+b,0).toLocaleString()}件`} /><DetailMetric label={en ? "Reaction rate" : "反応率"} value={`${reactionRate.toFixed(1)}%`} /><DetailMetric label={en ? "Voice time" : "通話時間"} value={formatDuration(voiceTotalSeconds, locale)} /></div><MiniTrend labels={labels} points={points} /></>}
+    {view === "members" && <><div className="mt-6 grid gap-3 sm:grid-cols-3"><DetailMetric label={en ? "Total" : "総メンバー"} value={`${memberCount.toLocaleString()}人`} /><DetailMetric label={en ? "Active today" : "今日のアクティブ"} value={`${activeMemberCount.toLocaleString()}人`} /><DetailMetric label={en ? "Inactive today" : "今日の非アクティブ"} value={`${Math.max(0,memberCount-activeMemberCount).toLocaleString()}人`} /></div><MiniTrend labels={labels} points={memberPoints} /></>}
+    {view === "messages" && <><div className="mt-6 grid gap-3 sm:grid-cols-3"><DetailMetric label={en ? "Today" : "今日の送信数"} value={`${messageCount.toLocaleString()}件`} /><DetailMetric label={en ? "Stored" : "保存済み総数"} value={`${totalMessageCount.toLocaleString()}件`} /><DetailMetric label={en ? "Channels" : "分析チャンネル"} value={`${channelInsights.length}件`} /></div><div className="mt-6 space-y-2">{channelInsights.slice(0,8).map(c=><div key={c.channelName} className="flex justify-between rounded-lg bg-secondary/50 px-4 py-3 text-sm"><span>#{c.channelName}</span><span className="font-bold">{c.messageCount.toLocaleString()}件</span></div>)}</div></>}
+    {view === "insights" && <><div className="mt-6 rounded-xl border border-primary/25 bg-primary/10 p-5"><h3 className="font-bold">{insight.title}</h3><p className="mt-2 text-sm text-muted-foreground">{insight.body}</p></div><div className="mt-4 grid gap-3 sm:grid-cols-3">{insightCards.map(c=><div key={c.kind} className="rounded-xl border border-border p-4"><p className="text-xs font-bold text-primary">{c.title}</p><p className="mt-2 text-sm text-muted-foreground">{c.body}</p></div>)}</div></>}
+  </section>;
+}
+function DetailMetric({ label, value }: { label: string; value: string }) { return <div className="rounded-xl border border-border bg-background/40 p-4"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-2 text-xl font-extrabold">{value}</p></div> }
+function MiniTrend({ labels, points }: { labels: string[]; points: number[] }) { const max=Math.max(...points,1); return <div className="mt-6"><div className="flex h-32 items-end gap-1.5">{points.map((p,i)=><div key={`${labels[i]}-${i}`} title={`${labels[i]}: ${p}`} className="min-w-1 flex-1 rounded-t bg-primary/70" style={{height:`${Math.max(3,(p/max)*100)}%`}} />)}</div><div className="mt-2 flex justify-between text-[10px] text-muted-foreground"><span>{labels[0] ?? "—"}</span><span>{labels.at(-1) ?? "—"}</span></div></div> }
 
 function ChannelInsightsPanel({ insights, en, periodLabel }: { insights: ChannelInsight[]; en: boolean; periodLabel: string }) {
   const mostActive = insights.at(0);
@@ -1915,15 +1942,18 @@ function NavItem({
   label,
   active = false,
   href = "#",
+  onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   active?: boolean;
   href?: string;
+  onClick?: () => void;
 }) {
   return (
     <a
       href={href}
+      onClick={(event) => { if (onClick) { event.preventDefault(); onClick(); } }}
       className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${active ? "bg-primary/15 text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}`}
     >
       <span className={active ? "text-primary" : ""}>{icon}</span>

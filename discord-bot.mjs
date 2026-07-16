@@ -1022,7 +1022,10 @@ async function processHistoryImportJob(job) {
       client.guilds.cache.get(job.guildId) ??
       (await client.guilds.fetch(job.guildId));
     if (!guild) throw new Error("Bot is not available in this server.");
-    const cutoff = new Date(Date.now() - job.days * 24 * 60 * 60 * 1000);
+    // A zero-day job means every message Discord still makes available.
+    const cutoff = job.days === 0
+      ? new Date(0)
+      : new Date(Date.now() - job.days * 24 * 60 * 60 * 1000);
     const channels = await guild.channels.fetch();
     const textChannels = [...channels.values()].filter(
       (channel) => channel?.isTextBased?.() && "messages" in channel,

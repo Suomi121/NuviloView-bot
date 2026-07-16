@@ -8,7 +8,9 @@ import {
   isTrustedMutation,
 } from "@/lib/request-security";
 
-const allowedDays = [7, 30, 90] as const;
+// `0` is an explicit all-history request. The Bot still fetches in Discord's
+// paginated batches and obeys its rate limits.
+const allowedDays = [0, 7, 30, 90] as const;
 
 async function mayManageGuild(userId: string, guildId: string) {
   const guilds = await getManagedGuilds(userId);

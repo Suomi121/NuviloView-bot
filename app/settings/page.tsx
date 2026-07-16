@@ -311,14 +311,14 @@ export default function SettingsPage() {
                   )}
                 </select>
                 <div className="mt-2 flex gap-2">
-                  {[7, 30, 90].map((days) => (
+                  {[7, 30, 90, 0].map((days) => (
                     <button
                       key={days}
                       disabled={importActive}
                       onClick={() => setHistoryDays(days)}
                       className={`rounded-lg border px-3 py-2 text-xs font-bold ${historyDays === days ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"} disabled:opacity-60`}
                     >
-                      {en ? `${days} days` : `過去${days}日`}
+                      {days === 0 ? (en ? "All time" : "全期間") : (en ? `${days} days` : `過去${days}日`)}
                     </button>
                   ))}
                 </div>
@@ -370,9 +370,9 @@ export default function SettingsPage() {
                 >
                   {historyMessage ||
                     historyStatus ||
-                    (en
-                      ? "Only messages in channels the bot can read are included."
-                      : "Botが閲覧できるチャンネルのメッセージだけが対象です。")}
+                    (historyDays === 0
+                      ? (en ? "All available message history will be imported. Large servers can take a long time." : "Botが閲覧できる全期間のメッセージが対象です。大規模サーバーでは完了まで時間がかかります。")
+                      : (en ? "Only messages in channels the bot can read are included." : "Botが閲覧できるチャンネルのメッセージだけが対象です。"))}
                 </p>
               </div>
             </div>

@@ -1,0 +1,22 @@
+services:
+  - type: worker
+    name: nuvilochan-bot
+    runtime: node
+    region: singapore
+    plan: starter
+    buildCommand: corepack enable && pnpm install --frozen-lockfile
+    startCommand: node discord-bot.mjs
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: NODE_VERSION
+        value: 24.14.1
+      - key: DATABASE_URL
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_DEV_GUILD_ID
+        sync: false
+      - key: MESSAGE_RETENTION_DAYS
+        value: "90"

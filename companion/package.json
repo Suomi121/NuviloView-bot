@@ -1,0 +1,16 @@
+{
+  "name": "nuviloview-companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NuviloView desktop companion for Discord Rich Presence",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@xhayper/discord-rpc": "^1.3.4"
+  },
+  "devDependencies": {
+    "electron": "^39.2.6"
+  }
+}

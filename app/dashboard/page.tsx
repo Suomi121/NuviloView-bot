@@ -402,7 +402,21 @@ export default function DashboardPage() {
     ctx.beginPath(); ctx.roundRect(92, 66, 70, 70, 18); ctx.fillStyle = "#6677ff"; ctx.fill();
     ctx.font = "800 36px sans-serif"; ctx.fillStyle = "#fff"; ctx.fillText("☕", 108, 114);
     ctx.font = "700 25px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#9da8ff"; ctx.fillText("NUVILOVIEW:OEM  /  ACTIVITY SNAPSHOT", 186, 108);
-    ctx.font = "800 64px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#ffffff"; ctx.fillText(selectedGuild.name.slice(0, 28), 92, 220);
+    // Fit the real server name by width, rather than cutting at an arbitrary
+    // character count. Only extremely long names receive a visible ellipsis.
+    let title = selectedGuild.name;
+    let titleSize = 64;
+    ctx.font = `800 ${titleSize}px 'Yu Gothic', sans-serif`;
+    while (ctx.measureText(title).width > 1350 && titleSize > 38) {
+      titleSize -= 2;
+      ctx.font = `800 ${titleSize}px 'Yu Gothic', sans-serif`;
+    }
+    if (ctx.measureText(title).width > 1350) {
+      const characters = Array.from(title);
+      while (characters.length > 1 && ctx.measureText(`${characters.join("")}…`).width > 1350) characters.pop();
+      title = `${characters.join("")}…`;
+    }
+    ctx.fillStyle = "#ffffff"; ctx.fillText(title, 92, 220);
     ctx.font = "400 27px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#b7bacb"; ctx.fillText(`${periodLabel}の活動実績  •  ${new Date().toLocaleDateString("ja-JP")}`, 94, 268);
     const cards = [
       ["メンバー", `${memberCount.toLocaleString()}人`],

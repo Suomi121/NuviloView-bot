@@ -55,6 +55,9 @@ const applicationId = process.env.DISCORD_CLIENT_ID;
 const developerGuildId = process.env.DISCORD_DEV_GUILD_ID;
 const developerOwnerUserId = process.env.DISCORD_OWNER_USER_ID?.trim() || null;
 const auditSigningKey = process.env.AUDIT_LOG_SIGNING_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim() || null;
+const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL?.trim() || null;
+const alertCooldownMs = 5 * 60 * 1000;
+const sentAlerts = new Map();
 const commandSyncCooldownMs = 60 * 1000;
 const guildCommandSyncCooldownMs = 5 * 60 * 1000;
 const commandSyncAttempts = new Map();
@@ -194,6 +197,29 @@ const developerCommands = [
 
 function getRestClient() {
   return new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
+}
+
+function safeErrorText(error) {
+  const raw = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return raw
+    .replaceAll(process.env.DISCORD_BOT_TOKEN ?? "", "[REDACTED]")
+    .replace(/(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,})/g, "[REDACTED]")
+    .slice(0, 1_500);
+}
+
+async function reportOperationalAlert(title, error) {
+  if (!alertWebhookUrl || !/^https:\/\/discord(?:app)?\.com\/api\/webhooks\//.test(alertWebhookUrl)) return;
+  const key = `${title}:${safeErrorText(error).slice(0, 120)}`;
+  const previous = sentAlerts.get(key) ?? 0;
+  if (Date.now() - previous < alertCooldownMs) return;
+  sentAlerts.set(key, Date.now());
+  try {
+    await fetch(alertWebhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "NuviloChan Monitor", embeds: [{ title: `⚠️ ${title}`, description: `\`${safeErrorText(error)}\``, color: 0xed4245, timestamp: new Date().toISOString() }] }),
+    });
+  } catch { /* Alerts must never stop the Bot. */ }
 }
 
 function getGuildCommandDefinitions(guildId) {
@@ -2006,7 +2032,15 @@ client.on(
     );
   },
 );
-client.on("error", (error) => console.error("Discord client error:", error));
+client.on("error", (error) => {
+  console.error("Discord client error:", error);
+  void reportOperationalAlert("Discord client error", error);
+});
+
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled Bot rejection:", error);
+  void reportOperationalAlert("Unhandled Bot error", error);
+});
 
 setInterval(
   () => {

@@ -755,19 +755,6 @@ export default function DashboardPage() {
             label={en ? "Dashboard" : "ダッシュボード"}
             onClick={() => setActiveView("overview")}
           />
-          <NavItem
-            active={activeView === "analytics"}
-            icon={<LineChart />}
-            label={en ? "Analytics" : "アナリティクス"}
-            onClick={() => setActiveView("analytics")}
-          />
-          <NavItem active={activeView === "members"} icon={<Users />} label={en ? "Members" : "メンバー"} onClick={() => setActiveView("members")} />
-          <NavItem
-            active={activeView === "messages"}
-            icon={<MessageSquareText />}
-            label={en ? "Messages" : "メッセージ"}
-            onClick={() => setActiveView("messages")}
-          />
         </nav>
         <p className="mb-2 mt-7 px-3 text-[10px] font-bold tracking-[0.14em] text-muted-foreground">
           MANAGE

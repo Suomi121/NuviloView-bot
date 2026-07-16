@@ -30,7 +30,15 @@ while ($true) {
   & $nodePath 'scripts/token-leak-check.mjs' 2>&1 | Out-File -FilePath $logFile -Append -Encoding utf8
   if ($LASTEXITCODE -ne 0) { "[$(Get-Date -Format s)] Token leak check failed. Bot start was blocked." | Add-Content -Path $logFile; Start-Sleep -Seconds 60; continue }
   $botTokenForRedaction = if (Test-Path $envFile) { ((Get-Content $envFile | Where-Object { $_ -match '^DISCORD_BOT_TOKEN=' } | Select-Object -First 1) -replace '^DISCORD_BOT_TOKEN=', '') } else { '' }
-  & $nodePath '--env-file=.env.local' 'discord-bot.mjs' 2>&1 | ForEach-Object { if ($botTokenForRedaction) { $_.ToString() -replace [regex]::Escape($botTokenForRedaction), '[REDACTED]' } else { $_.ToString() } } | Out-File -FilePath $logFile -Append -Encoding utf8
+  & $nodePath '--env-file=.env.local' 'discord-bot.mjs' 2>&1 | ForEach-Object {
+    # Never use an empty replacement pattern: it would insert [REDACTED]
+    # between every character of an otherwise harmless log line.
+    if ($botTokenForRedaction -and $botTokenForRedaction.Trim().Length -ge 20) {
+      $_.ToString() -replace [regex]::Escape($botTokenForRedaction.Trim()), '[REDACTED]'
+    } else {
+      $_.ToString()
+    }
+  } | Out-File -FilePath $logFile -Append -Encoding utf8
   "[$(Get-Date -Format s)] Bot stopped. Restarting in 10 seconds." | Add-Content -Path $logFile
   Start-Sleep -Seconds 10
 }

@@ -28,9 +28,9 @@ export async function GET(request: Request) {
     pool.query<{ messageCount: number; memberGrowth: number; voiceSeconds: number }>(`
       WITH month_start AS (SELECT date_trunc('month', CURRENT_DATE)::date AS date),
       member_baseline AS (
-        SELECT "memberCount"::int AS count FROM "daily_stats", month_start
-        WHERE "guildId" = $1 AND date < month_start.date
-        ORDER BY date DESC LIMIT 1
+        SELECT stats."memberCount"::int AS count FROM "daily_stats" stats, month_start
+        WHERE stats."guildId" = $1 AND stats.date < month_start.date
+        ORDER BY stats.date DESC LIMIT 1
       ), latest_members AS (
         SELECT "memberCount"::int AS count FROM "daily_stats"
         WHERE "guildId" = $1 ORDER BY date DESC LIMIT 1
@@ -43,7 +43,7 @@ export async function GET(request: Request) {
           AND ("endedAt" IS NULL OR "endedAt" > date_trunc('month', now()))
       )
       SELECT
-        COALESCE((SELECT SUM("messageCount")::int FROM "daily_stats", month_start WHERE "guildId" = $1 AND date >= month_start.date), 0)::int AS "messageCount",
+        COALESCE((SELECT SUM(stats."messageCount")::int FROM "daily_stats" stats, month_start WHERE stats."guildId" = $1 AND stats.date >= month_start.date), 0)::int AS "messageCount",
         GREATEST(COALESCE((SELECT count FROM latest_members), 0) - COALESCE((SELECT count FROM member_baseline), COALESCE((SELECT count FROM latest_members), 0)), 0)::int AS "memberGrowth",
         (SELECT seconds FROM voice)::int AS "voiceSeconds"
     `, [guildId]),

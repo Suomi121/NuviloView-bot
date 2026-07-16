@@ -150,7 +150,6 @@ export default function DashboardPage() {
   });
   const [activities, setActivities] = useState<RecentActivity[]>([]);
   const [timeZone, setTimeZone] = useState("Asia/Tokyo");
-  const [dataError, setDataError] = useState<string | null>(null);
   const [botStatus, setBotStatus] = useState<BotStatus>({
     lastRecordedAt: null,
     lastPermissionCheckAt: null,
@@ -287,12 +286,6 @@ export default function DashboardPage() {
           retryTimer = window.setTimeout(
             () => void loadGuilds(attempt + 1),
             800 * (attempt + 1),
-          );
-        } else {
-          setDataError(
-            en
-              ? "Could not load your Discord servers."
-              : "サーバー一覧を取得できませんでした。",
           );
         }
       }
@@ -442,7 +435,6 @@ export default function DashboardPage() {
       if (loading) return;
       loading = true;
       try {
-        if (showError) setDataError(null);
         const response = await fetch(
           `/backend/status?guildId=${encodeURIComponent(guildId)}&days=${days}&locale=${locale}&timeZone=${encodeURIComponent(timeZone)}`,
         );
@@ -512,9 +504,8 @@ export default function DashboardPage() {
         });
         setLastLiveRefreshAt(Date.now());
       } catch {
-        if (active && showError) {
-          setDataError(en ? "Could not load analytics data." : "分析データを取得できませんでした。");
-        }
+        // Keep the last successful data on screen. A short-lived refresh
+        // failure should not interrupt dashboard use with a large warning.
       } finally {
         loading = false;
       }
@@ -1156,11 +1147,6 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {dataError && (
-            <p className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              {dataError}
-            </p>
-          )}
           <section className="mb-5 grid gap-3 lg:grid-cols-2">
             <div className="rounded-2xl border border-primary/20 bg-card/65 px-4 py-3.5 sm:px-5">
               <div className="flex items-center gap-2 text-xs font-bold text-primary">

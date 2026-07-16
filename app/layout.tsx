@@ -24,7 +24,7 @@ export const metadata: Metadata = {
     'サーバーのデータ分析と、独自のブランド化（OEM）を同時に実現するダッシュボード。高度なサーバー分析、OEM専用ダッシュボード、簡単OAuth2連携。',
   generator: 'v0.app',
   verification: {
-    google: '40Eez6fPMhjcj4fYirxbArbyuJSQmC7R_fm7bmFHT_U',
+    google: 'lp1GuqCR8KSKVnQ87Vs3W8QtDP2I06pRjnv8u5XN_tQ',
   },
   other: {
     'google-adsense-account': 'ca-pub-8557241043423909',

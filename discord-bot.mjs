@@ -1373,12 +1373,12 @@ client.on("interactionCreate", async (interaction) => {
           ? formatGuildName(owner.displayName || owner.user.username)
           : "取得できませんでした";
         const ownerValue = owner
-          ? `${ownerName}\n\`${owner.id}\``
+          ? `表示名: ${ownerName}\nユーザー名: @${formatGuildName(owner.user.username)}\nID: \`${owner.id}\``
           : ownerName;
         const iconUrl = guild.iconURL({ extension: "png", size: 128 });
         const embed = new EmbedBuilder()
           .setColor(0x7877ff)
-          .setTitle(`${(page - 1) * pageSize + index + 1}. ${formatGuildName(guild.name)} · ID: ${guild.id}`)
+          .setTitle(`${(page - 1) * pageSize + index + 1}. ${formatGuildName(guild.name)}`)
           .addFields(
             { name: "コピー用ID", value: `\`${guild.id}\``, inline: true },
             {

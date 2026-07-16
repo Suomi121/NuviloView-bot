@@ -437,7 +437,7 @@ export default function DashboardPage() {
     ctx.beginPath(); ctx.roundRect(92, 750, 1408, 76, 18); ctx.fillStyle = "rgba(255,255,255,.06)"; ctx.fill();
     const hasShareableInsight = !["データを収集中です", "Collecting data"].includes(insight.title);
     ctx.font = "700 22px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#a9adbf"; ctx.fillText(hasShareableInsight ? `SERVER INSIGHT  /  ${insight.title}` : "NUVILOVIEW:OEM  /  ACTIVITY SNAPSHOT", 122, 799);
-    ctx.font = "500 19px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#888da4"; ctx.fillText("メッセージ本文・個人情報は含まれていません", 1110, 799);
+    ctx.font = "500 19px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#888da4"; ctx.fillText("メッセージ本文・個人情報は含まれていません", 690, 799);
     // Keep Japanese and emoji in the download name; remove only characters
     // Windows does not allow in a filename and keep it comfortably short.
     const safeGuildName = selectedGuild.name.normalize("NFKC")

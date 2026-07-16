@@ -435,7 +435,8 @@ export default function DashboardPage() {
     ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.lineWidth = 2; [0, .5, 1].forEach((i) => { ctx.beginPath(); ctx.moveTo(graphX, graphY + 40 + graphH * i); ctx.lineTo(graphX + graphW, graphY + 40 + graphH * i); ctx.stroke(); });
     ctx.beginPath(); points.forEach((point, index) => { const x = graphX + (index / Math.max(points.length - 1, 1)) * graphW; const y = graphY + 40 + graphH - (point / max) * graphH; index ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.strokeStyle = "#8492ff"; ctx.lineWidth = 7; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke();
     ctx.beginPath(); ctx.roundRect(92, 750, 1408, 76, 18); ctx.fillStyle = "rgba(255,255,255,.06)"; ctx.fill();
-    ctx.font = "700 22px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#a9adbf"; ctx.fillText(`SERVER INSIGHT  /  ${insight.title}`, 122, 799);
+    const hasShareableInsight = !["データを収集中です", "Collecting data"].includes(insight.title);
+    ctx.font = "700 22px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#a9adbf"; ctx.fillText(hasShareableInsight ? `SERVER INSIGHT  /  ${insight.title}` : "NUVILOVIEW:OEM  /  ACTIVITY SNAPSHOT", 122, 799);
     ctx.font = "500 19px 'Yu Gothic', sans-serif"; ctx.fillStyle = "#888da4"; ctx.fillText("メッセージ本文・個人情報は含まれていません", 1110, 799);
     // Keep Japanese and emoji in the download name; remove only characters
     // Windows does not allow in a filename and keep it comfortably short.

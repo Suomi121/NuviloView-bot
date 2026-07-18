@@ -131,6 +131,27 @@ export async function GET(request: Request) {
       ORDER BY dates.date ASC
     `, [guildId, days])
     const messageTrend = messageTrendResult.rows
+    const memberTrendResult = await pool.query<{ memberCount: number; activeMemberCount: number }>(`
+      WITH dates AS (
+        SELECT generate_series(CURRENT_DATE - ($2::int - 1), CURRENT_DATE, interval '1 day')::date AS date
+      )
+      SELECT
+        COALESCE((
+          SELECT stats."memberCount"::int
+          FROM "daily_stats" AS stats
+          WHERE stats."guildId" = $1 AND stats.date <= dates.date
+          ORDER BY stats.date DESC
+          LIMIT 1
+        ), 0)::int AS "memberCount",
+        COALESCE((
+          SELECT COUNT(*)::int
+          FROM "daily_active_member" AS active
+          WHERE active."guildId" = $1 AND active.date = dates.date
+        ), 0)::int AS "activeMemberCount"
+      FROM dates
+      ORDER BY dates.date ASC
+    `, [guildId, days])
+    const memberTrend = memberTrendResult.rows
     const totalMessageResult = await pool.query<{ count: number }>(`
       SELECT COUNT(*)::int AS count FROM "discord_message" WHERE "guildId" = $1
     `, [guildId])
@@ -310,10 +331,10 @@ export async function GET(request: Request) {
       return NextResponse.json({
         labels: messageTrend.map((row) => row.label),
         chartPoints: messageTrend.map((row) => row.value),
-        memberPoints: messageTrend.map(() => 0),
-        activeMemberPoints: messageTrend.map(() => 0),
+        memberPoints: memberTrend.map((row) => row.memberCount),
+        activeMemberPoints: memberTrend.map((row) => row.activeMemberCount),
         reactionPoints: messageTrend.map(() => 0),
-        latestMemberCount: 0,  // カード用
+        latestMemberCount: memberTrend.at(-1)?.memberCount ?? 0, // カード用
         latestMessageCount: messageTrend.at(-1)?.value ?? 0, // カード用
         totalMessageCount,
         activeMemberCount: activeMemberResult.rows[0]?.count ?? 0,
@@ -429,10 +450,10 @@ export async function GET(request: Request) {
     return NextResponse.json({
       labels: messageTrend.map(r => r.label),
       chartPoints: messageTrend.map(r => r.value),
-      memberPoints: rows.map(r => r.memberCount),
-      activeMemberPoints: rows.map(r => r.activeMemberCount),
+      memberPoints: memberTrend.map(r => r.memberCount),
+      activeMemberPoints: memberTrend.map(r => r.activeMemberCount),
       reactionPoints: rows.map(r => r.value > 0 ? Math.round((r.reactionCount / r.value) * 1000) / 10 : 0),
-      latestMemberCount: latestData.memberCount, // ✨最新の総人数（カード用）
+      latestMemberCount: memberTrend.at(-1)?.memberCount ?? latestData.memberCount, // 今日の日次推移と同じ集計値
       latestMessageCount: messageTrend.at(-1)?.value ?? latestData.value, // 今日の日次推移と同じ集計値
       totalMessageCount,
       activeMemberCount,

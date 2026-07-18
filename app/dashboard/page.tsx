@@ -191,7 +191,7 @@ export default function DashboardPage() {
   );
   const [chartMenuOpen, setChartMenuOpen] = useState(false);
   const [chartMetric, setChartMetric] = useState<
-    "messages" | "cumulative" | "members"
+    "messages" | "cumulative" | "members" | "inactiveMembers"
   >("messages");
   const [reportOpen, setReportOpen] = useState(false);
   const [reportFormat, setReportFormat] = useState<"csv" | "json" | "pdf">(
@@ -202,7 +202,7 @@ export default function DashboardPage() {
   );
   const [aiGuideOpen, setAiGuideOpen] = useState(false);
   const [overviewMetric, setOverviewMetric] = useState<
-    "members" | "active" | "activeMessages" | "messages" | "reactions" | "voice"
+    "members" | "active" | "inactive" | "activeMessages" | "messages" | "reactions" | "voice"
   >("members");
   const [activeView, setActiveView] = useState<"overview" | "analytics" | "members" | "messages" | "insights">("overview");
   const [guildTheme, setGuildTheme] = useState<GuildTheme>(defaultGuildTheme);
@@ -245,6 +245,13 @@ export default function DashboardPage() {
     : `${previousPeriodLabel}との比較`;
   const memberChange = memberCount - previousMemberCount;
   const activeMemberChange = activeMemberCount - previousActiveMemberCount;
+  const inactiveMemberCount = Math.max(0, memberCount - activeMemberCount);
+  const inactiveMemberPoints = useMemo(
+    () => memberPoints.map((point, index) => Math.max(0, point - (activeMemberPoints[index] ?? 0))),
+    [activeMemberPoints, memberPoints],
+  );
+  const previousInactiveMemberCount = inactiveMemberPoints.at(-2) ?? 0;
+  const inactiveMemberChange = inactiveMemberCount - previousInactiveMemberCount;
   const previousDayMessageCount = chartPoints.at(-2) ?? 0;
   const activeMessageChange = messageCount - previousDayMessageCount;
   const reactionChange = periodReactionRate - previousReactionRate;
@@ -659,13 +666,14 @@ export default function DashboardPage() {
 
   const displayedChartPoints = useMemo(() => {
     if (chartMetric === "members") return memberPoints;
+    if (chartMetric === "inactiveMembers") return inactiveMemberPoints;
     if (chartMetric === "cumulative")
       return chartPoints.reduce<number[]>(
         (points, point) => [...points, (points.at(-1) ?? 0) + point],
         [],
       );
     return chartPoints;
-  }, [chartMetric, chartPoints, memberPoints]);
+  }, [chartMetric, chartPoints, inactiveMemberPoints, memberPoints]);
   const chartCopy =
     chartMetric === "messages"
       ? {
@@ -674,6 +682,13 @@ export default function DashboardPage() {
             ? `Daily messages collected by the bot · ${periodLabel}`
             : `Botが収集した日別メッセージ数 · ${period}`,
         }
+      : chartMetric === "inactiveMembers"
+        ? {
+            title: en ? "Inactive member trend" : "非アクティブメンバーの推移",
+            description: en
+              ? `Members without a recorded message on each day · ${periodLabel}`
+              : `各日にメッセージが記録されなかったメンバー · ${period}`,
+          }
       : chartMetric === "cumulative"
         ? {
             title: en ? "Cumulative messages" : "累積メッセージ",
@@ -1597,14 +1612,20 @@ export default function DashboardPage() {
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard
               label={en ? "Inactive members" : "非アクティブメンバー"}
-              value={Math.max(0, memberCount - activeMemberCount).toLocaleString()}
-              delta={en ? "Today" : "本日の状態"}
-              detail={en ? "No recorded messages today" : "今日の発言を記録していないメンバー"}
-              tone="neutral"
+              value={inactiveMemberCount.toLocaleString()}
+              delta={`${inactiveMemberChange > 0 ? "+" : inactiveMemberChange < 0 ? "−" : "±"}${Math.abs(inactiveMemberChange).toLocaleString()}`}
+              detail={en ? "vs yesterday · Open daily history" : "前日との比較・押すと日別履歴"}
+              tone={inactiveMemberChange < 0 ? "success" : inactiveMemberChange > 0 ? "danger" : "neutral"}
               periodText={en ? "Today" : "今日"}
               loading={dashboardPending}
               requirement={memberCount === 0 ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : undefined}
               icon={<Users />}
+              onClick={() => {
+                setOverviewMetric("inactive");
+                setChartMetric("inactiveMembers");
+                setMobileDetailsOpen(true);
+              }}
+              selected={overviewMetric === "inactive"}
             />
             <StatCard
               label={en ? "Average reaction rate" : "平均リアクション率"}
@@ -1659,6 +1680,7 @@ export default function DashboardPage() {
             previousMaxVoiceSessionSeconds={previousMaxVoiceSessionSeconds}
             memberPoints={memberPoints}
             activeMemberPoints={activeMemberPoints}
+            inactiveMemberPoints={inactiveMemberPoints}
             messagePoints={chartPoints}
             reactionPoints={reactionPoints}
             labels={labels}
@@ -1692,6 +1714,7 @@ export default function DashboardPage() {
                           ["messages", "日別メッセージ"],
                           ["cumulative", "累積メッセージ"],
                           ["members", "メンバー推移"],
+                          ["inactiveMembers", "非アクティブ推移"],
                         ] as const
                       ).map(([metric, label]) => (
                         <button
@@ -1792,7 +1815,7 @@ export default function DashboardPage() {
               <div className="mt-3 flex justify-between text-[11px] text-muted-foreground">
                 {labels.map((label) => <span key={label}>{label}</span>)}
               </div>
-              </> : <div className="mt-7"><EmptyDataState title={en ? "No trend data yet" : "推移データがまだありません"} detail={chartMetric === "members" ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : (en ? "1 message needed" : "あと1件のメッセージ記録が必要")} /></div>}
+              </> : <div className="mt-7"><EmptyDataState title={en ? "No trend data yet" : "推移データがまだありません"} detail={chartMetric === "members" || chartMetric === "inactiveMembers" ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : (en ? "1 message needed" : "あと1件のメッセージ記録が必要")} /></div>}
             </section>
 
             <section className="rounded-2xl border border-border bg-card/55 p-5 shadow-sm">
@@ -2324,6 +2347,7 @@ function OverviewComparison({
   previousMaxVoiceSessionSeconds,
   memberPoints,
   activeMemberPoints,
+  inactiveMemberPoints,
   messagePoints,
   reactionPoints,
   labels,
@@ -2332,7 +2356,7 @@ function OverviewComparison({
   locale,
   en,
 }: {
-  metric: "members" | "active" | "activeMessages" | "messages" | "reactions" | "voice";
+  metric: "members" | "active" | "inactive" | "activeMessages" | "messages" | "reactions" | "voice";
   memberCount: number;
   previousMemberCount: number;
   activeMemberCount: number;
@@ -2346,6 +2370,7 @@ function OverviewComparison({
   previousMaxVoiceSessionSeconds: number;
   memberPoints: number[];
   activeMemberPoints: number[];
+  inactiveMemberPoints: number[];
   messagePoints: number[];
   reactionPoints: number[];
   labels: string[];
@@ -2379,6 +2404,16 @@ function OverviewComparison({
             points: activeMemberPoints,
             format: (value: number) => value.toLocaleString(),
           }
+        : metric === "inactive"
+          ? {
+              title: en ? "Inactive member comparison" : "非アクティブメンバーの比較",
+              currentLabel: en ? "Inactive today" : "今日の非アクティブメンバー",
+              previousLabel: en ? "Inactive yesterday" : "前日の非アクティブメンバー",
+              current: Math.max(0, memberCount - activeMemberCount),
+              previous: inactiveMemberPoints.at(-2) ?? 0,
+              points: inactiveMemberPoints,
+              format: (value: number) => value.toLocaleString(),
+            }
         : metric === "activeMessages"
           ? {
               title: en ? "Active message comparison" : "アクティブメッセージの比較",
@@ -2448,10 +2483,19 @@ function OverviewComparison({
   const formatTrendValue = (value: number) => {
     if (metric === "activeMessages" || metric === "messages")
       return en ? `${format(value)} messages` : `${format(value)}件`;
-    if (metric === "members" || metric === "active")
+    if (metric === "members" || metric === "active" || metric === "inactive")
       return en ? `${format(value)} members` : `${format(value)}人`;
     return format(value);
   };
+  const changeToneClass = change === 0
+    ? "bg-secondary text-muted-foreground"
+    : metric === "inactive"
+      ? change < 0
+        ? "bg-emerald-400/10 text-emerald-400"
+        : "bg-rose-400/10 text-rose-400"
+      : change > 0
+        ? "bg-emerald-400/10 text-emerald-400"
+        : "bg-rose-400/10 text-rose-400";
   return (
     <section className="mt-4 rounded-2xl border border-border bg-card/55 p-5 shadow-sm sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2459,12 +2503,12 @@ function OverviewComparison({
           <p className="text-sm font-bold">{title}</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {en
-              ? metric === "active" || metric === "activeMessages" ? "Today compared with yesterday." : `${periodLabel} compared with ${previousPeriodLabel.toLowerCase()}.`
-              : metric === "active" || metric === "activeMessages" ? "今日と前日の実データを比較します。" : `${periodLabel}と${previousPeriodLabel}を実データで比較します。`}
+              ? metric === "active" || metric === "inactive" || metric === "activeMessages" ? "Today compared with yesterday." : `${periodLabel} compared with ${previousPeriodLabel.toLowerCase()}.`
+              : metric === "active" || metric === "inactive" || metric === "activeMessages" ? "今日と前日の実データを比較します。" : `${periodLabel}と${previousPeriodLabel}を実データで比較します。`}
           </p>
         </div>
         <span
-          className={`rounded-full px-2.5 py-1 text-xs font-bold ${change > 0 ? "bg-emerald-400/10 text-emerald-400" : change < 0 ? "bg-rose-400/10 text-rose-400" : "bg-secondary text-muted-foreground"}`}
+          className={`rounded-full px-2.5 py-1 text-xs font-bold ${changeToneClass}`}
         >
           {change > 0 ? "+" : change < 0 ? "−" : "±"}
           {metric === "voice"
@@ -2507,7 +2551,7 @@ function OverviewComparison({
                   <strong className="text-sm text-foreground">{formatTrendValue(selectedPoint.value)}</strong>
                 </>
               ) : (
-                <span>{en ? "Click or tap a bar to view its date and value." : "棒グラフをクリック／タップすると日付と件数を表示します。"}</span>
+                <span>{en ? "Click or tap a bar to view its date and value." : `棒グラフをクリック／タップすると日付と${metric === "inactive" ? "人数" : "件数"}を表示します。`}</span>
               )}
             </div>
           )}
@@ -2533,8 +2577,8 @@ function OverviewComparison({
               </span>
             )}
           </div>
-          {metric === "activeMessages" && points.length > 0 && (
-            <div className="mt-3 flex max-w-full gap-2 overflow-x-auto pb-1" aria-label={en ? "Daily active message history" : "アクティブメッセージの日別履歴"}>
+          {(metric === "activeMessages" || metric === "inactive") && points.length > 0 && (
+            <div className="mt-3 flex max-w-full gap-2 overflow-x-auto pb-1" aria-label={metric === "inactive" ? (en ? "Daily inactive member history" : "非アクティブメンバーの日別履歴") : (en ? "Daily active message history" : "アクティブメッセージの日別履歴")}>
               {points.map((point, index) => (
                 <button
                   type="button"

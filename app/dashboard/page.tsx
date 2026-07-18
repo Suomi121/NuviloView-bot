@@ -1536,7 +1536,7 @@ export default function DashboardPage() {
               label={en ? "Active members" : "アクティブメンバー"}
               value={activeMemberCount.toLocaleString()}
               delta={`${activeMemberChange > 0 ? "+" : activeMemberChange < 0 ? "−" : "±"}${Math.abs(activeMemberChange).toLocaleString()}`}
-              detail={en ? "vs yesterday · Open daily history" : "前日との比較・押すと日別履歴"}
+              detail={en ? "Compared with yesterday" : "前日との比較"}
               tone={activeMemberChange > 0 ? "success" : activeMemberChange < 0 ? "danger" : "neutral"}
               periodText={en ? "Today" : "今日"}
               loading={dashboardPending}
@@ -1549,7 +1549,7 @@ export default function DashboardPage() {
               label={en ? "Active messages" : "アクティブメッセージ"}
               value={messageCount.toLocaleString()}
               delta={`${activeMessageChange > 0 ? "+" : activeMessageChange < 0 ? "−" : "±"}${Math.abs(activeMessageChange).toLocaleString()}`}
-              detail={en ? "Compared with yesterday" : "前日との比較"}
+              detail={en ? "vs yesterday · Open daily history" : "前日との比較・押すと日別履歴"}
               tone={activeMessageChange > 0 ? "success" : activeMessageChange < 0 ? "danger" : "neutral"}
               periodText={en ? "Today" : "今日"}
               loading={dashboardPending}

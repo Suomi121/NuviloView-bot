@@ -163,25 +163,25 @@
   }
 }
 
-@keyframes chart-line-draw {
+@keyframes chart-line-reveal {
   from {
-    stroke-dashoffset: 1;
+    transform: scaleX(0);
   }
   to {
-    stroke-dashoffset: 0;
+    transform: scaleX(1);
   }
 }
 
-.chart-line-draw {
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
-  animation: chart-line-draw 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
+.chart-line-reveal {
+  transform-box: fill-box;
+  transform-origin: left center;
+  animation: chart-line-reveal 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chart-line-draw {
+  .chart-line-reveal {
     animation: none;
-    stroke-dashoffset: 0;
+    transform: scaleX(1);
   }
 }
 

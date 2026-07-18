@@ -1721,15 +1721,25 @@ export default function DashboardPage() {
                     <linearGradient id="area" x1="0" x2="0" y1="0" y2="1">
                       <stop
                         offset="0%"
-                        stopColor="currentColor"
+                        stopColor="var(--primary)"
                         stopOpacity="0.36"
                       />
                       <stop
                         offset="100%"
-                        stopColor="currentColor"
+                        stopColor="var(--primary)"
                         stopOpacity="0"
                       />
                     </linearGradient>
+                    <clipPath id="message-trend-line-clip">
+                      <rect
+                        key={`${guildId}-${chartMetric}-${labels.join("-")}`}
+                        x="0"
+                        y="0"
+                        width="100"
+                        height="100"
+                        className="chart-line-reveal"
+                      />
+                    </clipPath>
                   </defs>
                   {chart.ticks.map((tick) => (
                     <line
@@ -1749,7 +1759,6 @@ export default function DashboardPage() {
                     className="text-primary"
                   />
                   <path
-                    key={`${guildId}-${chartMetric}-${labels.join("-")}`}
                     d={chart.line}
                     fill="none"
                     stroke="currentColor"
@@ -1758,7 +1767,8 @@ export default function DashboardPage() {
                     vectorEffect="non-scaling-stroke"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className="chart-line-draw text-primary"
+                    clipPath="url(#message-trend-line-clip)"
+                    className="text-primary"
                   />
                   <circle
                     cx={chart.last.x}

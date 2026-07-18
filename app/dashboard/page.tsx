@@ -2354,6 +2354,8 @@ function OverviewComparison({
   locale: "ja" | "en";
   en: boolean;
 }) {
+  const [selectedPointIndex, setSelectedPointIndex] = useState<number | null>(null);
+  useEffect(() => setSelectedPointIndex(null), [metric, periodLabel]);
   const config =
     metric === "members"
       ? {
@@ -2435,6 +2437,21 @@ function OverviewComparison({
   } = config;
   const max = Math.max(current, previous, ...points, 1);
   const change = current - previous;
+  const selectedPoint =
+    selectedPointIndex !== null && points[selectedPointIndex] !== undefined
+      ? {
+          index: selectedPointIndex,
+          date: labels[selectedPointIndex] ?? "—",
+          value: points[selectedPointIndex],
+        }
+      : null;
+  const formatTrendValue = (value: number) => {
+    if (metric === "activeMessages" || metric === "messages")
+      return en ? `${format(value)} messages` : `${format(value)}件`;
+    if (metric === "members" || metric === "active")
+      return en ? `${format(value)} members` : `${format(value)}人`;
+    return format(value);
+  };
   return (
     <section className="mt-4 rounded-2xl border border-border bg-card/55 p-5 shadow-sm sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2457,8 +2474,8 @@ function OverviewComparison({
               : Math.abs(change).toLocaleString()}
         </span>
       </div>
-      <div className="mt-5 grid gap-5 md:grid-cols-[0.9fr_1.1fr]">
-        <div className="grid grid-cols-2 gap-3">
+      <div className="mt-5 space-y-5">
+        <div className="grid gap-3 sm:grid-cols-2">
           <ComparisonBar
             label={previousLabel}
             value={previous}
@@ -2473,21 +2490,39 @@ function OverviewComparison({
             max={max}
           />
         </div>
-        <div>
-          <div className="flex items-center justify-between text-xs">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
             <span className="font-semibold text-muted-foreground">
               {en ? "Trend in selected period" : "選択期間の推移"}
             </span>
             <span className="text-muted-foreground">{periodLabel}</span>
           </div>
-          <div className="mt-3 flex h-28 items-end gap-1.5 rounded-xl border border-border/70 bg-background/30 p-3">
+          {points.length > 0 && (
+            <div className={`mt-3 flex min-h-11 flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs ${selectedPoint ? "border-primary/40 bg-primary/[0.08]" : "border-border/70 bg-background/30 text-muted-foreground"}`} aria-live="polite">
+              {selectedPoint ? (
+                <>
+                  <span className="font-semibold">
+                    {selectedPoint.date} · {selectedPoint.index === points.length - 1 ? (en ? "00:00–now" : "0:00〜現在") : (en ? "daily total" : "日別集計")}
+                  </span>
+                  <strong className="text-sm text-foreground">{formatTrendValue(selectedPoint.value)}</strong>
+                </>
+              ) : (
+                <span>{en ? "Click or tap a bar to view its date and value." : "棒グラフをクリック／タップすると日付と件数を表示します。"}</span>
+              )}
+            </div>
+          )}
+          <div className="mt-2 flex h-32 items-end gap-1.5 rounded-xl border border-border/70 bg-background/30 p-3">
             {points.length ? (
               points.map((point, index) => (
-                <span
+                <button
+                  type="button"
                   key={index}
-                  className="min-w-0 flex-1 rounded-t-sm bg-primary/70 transition-opacity hover:bg-primary"
+                  onClick={() => setSelectedPointIndex(index)}
+                  className={`min-w-[5px] flex-1 rounded-t-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${selectedPointIndex === index ? "bg-primary ring-2 ring-primary/35" : "bg-primary/70 hover:bg-primary"}`}
                   style={{ height: `${Math.max(5, (point / max) * 100)}%` }}
-                  title={`${labels[index] ?? ""} · ${format(point)}`}
+                  title={`${labels[index] ?? ""} · ${formatTrendValue(point)}`}
+                  aria-label={`${labels[index] ?? ""} ${formatTrendValue(point)}`}
+                  aria-pressed={selectedPointIndex === index}
                 />
               ))
             ) : (
@@ -2499,12 +2534,18 @@ function OverviewComparison({
             )}
           </div>
           {metric === "activeMessages" && points.length > 0 && (
-            <div className="mt-3 flex gap-2 overflow-x-auto pb-1" aria-label={en ? "Daily active message history" : "アクティブメッセージの日別履歴"}>
+            <div className="mt-3 flex max-w-full gap-2 overflow-x-auto pb-1" aria-label={en ? "Daily active message history" : "アクティブメッセージの日別履歴"}>
               {points.map((point, index) => (
-                <div key={`${labels[index] ?? index}-${index}`} className="min-w-[76px] rounded-lg border border-border/70 bg-background/35 px-2.5 py-2 text-center">
+                <button
+                  type="button"
+                  key={`${labels[index] ?? index}-${index}`}
+                  onClick={() => setSelectedPointIndex(index)}
+                  aria-pressed={selectedPointIndex === index}
+                  className={`min-w-[76px] rounded-lg border px-2.5 py-2 text-center transition-colors ${selectedPointIndex === index ? "border-primary/60 bg-primary/[0.12]" : "border-border/70 bg-background/35 hover:border-primary/35"}`}
+                >
                   <p className="text-[10px] text-muted-foreground">{labels[index] ?? "—"}</p>
                   <p className="mt-0.5 text-sm font-bold">{format(point)}</p>
-                </div>
+                </button>
               ))}
             </div>
           )}

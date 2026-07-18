@@ -16,6 +16,9 @@ import {
 export const user = pgTable("user", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  // Better Auth 1.x requires this field to be non-null. Discord accounts use
+  // a generated `discord-<id>@users.invalid` identity key, never the user's
+  // actual Discord email address.
   email: text("email").notNull().unique(),
   emailVerified: boolean("emailVerified").notNull().default(false),
   image: text("image"),

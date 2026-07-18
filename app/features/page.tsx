@@ -8,7 +8,7 @@ const features = [
   { icon: Activity, title: '最近のアクティビティ', body: 'メッセージ送信・参加・退出を時系列で表示します。検索機能のため、閲覧可能なチャンネルの本文を保存します。' },
   { icon: Sparkles, title: '成長インサイト', body: '直近の実績と前期間を比較し、メンバーと会話量の変化を自動で要約します。' },
   { icon: LockKeyhole, title: '権限ベースの閲覧', body: 'Discordで管理権限を持つサーバーだけを表示。Botが読み取れないチャンネルもダッシュボードで確認できます。' },
-  { icon: Bot, title: '軽量な分析Bot', body: 'Botはメンバー数・件数・リアクション・通話時間を集計。/tactive、/week、/setup、/permissions などの運営コマンドも使えます。' },
+  { icon: Bot, title: '軽量な分析Bot', body: 'Botはメンバー数・件数・リアクション・通話時間を集計。/tactive、/week、/suc、/permissions などの運営コマンドも使えます。' },
 ]
 
 export default function FeaturesPage() {

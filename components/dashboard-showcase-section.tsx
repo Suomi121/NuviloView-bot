@@ -133,7 +133,7 @@ export function DashboardShowcaseSection() {
           <span className="inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-bold text-primary"><Sparkles className="h-3.5 w-3.5" />実画面イメージ</span>
           <h2 className="mt-5 text-balance text-3xl font-extrabold tracking-tight sm:text-5xl">数字を見るだけで、次の一手が分かる。</h2>
           <p className="mt-5 leading-relaxed text-muted-foreground">架空のDiscordサーバー「Lunaria Lounge」を使ったサンプルです。実際のダッシュボードでは、管理できるサーバーの記録データへ自動で切り替わります。</p>
-          <a href="#thirty-second-demo" className="mt-7 inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/20 transition-transform hover:-translate-y-0.5">ダッシュボードのデモを見る <ArrowRight className="h-4 w-4" /></a>
+          <a href="/demo" className="mt-7 inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/20 transition-transform hover:-translate-y-0.5">ログイン不要のデモを見る <ArrowRight className="h-4 w-4" /></a>
         </div>
 
         <div className="mt-14 grid items-end gap-8 lg:grid-cols-[1fr_280px]">

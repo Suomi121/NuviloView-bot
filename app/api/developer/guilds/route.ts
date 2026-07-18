@@ -53,7 +53,6 @@ export async function GET(request: Request) {
         SELECT "id", "guildId", "action", "reason", "performedBy", "performedByName", "source", "createdAt", "previousHash", "entryHash"
         FROM "bot_guild_block_audit"
         ORDER BY "createdAt" DESC
-        LIMIT 80
       `),
       pool.query<{ lastSeenAt: Date | null; stoppedAt: Date | null }>(`
         SELECT "lastSeenAt", "stoppedAt"

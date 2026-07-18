@@ -14,13 +14,20 @@ export const auth = betterAuth({
   database: pool,
   baseURL,
   // Discord OAuth is the primary sign-in method for NuviloView:OEM.
-  // The `identify` + `guilds` scopes let us read the user's profile and the
-  // list of servers they belong to (including their permission level).
+  // Better Auth 1.x requires a non-null email-shaped identity key even when a
+  // provider does not return an email. We therefore disable Discord's default
+  // `email` scope and generate a non-deliverable local identifier instead of
+  // collecting or storing the user's real Discord email address.
   socialProviders: {
     discord: {
       clientId: process.env.DISCORD_CLIENT_ID as string,
       clientSecret: process.env.DISCORD_CLIENT_SECRET as string,
-      scope: ["identify", "email", "guilds"],
+      disableDefaultScope: true,
+      scope: ["identify", "guilds"],
+      mapProfileToUser: (profile) => ({
+        email: `discord-${profile.id}@users.invalid`,
+        emailVerified: false,
+      }),
     },
   },
   trustedOrigins: [

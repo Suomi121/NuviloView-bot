@@ -13,6 +13,7 @@
     "bot": "node scripts/token-leak-check.mjs && node --env-file=.env.local discord-bot.mjs",
     "security:tokens": "node scripts/token-leak-check.mjs",
     "db:migrate": "node --env-file=.env.local scripts/migrate.mjs",
+    "privacy:anonymize-discord-email": "node --env-file=.env.local scripts/anonymize-discord-emails.mjs",
     "companion": "pnpm --dir companion start"
   },
   "dependencies": {

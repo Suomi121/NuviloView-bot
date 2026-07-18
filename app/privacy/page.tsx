@@ -15,12 +15,13 @@ export default function PrivacyPage() {
           </PolicySection>
           <PolicySection title="2. 取得する情報">
             <ul className="list-disc space-y-2 pl-5">
-              <li><strong className="text-foreground">アカウント・認証情報：</strong>DiscordユーザーID、表示名、アイコン、メールアドレス、管理可能なサーバー情報、セッション情報、およびDiscord連携の維持に必要なアクセストークン・リフレッシュトークン等</li>
+              <li><strong className="text-foreground">アカウント・認証情報：</strong>DiscordユーザーID、表示名、アイコン、管理可能なサーバー情報、セッション情報、およびDiscord連携の維持に必要なアクセストークン・リフレッシュトークン等</li>
               <li><strong className="text-foreground">サーバー活動情報：</strong>サーバー名・ID・アイコン、メンバー数、投稿数、リアクション、参加・退出、発言者数、通話開始・終了・通話時間、チャンネル名およびBotの読み取り権限状態</li>
               <li><strong className="text-foreground">検索用メッセージ情報：</strong>Botが閲覧できるチャンネルのメッセージ本文、投稿者のDiscord ID・表示名、チャンネル名、投稿日時およびメッセージID</li>
               <li><strong className="text-foreground">設定・運営情報：</strong>言語、タイムゾーン、サーバー別テーマ、成長目標、通知、履歴取込状況、管理操作ログ</li>
               <li><strong className="text-foreground">技術・問い合わせ情報：</strong>IPアドレス、ユーザーエージェント、アクセス・エラーログ、レート制限に必要な情報、お名前、返信先メールアドレスおよびお問い合わせ内容</li>
             </ul>
+            <p className="mt-3">Discord OAuthではメールアドレスの権限を要求せず、Discordに登録されたメールアドレスは取得・保存しません。認証基盤の内部互換性のため、DiscordユーザーIDから生成した送信不能な識別子（<code className="rounded bg-secondary px-1 py-0.5 text-xs text-foreground">@users.invalid</code>）を保存します。サポートフォームで利用者が自ら入力した返信先メールアドレスは、お問い合わせ対応のためにのみ使用します。</p>
             <p className="mt-3">音声通話の内容、映像および画面共有の内容は取得・保存しません。</p>
           </PolicySection>
           <PolicySection title="3. 利用目的">
@@ -34,7 +35,7 @@ export default function PrivacyPage() {
             </ul>
           </PolicySection>
           <PolicySection title="4. 取得方法と閲覧範囲">
-            <p>アカウント情報はDiscord OAuthを通じて取得し、サーバー活動情報はBotが付与された権限の範囲で取得します。ダッシュボードには、Discord上で所有または管理権限を持つと確認できたサーバーを表示します。サーバー管理者は、メンバーに対して本サービスの導入と収集範囲を適切に案内してください。</p>
+            <p>アカウント情報はDiscord OAuthの<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">identify</code>および<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">guilds</code>権限を通じて取得し、サーバー活動情報はBotが付与された権限の範囲で取得します。ダッシュボードには、Discord上で所有または管理権限を持つと確認できたサーバーを表示します。サーバー管理者は、メンバーに対して本サービスの導入と収集範囲を適切に案内してください。</p>
           </PolicySection>
           <PolicySection title="5. 保存期間と削除">
             <p>検索用に保存するメッセージ本文は原則として最大90日間保存し、保存期間を過ぎたデータは順次削除します。履歴取り込みで取得した本文にも同じ保存期間を適用します。Botが削除イベントを受信したメッセージは保存データからも削除します。認証情報、設定、統計、監査ログおよび問い合わせ情報は、機能提供、法令対応、不正利用防止または紛争対応に必要な期間保存します。</p>

@@ -47,7 +47,7 @@ export function HeroSection() {
         <div className="landing-reveal landing-reveal-delay-3 mt-10 flex flex-col items-center">
           <div className="flex flex-col items-center gap-3 sm:flex-row">
             <div className="landing-login-wrap"><LoginButton /></div>
-            <a href="#dashboard-demo" className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-card/70 px-5 text-sm font-bold text-foreground transition-colors hover:border-primary/40 hover:bg-primary/10">
+            <a href="/demo" className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-card/70 px-5 text-sm font-bold text-foreground transition-colors hover:border-primary/40 hover:bg-primary/10">
               デモを見る <ArrowRight className="h-4 w-4" />
             </a>
           </div>

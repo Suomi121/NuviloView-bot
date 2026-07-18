@@ -93,7 +93,7 @@ const permissionsCommand = new SlashCommandBuilder()
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
   .toJSON();
-const setupCommand = new SlashCommandBuilder()
+const sucCommand = new SlashCommandBuilder()
   .setName("suc")
   .setDescription("初期設定とチャンネル権限を確認します")
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -182,7 +182,7 @@ const publicCommands = [
 // immediately without duplicating the small global command set.
 const extendedCommands = [
   permissionsCommand,
-  setupCommand,
+  sucCommand,
   weekCommand,
   dashboardCommand,
   privacyCommand,

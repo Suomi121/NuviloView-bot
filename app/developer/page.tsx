@@ -38,6 +38,7 @@ function formatDate(value: string | null) {
 export default function DeveloperPage() {
   const [guilds, setGuilds] = useState<ManagedGuild[]>([])
   const [audit, setAudit] = useState<AuditEntry[]>([])
+  const [auditIntegrity, setAuditIntegrity] = useState<{ valid: boolean; checked: number }>({ valid: true, checked: 0 })
   const [bot, setBot] = useState<{ online: boolean; lastSeenAt: string | null }>({ online: false, lastSeenAt: null })
   const [query, setQuery] = useState('')
   const [pending, setPending] = useState<PendingAction | null>(null)
@@ -60,6 +61,7 @@ export default function DeveloperPage() {
       const data = await response.json()
       setGuilds(Array.isArray(data.guilds) ? data.guilds : [])
       setAudit(Array.isArray(data.audit) ? data.audit : [])
+      setAuditIntegrity(data.auditIntegrity ?? { valid: true, checked: 0 })
       setBot(data.bot ?? { online: false, lastSeenAt: null })
       setForbidden(false)
     } catch {
@@ -156,7 +158,7 @@ export default function DeveloperPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-bold">Guild一覧</h2><p className="mt-1 text-xs text-muted-foreground">ブロックはデータ削除後、Botが15秒以内に退出します。</p></div><label className="relative block"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Guild名・IDを検索" className="h-10 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm outline-none focus:border-primary sm:w-56" /></label></div>
           <div className="mt-5 space-y-2">{filteredGuilds.map((guild) => <GuildRow key={guild.guildId} guild={guild} onBlock={() => openAction('block', guild)} onUnblock={() => openAction('unblock', guild)} />)}{!loading && filteredGuilds.length === 0 && <p className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">該当するGuildはありません。</p>}</div>
         </section>
-        <section className="rounded-2xl border border-border bg-card/60 p-4 sm:p-5"><div className="flex items-center gap-2"><Clock3 className="h-4 w-4 text-primary" /><div><h2 className="font-bold">操作ログ</h2><p className="mt-1 text-xs text-muted-foreground">ブロック解除後も保持されます。</p></div></div><div className="mt-5 space-y-4">{audit.length ? audit.map((entry) => <div key={entry.id} className="border-l-2 border-border pl-3"><p className={`text-xs font-bold ${entry.action === 'block' ? 'text-rose-400' : 'text-emerald-400'}`}>{entry.action === 'block' ? 'BLOCK' : 'UNBLOCK'} · {entry.guildId}</p><p className="mt-1 text-xs text-muted-foreground">{entry.reason || '理由なし'} · {entry.performedByName || entry.performedBy}</p><p className="mt-1 text-[11px] text-muted-foreground">{formatDate(entry.createdAt)} · {entry.source === 'developer_dashboard' ? '管理画面' : 'Botコマンド'}</p></div>) : <p className="text-sm text-muted-foreground">まだ操作ログはありません。</p>}</div></section>
+        <section className="rounded-2xl border border-border bg-card/60 p-4 sm:p-5"><div className="flex items-start justify-between gap-3"><div className="flex items-center gap-2"><Clock3 className="h-4 w-4 text-primary" /><div><h2 className="font-bold">完全な操作履歴</h2><p className="mt-1 text-xs text-muted-foreground">ブロック解除後も、実行者・日時・理由を保持します。</p></div></div><span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold ${auditIntegrity.valid ? 'bg-emerald-500/15 text-emerald-400' : 'bg-rose-500/15 text-rose-400'}`}>{auditIntegrity.valid ? `整合性確認済み · ${auditIntegrity.checked}件` : '整合性エラー'}</span></div><div className="mt-5 max-h-[54rem] space-y-4 overflow-y-auto pr-1">{audit.length ? audit.map((entry) => <div key={entry.id} className="border-l-2 border-border pl-3"><p className={`text-xs font-bold ${entry.action === 'block' ? 'text-rose-400' : 'text-emerald-400'}`}>{entry.action === 'block' ? 'BLOCK' : 'UNBLOCK'} · {entry.guildId}</p><p className="mt-1 text-xs text-muted-foreground">{entry.reason || '理由なし'} · {entry.performedByName || entry.performedBy}</p><p className="mt-1 text-[11px] text-muted-foreground">{formatDate(entry.createdAt)} · {entry.source === 'developer_dashboard' ? '管理画面' : 'Botコマンド'}</p></div>) : <p className="text-sm text-muted-foreground">まだ操作ログはありません。</p>}</div></section>
       </div>
     </section>
     {pending && <ConfirmDialog pending={pending} reason={reason} setReason={setReason} saving={saving} onClose={() => !saving && setPending(null)} onSubmit={() => void submitAction()} />}

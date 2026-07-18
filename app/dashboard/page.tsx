@@ -520,7 +520,8 @@ export default function DashboardPage() {
       }
       try {
         const response = await fetch(
-          `/backend/status?guildId=${encodeURIComponent(guildId)}&days=${days}&locale=${locale}&timeZone=${encodeURIComponent(timeZone)}`,
+          `/backend/status?guildId=${encodeURIComponent(guildId)}&days=${days}&locale=${locale}&timeZone=${encodeURIComponent(timeZone)}&requestAt=${Date.now()}`,
+          { cache: "no-store" },
         );
         if (!response.ok) throw new Error("stats request failed");
         const data = await response.json();
@@ -606,6 +607,8 @@ export default function DashboardPage() {
         loading = false;
       }
     };
+    // A guild change recreates this effect, so fetch that guild immediately.
+    // Subsequent live refreshes keep the existing 15-second interval.
     void load("initial");
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void load("auto");

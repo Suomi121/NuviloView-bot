@@ -7,6 +7,7 @@ import {
   date,
   serial,
   uniqueIndex,
+  jsonb,
 } from "drizzle-orm/pg-core";
 
 // --- Better Auth required tables -------------------------------------------
@@ -73,6 +74,14 @@ export const branding = pgTable("branding", {
   accentColor: text("accentColor").notNull().default("#5865F2"),
   createdAt: timestamp("createdAt").notNull().defaultNow(),
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
+});
+
+// Short-lived authorization cache for Discord's managed-guild endpoint. This
+// prevents every protected dashboard request from consuming Discord API quota.
+export const discordManagedGuildCache = pgTable("discord_managed_guild_cache", {
+  userId: text("userId").primaryKey().references(() => user.id, { onDelete: "cascade" }),
+  guilds: jsonb("guilds").notNull().default([]),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const guildTheme = pgTable("guild_theme", {

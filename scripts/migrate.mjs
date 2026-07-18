@@ -56,6 +56,13 @@ try {
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS "discord_managed_guild_cache" (
+      "userId" text PRIMARY KEY REFERENCES "user"("id") ON DELETE CASCADE,
+      "guilds" jsonb NOT NULL DEFAULT '[]'::jsonb,
+      "updatedAt" timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS "guild_theme" (
       "userId" text NOT NULL REFERENCES "user"("id") ON DELETE CASCADE,
       "guildId" text NOT NULL,

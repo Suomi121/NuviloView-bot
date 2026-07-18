@@ -123,6 +123,7 @@ export default function DashboardPage() {
 
   const [guilds, setGuilds] = useState<Guild[]>([]);
   const [guildId, setGuildId] = useState<string>("");
+  const [authorizedGuildId, setAuthorizedGuildId] = useState<string>("");
   const [chartPoints, setChartPoints] = useState<number[]>([]);
   const [memberPoints, setMemberPoints] = useState<number[]>([]);
   const [activeMemberPoints, setActiveMemberPoints] = useState<number[]>([]);
@@ -306,6 +307,20 @@ export default function DashboardPage() {
         setGuildId((current) =>
           nextGuilds.some((guild: Guild) => guild.id === current) ? current : "",
         );
+        // The guild-list request populates the short-lived authorization
+        // cache. Load notifications afterwards so both endpoints do not hit
+        // Discord simultaneously on a cold page load.
+        void fetch("/api/notifications")
+          .then((res) => res.json())
+          .then((notificationData) =>
+            active &&
+            setNotifications(
+              Array.isArray(notificationData.notifications)
+                ? notificationData.notifications
+                : [],
+            ),
+          )
+          .catch(() => {});
         // Better Auth may finish saving the Discord account immediately after
         // the redirect. Retry only the initial empty result to avoid making
         // people refresh after their first login.
@@ -326,15 +341,6 @@ export default function DashboardPage() {
       }
     };
     void loadGuilds();
-    fetch("/api/notifications")
-      .then((res) => res.json())
-      .then((data) =>
-        active &&
-        setNotifications(
-          Array.isArray(data.notifications) ? data.notifications : [],
-        ),
-      )
-      .catch(() => {});
     return () => {
       active = false;
       if (retryTimer) window.clearTimeout(retryTimer);
@@ -360,7 +366,7 @@ export default function DashboardPage() {
   }, [session?.user?.id]);
 
   useEffect(() => {
-    if (!guildId) {
+    if (!guildId || authorizedGuildId !== guildId) {
       setGuildTheme(defaultGuildTheme);
       return;
     }
@@ -374,7 +380,7 @@ export default function DashboardPage() {
         if (active) setGuildTheme(defaultGuildTheme);
       });
     return () => { active = false; };
-  }, [guildId]);
+  }, [authorizedGuildId, guildId]);
 
   const dismissNotification = async (id: number) => {
     setNotifications((current) =>
@@ -486,26 +492,53 @@ export default function DashboardPage() {
   const switchGuild = (nextGuildId: string) => {
     if (nextGuildId === guildId) return;
     setGuildId(nextGuildId);
+    setAuthorizedGuildId("");
     // Never leave another server's values on screen while the new request is
     // in flight. The selected name changes immediately and the cards reset.
     setIsGuildLoading(true);
     setLoadState("loading");
     setChartPoints([]); setMemberPoints([]); setActiveMemberPoints([]); setReactionPoints([]); setLabels([]);
     setMemberCount(0); setMessageCount(0); setTotalMessageCount(0); setActiveMemberCount(0);
+    setPreviousMemberCount(0); setPreviousActiveMemberCount(0); setPeriodMessageCount(0);
+    setPeriodReactionRate(0); setPreviousMessageCount(0); setPreviousReactionRate(0); setReactionRate(0);
+    setPreviousMaxVoiceSessionSeconds(0);
     setVoiceTotalSeconds(0); setMaxVoiceSessionSeconds(0); setActivities([]); setChannelInsights([]);
+    setInsight({
+      title: en ? "Collecting data" : "データを収集中です",
+      body: en
+        ? "Insights will appear after the bot records data."
+        : "Botがデータを記録すると、実績に基づくインサイトを表示します。",
+    });
+    setInsightCards([]);
+    setHealth({
+      score: 0,
+      status: en ? "Collecting data" : "データ収集中",
+      activeLabel: "—",
+      reactionLabel: "—",
+      conversationLabel: "—",
+      retentionLabel: "—",
+    });
+    setBotStatus({
+      lastRecordedAt: null,
+      lastPermissionCheckAt: null,
+      unreadableChannelCount: 0,
+      unreadableChannelNames: [],
+    });
+    setGoals([]);
+    setGoalTargets({ member_growth: "", messages: "", voice_seconds: "" });
     setCoverage({ statsDays: 0, messageDays: 0, insightRequiredDays: 10, insightRemainingDays: 10 });
     setLastLiveRefreshAt(null);
   };
 
   useEffect(() => {
-    if (!guildId) {
+    if (!guildId || authorizedGuildId !== guildId) {
       setGoals([]);
       return;
     }
     void loadGoals(guildId);
   // `guildId` deliberately resets the displayed server goals.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [guildId]);
+  }, [authorizedGuildId, guildId]);
 
   useEffect(() => {
     if (!guildId) return;
@@ -594,6 +627,9 @@ export default function DashboardPage() {
             : [],
         });
         setLastLiveRefreshAt(Date.now());
+        // Theme and goal requests start only after this protected request has
+        // verified the selected guild and populated the shared auth cache.
+        setAuthorizedGuildId(guildId);
         setIsGuildLoading(false);
         setLoadState("success");
       } catch {

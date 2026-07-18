@@ -25,7 +25,54 @@ type DiscordTokenResponse = {
 
 export type ManagedGuild = Pick<DiscordGuild, 'id' | 'name' | 'icon'>
 
+type ManagedGuildCacheRow = {
+  guilds: unknown
+  updatedAt: Date | string
+}
+
 const MANAGE_GUILD = BigInt('32')
+const MANAGED_GUILD_CACHE_TTL_MS = 60_000
+const MANAGED_GUILD_CACHE_STALE_MAX_MS = 15 * 60_000
+const globalGuildCache = globalThis as typeof globalThis & {
+  nuviloManagedGuildLoads?: Map<string, Promise<ManagedGuild[]>>
+}
+const managedGuildLoads = globalGuildCache.nuviloManagedGuildLoads ??= new Map()
+
+function normalizeManagedGuilds(value: unknown): ManagedGuild[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((guild): guild is ManagedGuild => {
+    if (!guild || typeof guild !== 'object') return false
+    const candidate = guild as Partial<ManagedGuild>
+    return (
+      typeof candidate.id === 'string' && /^\d{16,22}$/.test(candidate.id) &&
+      typeof candidate.name === 'string' &&
+      (candidate.icon === null || typeof candidate.icon === 'string')
+    )
+  })
+}
+
+async function readManagedGuildCache(userId: string) {
+  const result = await pool.query<ManagedGuildCacheRow>(
+    `SELECT "guilds", "updatedAt" FROM "discord_managed_guild_cache" WHERE "userId" = $1`,
+    [userId],
+  )
+  const row = result.rows[0]
+  if (!row) return null
+  return {
+    guilds: normalizeManagedGuilds(row.guilds),
+    updatedAt: new Date(row.updatedAt).getTime(),
+  }
+}
+
+async function writeManagedGuildCache(userId: string, guilds: ManagedGuild[]) {
+  await pool.query(
+    `INSERT INTO "discord_managed_guild_cache" ("userId", "guilds", "updatedAt")
+     VALUES ($1, $2::jsonb, now())
+     ON CONFLICT ("userId") DO UPDATE
+     SET "guilds" = EXCLUDED."guilds", "updatedAt" = now()`,
+    [userId, JSON.stringify(guilds)],
+  )
+}
 
 async function refreshDiscordAccessToken(account: DiscordAccount) {
   if (!account.refreshToken || !process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) return null
@@ -61,7 +108,7 @@ async function fetchDiscordGuilds(accessToken: string) {
   })
 }
 
-export async function getManagedGuilds(userId: string): Promise<ManagedGuild[]> {
+async function fetchManagedGuilds(userId: string): Promise<ManagedGuild[]> {
   const account = await pool.query<DiscordAccount>(
     `SELECT "id", "accessToken", "refreshToken", "accessTokenExpiresAt" FROM "account"
      WHERE "userId" = $1 AND "providerId" = 'discord'
@@ -97,4 +144,40 @@ export async function getManagedGuilds(userId: string): Promise<ManagedGuild[]> 
   return guilds
     .filter((guild) => guild.owner || (BigInt(guild.permissions) & MANAGE_GUILD) === MANAGE_GUILD)
     .map(({ id, name, icon }) => ({ id, name, icon }))
+}
+
+export async function getManagedGuilds(userId: string): Promise<ManagedGuild[]> {
+  const cached = await readManagedGuildCache(userId)
+  if (cached && Date.now() - cached.updatedAt < MANAGED_GUILD_CACHE_TTL_MS) {
+    return cached.guilds
+  }
+
+  // Coalesce simultaneous dashboard, theme, goals and notification checks in
+  // the same runtime. The Neon row provides the same cache across runtimes.
+  const existingLoad = managedGuildLoads.get(userId)
+  if (existingLoad) return existingLoad
+
+  const load = (async () => {
+    try {
+      const guilds = await fetchManagedGuilds(userId)
+      await writeManagedGuildCache(userId, guilds)
+      return guilds
+    } catch (error) {
+      // Discord can briefly return 429 while several protected endpoints open
+      // together. A previously verified list keeps the dashboard usable; it is
+      // refreshed again after the short TTL instead of weakening authorization.
+      const fallback = cached ?? await readManagedGuildCache(userId)
+      if (fallback && Date.now() - fallback.updatedAt < MANAGED_GUILD_CACHE_STALE_MAX_MS) {
+        return fallback.guilds
+      }
+      throw error
+    }
+  })()
+
+  managedGuildLoads.set(userId, load)
+  try {
+    return await load
+  } finally {
+    if (managedGuildLoads.get(userId) === load) managedGuildLoads.delete(userId)
+  }
 }

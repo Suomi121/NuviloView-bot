@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  AlertCircle,
   ArrowUpRight,
   Bell,
   Coffee,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Download,
   FileJson,
   FileText,
@@ -15,6 +17,7 @@ import {
   LayoutDashboard,
   Laptop,
   LineChart,
+  LoaderCircle,
   MessageSquareText,
   MoreHorizontal,
   Search,
@@ -79,6 +82,13 @@ type ChannelInsight = {
 };
 type GoalType = "member_growth" | "messages" | "voice_seconds";
 type GrowthGoal = { type: GoalType; target: number; current: number };
+type DashboardLoadState = "idle" | "loading" | "refreshing" | "success" | "error";
+type DataCoverage = {
+  statsDays: number;
+  messageDays: number;
+  insightRequiredDays: number;
+  insightRemainingDays: number;
+};
 
 const appFeatures = [
   {
@@ -160,6 +170,14 @@ export default function DashboardPage() {
     null,
   );
   const [isGuildLoading, setIsGuildLoading] = useState(false);
+  const [loadState, setLoadState] = useState<DashboardLoadState>("idle");
+  const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false);
+  const [coverage, setCoverage] = useState<DataCoverage>({
+    statsDays: 0,
+    messageDays: 0,
+    insightRequiredDays: 10,
+    insightRemainingDays: 10,
+  });
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchMode, setSearchMode] = useState<"features" | "messages">(
     "features",
@@ -214,6 +232,21 @@ export default function DashboardPage() {
         ? "Last 5 months"
         : `Last ${days} days`
     : period;
+  const previousPeriodLabel = en
+    ? days === 90
+      ? "Previous 3 months"
+      : days === 150
+        ? "Previous 5 months"
+        : `Previous ${days} days`
+    : period.replace(/^過去/, "直前の");
+  const comparisonCaption = en
+    ? `Compared with ${previousPeriodLabel.toLowerCase()}`
+    : `${previousPeriodLabel}との比較`;
+  const memberChange = memberCount - previousMemberCount;
+  const activeMemberChange = activeMemberCount - previousActiveMemberCount;
+  const reactionChange = periodReactionRate - previousReactionRate;
+  const voiceSessionChange = maxVoiceSessionSeconds - previousMaxVoiceSessionSeconds;
+  const dashboardPending = loadState === "loading";
   const featureResults = appFeatures.filter((feature) =>
     `${feature.title}${feature.description}`
       .toLowerCase()
@@ -456,9 +489,11 @@ export default function DashboardPage() {
     // Never leave another server's values on screen while the new request is
     // in flight. The selected name changes immediately and the cards reset.
     setIsGuildLoading(true);
+    setLoadState("loading");
     setChartPoints([]); setMemberPoints([]); setActiveMemberPoints([]); setReactionPoints([]); setLabels([]);
     setMemberCount(0); setMessageCount(0); setTotalMessageCount(0); setActiveMemberCount(0);
     setVoiceTotalSeconds(0); setMaxVoiceSessionSeconds(0); setActivities([]); setChannelInsights([]);
+    setCoverage({ statsDays: 0, messageDays: 0, insightRequiredDays: 10, insightRemainingDays: 10 });
     setLastLiveRefreshAt(null);
   };
 
@@ -476,9 +511,13 @@ export default function DashboardPage() {
     if (!guildId) return;
     let active = true;
     let loading = false;
-    const load = async (showError: boolean) => {
+    const load = async (reason: "initial" | "auto") => {
       if (loading) return;
       loading = true;
+      if (active) {
+        setLoadState(reason === "auto" ? "refreshing" : "loading");
+        if (reason === "initial") setIsGuildLoading(true);
+      }
       try {
         const response = await fetch(
           `/backend/status?guildId=${encodeURIComponent(guildId)}&days=${days}&locale=${locale}&timeZone=${encodeURIComponent(timeZone)}`,
@@ -528,6 +567,12 @@ export default function DashboardPage() {
             : [],
         );
         setChannelInsights(Array.isArray(data.channelInsights) ? data.channelInsights : []);
+        setCoverage({
+          statsDays: Number(data.coverage?.statsDays) || 0,
+          messageDays: Number(data.coverage?.messageDays) || 0,
+          insightRequiredDays: Number(data.coverage?.insightRequiredDays) || 10,
+          insightRemainingDays: Math.max(0, Number(data.coverage?.insightRemainingDays) || 0),
+        });
         if (data.health) setHealth(data.health);
         setActivities(Array.isArray(data.activities) ? data.activities : []);
         setBotStatus({
@@ -549,17 +594,21 @@ export default function DashboardPage() {
         });
         setLastLiveRefreshAt(Date.now());
         setIsGuildLoading(false);
+        setLoadState("success");
       } catch {
         // Keep the last successful data on screen. A short-lived refresh
         // failure should not interrupt dashboard use with a large warning.
-        if (active) setIsGuildLoading(false);
+        if (active) {
+          setIsGuildLoading(false);
+          setLoadState("error");
+        }
       } finally {
         loading = false;
       }
     };
-    void load(true);
+    void load("initial");
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void load(false);
+      if (document.visibilityState === "visible") void load("auto");
     }, 15_000);
     return () => {
       active = false;
@@ -726,7 +775,7 @@ export default function DashboardPage() {
           >
             <GuildAvatar guild={selectedGuild} />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold">
+              <span className="block truncate text-sm font-semibold" title={selectedGuild?.name}>
                 {selectedGuild?.name ?? "サーバーを選択"}
               </span>
               <span className="block text-[11px] text-muted-foreground">
@@ -749,7 +798,7 @@ export default function DashboardPage() {
                   className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left hover:bg-secondary"
                 >
                   <GuildAvatar guild={guild} size="small" />
-                  <span className="truncate">{guild.name}</span>
+                  <span className="truncate" title={guild.name}>{guild.name}</span>
                 </button>
               ))}
               {guilds.length === 0 && (
@@ -790,10 +839,10 @@ export default function DashboardPage() {
       </aside>
 
       <div className="relative lg:pl-[248px]">
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-border/70 bg-background/75 px-5 backdrop-blur-xl sm:px-8">
+        <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-border/70 bg-background/75 px-3 backdrop-blur-xl sm:px-8">
           <a href="/?landing=1" className="flex items-center gap-2 lg:hidden" aria-label="NuviloView:OEM ランディングページへ">
             <BrandMark theme={guildTheme} />
-            <BrandTitle />
+            <BrandTitle className="hidden min-[480px]:inline" />
           </a>
           <div className="relative hidden max-w-sm flex-1 lg:block">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -861,7 +910,7 @@ export default function DashboardPage() {
                           <span className="font-bold text-foreground">
                             {message.authorName}
                           </span>
-                          <span className="text-muted-foreground">
+                          <span className="text-muted-foreground" title={`#${message.channelName}`}>
                             #{message.channelName} ·{" "}
                             {formatActivityTime(message.createdAt, timeZone)}
                           </span>
@@ -882,7 +931,7 @@ export default function DashboardPage() {
           </div>
           <button
             onClick={() => setAiGuideOpen(true)}
-            className="ml-2 inline-flex h-9 items-center gap-1.5 rounded-lg border border-primary/35 bg-primary/10 px-3 text-xs font-bold text-primary transition-colors hover:bg-primary/20"
+            className="ml-1 inline-flex h-9 items-center gap-1.5 rounded-lg border border-primary/35 bg-primary/10 px-2.5 text-xs font-bold text-primary transition-colors hover:bg-primary/20 sm:ml-2 sm:px-3"
           >
             <Sparkles className="h-3.5 w-3.5" />
             AI
@@ -890,12 +939,12 @@ export default function DashboardPage() {
           <a
             href="/settings"
             aria-label={en ? "Settings" : "設定"}
-            className="ml-1 inline-flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-bold text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground lg:hidden"
+            className="ml-1 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border text-xs font-bold text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground sm:w-auto sm:gap-1.5 sm:px-3 lg:hidden"
           >
             <Settings className="h-3.5 w-3.5" />
-            {en ? "Settings" : "設定"}
+            <span className="hidden sm:inline">{en ? "Settings" : "設定"}</span>
           </a>
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-1.5 sm:gap-3">
             <button
               onClick={() => setNoticeOpen(!noticeOpen)}
               aria-label={en ? "Open notifications" : "通知を開く"}
@@ -1068,7 +1117,7 @@ export default function DashboardPage() {
                             <span className="font-bold text-foreground">
                               {message.authorName}
                             </span>
-                            <span className="text-muted-foreground">
+                            <span className="text-muted-foreground" title={`#${message.channelName}`}>
                               #{message.channelName} ·{" "}
                               {formatActivityTime(message.createdAt, timeZone)}
                             </span>
@@ -1097,7 +1146,7 @@ export default function DashboardPage() {
             >
               <GuildAvatar guild={selectedGuild} />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold">
+                <span className="block truncate text-sm font-semibold" title={selectedGuild?.name}>
                   {selectedGuild?.name ?? "サーバーを選択"}
                 </span>
                 <span className="block text-[11px] text-muted-foreground">
@@ -1120,7 +1169,7 @@ export default function DashboardPage() {
                     className="flex w-full items-center gap-2.5 rounded-lg px-3 py-3 text-left hover:bg-secondary"
                   >
                     <GuildAvatar guild={guild} size="small" />
-                    <span className="truncate">{guild.name}</span>
+                      <span className="truncate" title={guild.name}>{guild.name}</span>
                   </button>
                 ))}
                 {guilds.length === 0 && (
@@ -1133,10 +1182,12 @@ export default function DashboardPage() {
           </div>
           <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
             <div>
-              <div className="mb-2 flex items-center gap-2 text-xs font-medium text-primary">
-                <Activity className="h-3.5 w-3.5" />
-                {en ? "Updating live data" : "ライブデータを更新中"}
-              </div>
+              <DashboardLoadBadge
+                state={loadState}
+                lastUpdatedAt={lastLiveRefreshAt}
+                periodLabel={periodLabel}
+                en={en}
+              />
               <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">
                 {en
                   ? `Welcome back, ${userName}`
@@ -1166,8 +1217,14 @@ export default function DashboardPage() {
               </button>
               <select
                 value={period}
-                onChange={(event) => setPeriod(event.target.value)}
-                className="rounded-lg border border-border bg-card/60 px-3.5 py-2 text-sm font-medium outline-none"
+                onChange={(event) => {
+                  setPeriod(event.target.value);
+                  setLoadState("loading");
+                  setIsGuildLoading(true);
+                }}
+                disabled={loadState === "loading" || !guildId}
+                aria-label={en ? "Analytics period" : "集計期間"}
+                className="rounded-lg border border-border bg-card/60 px-3.5 py-2 text-sm font-medium outline-none disabled:cursor-wait disabled:opacity-60"
               >
                 <option value="過去7日間">
                   {en ? "Last 7 days" : "過去7日間"}
@@ -1189,16 +1246,20 @@ export default function DashboardPage() {
           </div>
 
           <section className="mb-5 grid gap-3 lg:grid-cols-2">
-            <div className="rounded-2xl border border-primary/20 bg-card/65 px-4 py-3.5 sm:px-5">
-              <div className="flex items-center gap-2 text-xs font-bold text-primary">
+            <div className={`rounded-2xl border px-4 py-3.5 sm:px-5 ${loadState === "error" ? "border-rose-400/30 bg-rose-400/[0.08]" : loadState === "success" ? "border-emerald-400/25 bg-emerald-400/[0.07]" : "border-primary/20 bg-card/65"}`}>
+              <div className={`flex items-center gap-2 text-xs font-bold ${loadState === "error" ? "text-rose-400" : loadState === "success" ? "text-emerald-400" : "text-primary"}`}>
                 <span className="relative flex h-2.5 w-2.5">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/70" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary" />
+                  {(loadState === "loading" || loadState === "refreshing") && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-60" />}
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-current" />
                 </span>
                 {en ? "BOT DATA CONNECTION" : "BOTデータ接続"}
               </div>
               <p className="mt-2 text-sm font-semibold text-foreground">
-                {botStatus.lastRecordedAt
+                {loadState === "error"
+                  ? en
+                    ? "Could not refresh. Showing the last successful data."
+                    : "更新に失敗しました。最後に取得できたデータを表示しています"
+                  : botStatus.lastRecordedAt
                   ? en
                     ? `Last recorded ${formatElapsed(botStatus.lastRecordedAt, true)}`
                     : `最終記録から${formatElapsed(botStatus.lastRecordedAt)}`
@@ -1238,7 +1299,7 @@ export default function DashboardPage() {
                       ? `${botStatus.unreadableChannelCount} channel(s) cannot be read`
                       : `${botStatus.unreadableChannelCount}件のチャンネルで読み取り権限が不足しています`}
                   </p>
-                  <p className="mt-1 truncate text-xs text-muted-foreground">
+                  <p className="mt-1 truncate text-xs text-muted-foreground" title={botStatus.unreadableChannelNames.map((name) => `#${name}`).join(" · ")}>
                     {botStatus.unreadableChannelNames.map((name) => `#${name}`).join(" · ")}
                   </p>
                 </>
@@ -1409,11 +1470,23 @@ export default function DashboardPage() {
           )}
           {activeView !== "overview" && <DashboardDetailView view={activeView} en={en} periodLabel={periodLabel} memberCount={memberCount} activeMemberCount={activeMemberCount} messageCount={messageCount} totalMessageCount={totalMessageCount} reactionRate={reactionRate} voiceTotalSeconds={voiceTotalSeconds} locale={locale} labels={labels} chartPoints={chartPoints} memberPoints={memberPoints} activities={activities} channelInsights={channelInsights} insight={insight} insightCards={insightCards} />}
           {activeView === "overview" && <>
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="mb-3 flex items-end justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-bold tracking-[0.16em] text-primary">KEY METRICS</p>
+              <h2 className="mt-1 text-lg font-extrabold">{en ? "Key metrics" : "重要指標"}</h2>
+            </div>
+            <p className="text-xs text-muted-foreground">{en ? "Current status and selected period" : `現在値・${periodLabel}`}</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard
               label={en ? "Total members" : "総メンバー数"}
               value={memberCount.toLocaleString()}
-              delta={en ? "Live" : "ライブ"}
+              delta={`${memberChange > 0 ? "+" : memberChange < 0 ? "−" : "±"}${Math.abs(memberChange).toLocaleString()}`}
+              detail={comparisonCaption}
+              tone={memberChange > 0 ? "success" : memberChange < 0 ? "danger" : "neutral"}
+              periodText={en ? "Current" : "現在"}
+              loading={dashboardPending}
+              requirement={memberCount === 0 ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : undefined}
               icon={<Users />}
               onClick={() => setOverviewMetric("members")}
               selected={overviewMetric === "members"}
@@ -1421,59 +1494,104 @@ export default function DashboardPage() {
             <StatCard
               label={en ? "Active members" : "アクティブメンバー"}
               value={activeMemberCount.toLocaleString()}
-              delta={en ? "Unique speakers today" : "今日のユニーク発言者"}
+              delta={`${activeMemberChange > 0 ? "+" : activeMemberChange < 0 ? "−" : "±"}${Math.abs(activeMemberChange).toLocaleString()}`}
+              detail={en ? "Compared with yesterday" : "前日との比較"}
+              tone={activeMemberChange > 0 ? "success" : activeMemberChange < 0 ? "danger" : "neutral"}
+              periodText={en ? "Today" : "今日"}
+              loading={dashboardPending}
+              requirement={messageCount === 0 ? (en ? "1 message needed to start" : "あと1件のメッセージで集計開始") : undefined}
               icon={<Activity />}
               onClick={() => setOverviewMetric("active")}
               selected={overviewMetric === "active"}
             />
             <StatCard
+              label={en ? "Active messages" : "アクティブメッセージ"}
+              value={messageCount.toLocaleString()}
+              delta={en ? "Live" : "ライブ"}
+              detail={en ? "Since 00:00 today" : "本日0:00からの送信数"}
+              tone="info"
+              periodText={en ? "Today" : "今日"}
+              loading={dashboardPending}
+              requirement={messageCount === 0 ? (en ? "1 message needed to display" : "あと1件のメッセージで表示") : undefined}
+              icon={<LineChart />}
+            />
+            <StatCard
+              label={en ? "Total messages" : "総送信数"}
+              value={totalMessageCount.toLocaleString()}
+              delta={`${periodMessageCount.toLocaleString()}${en ? " in period" : "件"}`}
+              detail={en ? `Sent during ${periodLabel.toLowerCase()}` : `${periodLabel}に送信`}
+              tone="info"
+              periodText={en ? "Retention window" : "保存期間内"}
+              loading={dashboardPending}
+              requirement={totalMessageCount === 0 ? (en ? "1 message needed to display" : "あと1件のメッセージで表示") : undefined}
+              icon={<MessageSquareText />}
+              onClick={() => setOverviewMetric("messages")}
+              selected={overviewMetric === "messages"}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setMobileDetailsOpen((current) => !current)}
+            className="mt-4 flex w-full items-center justify-between rounded-xl border border-border bg-card/60 px-4 py-3 text-sm font-bold sm:hidden"
+            aria-expanded={mobileDetailsOpen}
+          >
+            {en ? "Detailed analytics" : "詳細分析"}
+            {mobileDetailsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
+
+          <div className={`${mobileDetailsOpen ? "block" : "hidden"} sm:block`}>
+          <div className="mb-3 mt-7 flex items-end justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-bold tracking-[0.16em] text-muted-foreground">DETAIL ANALYTICS</p>
+              <h2 className="mt-1 text-lg font-extrabold">{en ? "Detailed analytics" : "詳細分析"}</h2>
+            </div>
+            <p className="text-xs text-muted-foreground">{periodLabel}</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
               label={en ? "Inactive members" : "非アクティブメンバー"}
               value={Math.max(0, memberCount - activeMemberCount).toLocaleString()}
-              delta={en ? "Today" : "今日"}
-              detail={
-                en
-                  ? "No recorded messages today"
-                  : "今日の発言をまだ記録していないメンバー"
-              }
+              delta={en ? "Today" : "本日の状態"}
+              detail={en ? "No recorded messages today" : "今日の発言を記録していないメンバー"}
+              tone="neutral"
+              periodText={en ? "Today" : "今日"}
+              loading={dashboardPending}
+              requirement={memberCount === 0 ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : undefined}
               icon={<Users />}
             />
             <StatCard
               label={en ? "Average reaction rate" : "平均リアクション率"}
-              value={`${reactionRate.toFixed(1)}%`}
-              delta={en ? "Reactions ÷ messages" : "リアクション ÷ メッセージ"}
+              value={`${periodReactionRate.toFixed(1)}%`}
+              delta={`${reactionChange > 0 ? "+" : reactionChange < 0 ? "−" : "±"}${Math.abs(reactionChange).toFixed(1)}pt`}
+              detail={comparisonCaption}
+              tone={reactionChange > 0 ? "success" : reactionChange < 0 ? "danger" : "neutral"}
+              periodText={periodLabel}
+              loading={dashboardPending}
+              requirement={periodMessageCount < 5 ? (en ? `${5 - periodMessageCount} more message(s) needed` : `あと${5 - periodMessageCount}件のメッセージが必要`) : undefined}
               icon={<Sparkles />}
               onClick={() => setOverviewMetric("reactions")}
               selected={overviewMetric === "reactions"}
             />
             <StatCard
-              label={en ? "Total messages" : "総送信数"}
-              value={totalMessageCount.toLocaleString()}
-              delta={en ? "Stored messages" : "保存済みメッセージ"}
-              icon={<MessageSquareText />}
-              onClick={() => setOverviewMetric("messages")}
-              selected={overviewMetric === "messages"}
-            />
-            <StatCard
-              label={en ? "Active messages" : "アクティブメッセージ"}
-              value={messageCount.toLocaleString()}
-              delta={en ? "Live" : "ライブ"}
-              detail={
-                en
-                  ? "Messages sent today"
-                  : "今日に送信されたメッセージ"
-              }
-              icon={<LineChart />}
-            />
-            <StatCard
               label={en ? "Total voice time" : "合計通話時間"}
               value={formatDuration(voiceTotalSeconds, locale)}
               delta={periodLabel}
+              detail={en ? "Server voice activity" : "サーバー内に1人以上いた時間"}
+              tone="info"
+              periodText={periodLabel}
+              loading={dashboardPending}
+              requirement={maxVoiceSessionSeconds === 0 ? (en ? "1 voice session needed" : "あと1回の通話記録が必要") : undefined}
               icon={<Coffee />}
             />
             <StatCard
               label={en ? "Longest voice session" : "最高連続通話時間"}
               value={formatDuration(maxVoiceSessionSeconds, locale)}
-              delta={en ? "Continuous server activity" : "サーバー内の連続通話"}
+              delta={voiceSessionChange === 0 ? "±0" : `${voiceSessionChange > 0 ? "+" : "-"}${formatDuration(Math.abs(voiceSessionChange), locale)}`}
+              detail={comparisonCaption}
+              tone={voiceSessionChange > 0 ? "success" : voiceSessionChange < 0 ? "danger" : "neutral"}
+              periodText={periodLabel}
+              loading={dashboardPending}
+              requirement={maxVoiceSessionSeconds === 0 ? (en ? "1 voice session needed" : "あと1回の通話記録が必要") : undefined}
               icon={<Activity />}
               onClick={() => setOverviewMetric("voice")}
               selected={overviewMetric === "voice"}
@@ -1496,6 +1614,7 @@ export default function DashboardPage() {
             messagePoints={chartPoints}
             reactionPoints={reactionPoints}
             periodLabel={periodLabel}
+            previousPeriodLabel={previousPeriodLabel}
             locale={locale}
             en={en}
           />
@@ -1541,6 +1660,7 @@ export default function DashboardPage() {
                   )}
                 </div>
               </div>
+              {displayedChartPoints.some((point) => point > 0) ? <>
               <div className="mt-7 flex h-60">
                 <div className="relative h-full w-12 shrink-0 text-right text-[10px] text-muted-foreground">
                   {chart.ticks.map((tick) => (
@@ -1611,12 +1731,9 @@ export default function DashboardPage() {
                 </svg>
               </div>
               <div className="mt-3 flex justify-between text-[11px] text-muted-foreground">
-                {labels.length ? (
-                  labels.map((label) => <span key={label}>{label}</span>)
-                ) : (
-                  <span>Botがデータを記録すると推移が表示されます</span>
-                )}
+                {labels.map((label) => <span key={label}>{label}</span>)}
               </div>
+              </> : <div className="mt-7"><EmptyDataState title={en ? "No trend data yet" : "推移データがまだありません"} detail={chartMetric === "members" ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : (en ? "1 message needed" : "あと1件のメッセージ記録が必要")} /></div>}
             </section>
 
             <section className="rounded-2xl border border-border bg-card/55 p-5 shadow-sm">
@@ -1629,17 +1746,13 @@ export default function DashboardPage() {
                     {en ? "Current community status" : "現在のコミュニティ状態"}
                   </p>
                 </div>
-                <span
-                  className={`rounded-full px-2.5 py-1 text-xs font-bold ${health.status === "良好" || health.status === "Good" ? "bg-emerald-400/10 text-emerald-400" : health.status === "注意" || health.status === "Caution" ? "bg-amber-400/10 text-amber-400" : "bg-muted text-muted-foreground"}`}
-                >
-                  {health.status}
-                </span>
+                <StatusBadge tone={health.status === "良好" || health.status === "Good" ? "success" : health.status === "注意" || health.status === "Caution" ? "warning" : health.status === "要確認" || health.status === "Needs attention" ? "danger" : "neutral"}>{health.status}</StatusBadge>
               </div>
               <div className="mt-6 flex items-center gap-5">
                 <div
                   className="relative flex h-24 w-24 shrink-0 items-center justify-center rounded-full"
                   style={{
-                    background: `conic-gradient(#7877ff 0deg ${health.score * 3.6}deg, rgba(255,255,255,.08) ${health.score * 3.6}deg)`,
+                    background: `conic-gradient(${health.status === "良好" || health.status === "Good" ? "#34d399" : health.status === "注意" || health.status === "Caution" ? "#fbbf24" : health.status === "要確認" || health.status === "Needs attention" ? "#fb7185" : "#71717a"} 0deg ${health.score * 3.6}deg, rgba(255,255,255,.08) ${health.score * 3.6}deg)`,
                   }}
                 >
                   <div className="flex h-[76px] w-[76px] flex-col items-center justify-center rounded-full bg-card">
@@ -1670,6 +1783,12 @@ export default function DashboardPage() {
                   />
                 </div>
               </div>
+              {coverage.insightRemainingDays > 0 && (
+                <p className="mt-4 flex items-center gap-1.5 rounded-lg bg-amber-400/10 px-3 py-2 text-[11px] font-bold text-amber-400">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  {en ? `${coverage.insightRemainingDays} more recorded day(s) needed for full comparison` : `十分な比較まであと${coverage.insightRemainingDays}日分の記録が必要`}
+                </p>
+              )}
             </section>
           </div>
 
@@ -1704,14 +1823,14 @@ export default function DashboardPage() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex gap-2 text-sm">
-                          <span className="font-semibold">
+                          <span className="truncate font-semibold" title={activity.actorName}>
                             {activity.actorName}
                           </span>
                           <span className="text-xs text-muted-foreground">
                             {formatActivityTime(activity.occurredAt, timeZone)}
                           </span>
                         </div>
-                        <p className="truncate text-xs text-muted-foreground">
+                        <p className="truncate text-xs text-muted-foreground" title={activity.channelName ? `#${activity.channelName}` : undefined}>
                           {activity.type === "message"
                             ? en
                               ? `${activity.channelName ? `#${activity.channelName}` : "channel"} sent a message`
@@ -1729,11 +1848,7 @@ export default function DashboardPage() {
                     </div>
                   ))
                 ) : (
-                  <p className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground">
-                    {en
-                      ? "Events after the bot starts will appear here."
-                      : "Botが起動後に発生したイベントがここに表示されます。"}
-                  </p>
+                  <EmptyDataState title={en ? "No recent activity yet" : "最近のアクティビティはまだありません"} detail={en ? "1 event needed to display" : "あと1件のイベント記録で表示"} />
                 )}
               </div>
             </section>
@@ -1747,17 +1862,20 @@ export default function DashboardPage() {
               <h2 className="mt-1 font-bold">
                 {en && insight.title === "データを収集中です"
                   ? "Collecting data"
-                  : insight.title}
+                  : clarifyComparisonText(insight.title, previousPeriodLabel, en)}
               </h2>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
                 {en &&
                 insight.body ===
                   "Botがデータを記録すると、実績に基づくインサイトを表示します。"
                   ? "Insights will appear when the bot has recorded data."
-                  : insight.body}
+                  : clarifyComparisonText(insight.body, previousPeriodLabel, en)}
               </p>
+              {coverage.insightRemainingDays > 0 && (
+                <p className="mt-3 flex items-center gap-1.5 text-xs font-bold text-amber-400"><AlertCircle className="h-3.5 w-3.5" />{en ? `${coverage.insightRemainingDays} more day(s) of records needed` : `比較インサイトまであと${coverage.insightRemainingDays}日分`}</p>
+              )}
               <div className="mt-5 space-y-2.5">
-                {insightCards.map((card) => (
+                {insightCards.length ? insightCards.map((card) => (
                   <div
                     key={card.kind}
                     className="rounded-xl border border-border/70 bg-background/45 px-3.5 py-3"
@@ -1779,18 +1897,18 @@ export default function DashboardPage() {
                               ? "ENGAGEMENT"
                               : "反応"}
                     </p>
-                    <p className="mt-1 text-sm font-semibold">{card.title}</p>
+                    <p className="mt-1 text-sm font-semibold">{clarifyComparisonText(card.title, previousPeriodLabel, en)}</p>
                     <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                      {card.body}
+                      {clarifyComparisonText(card.body, previousPeriodLabel, en)}
                     </p>
                   </div>
-                ))}
+                )) : <EmptyDataState title={en ? "No insight data yet" : "インサイトデータがまだありません"} detail={en ? `${coverage.insightRemainingDays} more day(s) needed` : `あと${coverage.insightRemainingDays}日分の記録が必要`} />}
               </div>
             </section>
           </div>
 
           <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,0.85fr)]">
-            <ChannelInsightsPanel insights={channelInsights} en={en} periodLabel={periodLabel} />
+            <ChannelInsightsPanel insights={channelInsights} en={en} periodLabel={periodLabel} previousPeriodLabel={previousPeriodLabel} />
             <GrowthGoalsPanel
               goals={goals}
               targets={goalTargets}
@@ -1798,7 +1916,9 @@ export default function DashboardPage() {
               onSave={() => void saveGoals()}
               saving={savingGoals}
               en={en}
+              timeZone={timeZone}
             />
+          </div>
           </div>
           </>}
         </section>
@@ -1816,14 +1936,14 @@ function DashboardDetailView({ view, en, periodLabel, memberCount, activeMemberC
   return <section className="rounded-2xl border border-border bg-card/55 p-5 sm:p-7"><p className="text-xs font-bold tracking-[.15em] text-primary">{view.toUpperCase()}</p><h2 className="mt-1 text-2xl font-extrabold">{title}</h2><p className="mt-2 text-sm text-muted-foreground">{periodLabel}の実データです。</p>
     {view === "analytics" && <><div className="mt-6 grid gap-3 sm:grid-cols-3"><DetailMetric label={en ? "Messages" : "メッセージ"} value={`${chartPoints.reduce((a,b)=>a+b,0).toLocaleString()}件`} /><DetailMetric label={en ? "Reaction rate" : "反応率"} value={`${reactionRate.toFixed(1)}%`} /><DetailMetric label={en ? "Voice time" : "通話時間"} value={formatDuration(voiceTotalSeconds, locale)} /></div><MiniTrend labels={labels} points={points} /></>}
     {view === "members" && <><div className="mt-6 grid gap-3 sm:grid-cols-3"><DetailMetric label={en ? "Total" : "総メンバー"} value={`${memberCount.toLocaleString()}人`} /><DetailMetric label={en ? "Active today" : "今日のアクティブ"} value={`${activeMemberCount.toLocaleString()}人`} /><DetailMetric label={en ? "Inactive today" : "今日の非アクティブ"} value={`${Math.max(0,memberCount-activeMemberCount).toLocaleString()}人`} /></div><MiniTrend labels={labels} points={memberPoints} /></>}
-    {view === "messages" && <><div className="mt-6 grid gap-3 sm:grid-cols-3"><DetailMetric label={en ? "Today" : "今日の送信数"} value={`${messageCount.toLocaleString()}件`} /><DetailMetric label={en ? "Stored" : "保存済み総数"} value={`${totalMessageCount.toLocaleString()}件`} /><DetailMetric label={en ? "Channels" : "分析チャンネル"} value={`${channelInsights.length}件`} /></div><div className="mt-6 space-y-2">{channelInsights.slice(0,8).map(c=><div key={c.channelName} className="flex justify-between rounded-lg bg-secondary/50 px-4 py-3 text-sm"><span>#{c.channelName}</span><span className="font-bold">{c.messageCount.toLocaleString()}件</span></div>)}</div></>}
-    {view === "insights" && <><div className="mt-6 rounded-xl border border-primary/25 bg-primary/10 p-5"><h3 className="font-bold">{insight.title}</h3><p className="mt-2 text-sm text-muted-foreground">{insight.body}</p></div><div className="mt-4 grid gap-3 sm:grid-cols-3">{insightCards.map(c=><div key={c.kind} className="rounded-xl border border-border p-4"><p className="text-xs font-bold text-primary">{c.title}</p><p className="mt-2 text-sm text-muted-foreground">{c.body}</p></div>)}</div></>}
+    {view === "messages" && <><div className="mt-6 grid gap-3 sm:grid-cols-3"><DetailMetric label={en ? "Today" : "今日の送信数"} value={`${messageCount.toLocaleString()}件`} /><DetailMetric label={en ? "Stored" : "保存済み総数"} value={`${totalMessageCount.toLocaleString()}件`} /><DetailMetric label={en ? "Channels" : "分析チャンネル"} value={`${channelInsights.length}件`} /></div><div className="mt-6 space-y-2">{channelInsights.length ? channelInsights.slice(0,8).map(c=><div key={c.channelName} className="flex justify-between gap-3 rounded-lg bg-secondary/50 px-4 py-3 text-sm"><span className="truncate" title={`#${c.channelName}`}>#{c.channelName}</span><span className="shrink-0 font-bold">{c.messageCount.toLocaleString()}件</span></div>) : <EmptyDataState title={en ? "No channel data yet" : "チャンネルデータがまだありません"} detail={en ? "1 stored message needed" : "あと1件のメッセージ記録が必要"} />}</div></>}
+    {view === "insights" && <><div className="mt-6 rounded-xl border border-primary/25 bg-primary/10 p-5"><h3 className="font-bold">{insight.title}</h3><p className="mt-2 text-sm text-muted-foreground">{insight.body}</p></div><div className="mt-4 grid gap-3 sm:grid-cols-3">{insightCards.length ? insightCards.map(c=><div key={c.kind} className="rounded-xl border border-border p-4"><p className="text-xs font-bold text-primary">{c.title}</p><p className="mt-2 text-sm text-muted-foreground">{c.body}</p></div>) : <div className="sm:col-span-3"><EmptyDataState title={en ? "No insight data yet" : "インサイトデータがまだありません"} /></div>}</div></>}
   </section>;
 }
 function DetailMetric({ label, value }: { label: string; value: string }) { return <div className="rounded-xl border border-border bg-background/40 p-4"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-2 text-xl font-extrabold">{value}</p></div> }
 function MiniTrend({ labels, points }: { labels: string[]; points: number[] }) { const max=Math.max(...points,1); return <div className="mt-6"><div className="flex h-32 items-end gap-1.5">{points.map((p,i)=><div key={`${labels[i]}-${i}`} title={`${labels[i]}: ${p}`} className="min-w-1 flex-1 rounded-t bg-primary/70" style={{height:`${Math.max(3,(p/max)*100)}%`}} />)}</div><div className="mt-2 flex justify-between text-[10px] text-muted-foreground"><span>{labels[0] ?? "—"}</span><span>{labels.at(-1) ?? "—"}</span></div></div> }
 
-function ChannelInsightsPanel({ insights, en, periodLabel }: { insights: ChannelInsight[]; en: boolean; periodLabel: string }) {
+function ChannelInsightsPanel({ insights, en, periodLabel, previousPeriodLabel }: { insights: ChannelInsight[]; en: boolean; periodLabel: string; previousPeriodLabel: string }) {
   const mostActive = insights.at(0);
   const growing = [...insights]
     .filter((item) => item.messageCount > item.previousMessageCount)
@@ -1845,33 +1965,35 @@ function ChannelInsightsPanel({ insights, en, periodLabel }: { insights: Channel
         </div>
         <Hash className="h-5 w-5 text-primary" />
       </div>
-      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+      {insights.length ? <div className="mt-5 grid gap-3 sm:grid-cols-3">
         {rows.map((row) => (
           <div key={row.label} className="rounded-xl border border-border/70 bg-background/40 p-3.5">
             <div className={`flex items-center gap-2 text-[10px] font-bold tracking-wider ${row.accent}`}>{row.icon}{row.label}</div>
             {row.item ? <>
-              <p className="mt-3 truncate text-sm font-bold">#{row.item.channelName}</p>
+              <p className="mt-3 truncate text-sm font-bold" title={`#${row.item.channelName}`}>#{row.item.channelName}</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {row.label === (en ? "GROWING" : "伸びている")
-                  ? `${row.item.messageCount - row.item.previousMessageCount >= 0 ? "+" : ""}${(row.item.messageCount - row.item.previousMessageCount).toLocaleString()} ${en ? "vs prior period" : "件・前期間比"}`
+                  ? `${row.item.messageCount - row.item.previousMessageCount >= 0 ? "+" : ""}${(row.item.messageCount - row.item.previousMessageCount).toLocaleString()} ${en ? `vs ${previousPeriodLabel.toLowerCase()}` : `件・${previousPeriodLabel}との差`}`
                   : `${row.item.messageCount.toLocaleString()} ${en ? "messages" : "件"}`}
               </p>
             </> : <p className="mt-3 text-xs text-muted-foreground">{en ? "Waiting for data" : "データを収集中です"}</p>}
           </div>
         ))}
-      </div>
+      </div> : <div className="mt-5"><EmptyDataState title={en ? "No channel data yet" : "チャンネルデータがまだありません"} detail={en ? "1 stored message needed" : "あと1件のメッセージ記録が必要"} /></div>}
     </section>
   );
 }
 
-function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en }: {
+function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en, timeZone }: {
   goals: GrowthGoal[];
   targets: Record<GoalType, string>;
   onTargetChange: (type: GoalType, value: string) => void;
   onSave: () => void;
   saving: boolean;
   en: boolean;
+  timeZone: string;
 }) {
+  const remainingDays = getDaysRemainingInMonth(timeZone);
   const definitions: Array<{ type: GoalType; label: string; unit: string }> = [
     { type: "member_growth", label: en ? "Member growth" : "メンバー増加", unit: en ? "members" : "人" },
     { type: "messages", label: en ? "Messages" : "総メッセージ", unit: en ? "messages" : "件" },
@@ -1879,12 +2001,15 @@ function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en }
   ];
   return (
     <section className="rounded-2xl border border-primary/25 bg-gradient-to-br from-primary/[0.12] to-card/65 p-5 sm:p-6">
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="font-bold">{en ? "Monthly growth goals" : "今月の成長目標"}</h2>
           <p className="mt-1 text-xs text-muted-foreground">{en ? "Goals are private to your dashboard account." : "目標はあなたのダッシュボード設定として保存されます。"}</p>
         </div>
-        <Target className="h-5 w-5 text-primary" />
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <Target className="h-5 w-5 text-primary" />
+          <span className="rounded-full border border-border bg-background/35 px-2 py-1 text-[10px] font-bold text-muted-foreground">{en ? `${remainingDays} days left` : `月末まであと${remainingDays}日`}</span>
+        </div>
       </div>
       <div className="mt-4 space-y-3">
         {definitions.map((definition) => {
@@ -1893,6 +2018,8 @@ function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en }
           const current = goal?.current ?? 0;
           const progress = target ? Math.min(100, Math.round((current / target) * 100)) : 0;
           const displayCurrent = definition.type === "voice_seconds" ? Math.floor(current / 3600) : current;
+          const displayTarget = definition.type === "voice_seconds" ? Math.floor(target / 3600) : target;
+          const displayRemaining = Math.max(0, displayTarget - displayCurrent);
           return <div key={definition.type} className="rounded-xl border border-border/70 bg-background/40 px-3.5 py-3">
             <div className="flex items-center justify-between gap-3">
               <label className="text-xs font-bold">{definition.label}</label>
@@ -1903,7 +2030,10 @@ function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en }
             </div>
             {target > 0 && <>
               <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress}%` }} /></div>
-              <p className="mt-1.5 text-[11px] text-muted-foreground">{displayCurrent.toLocaleString()} / {(definition.type === "voice_seconds" ? Math.floor(target / 3600) : target).toLocaleString()} {definition.unit} · {progress}%</p>
+              <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 text-[11px]">
+                <span className="text-muted-foreground">{displayCurrent.toLocaleString()} / {displayTarget.toLocaleString()} {definition.unit} · <strong className="text-foreground">{progress}%</strong></span>
+                <span className={displayRemaining === 0 ? "font-bold text-emerald-400" : "font-bold text-primary"}>{displayRemaining === 0 ? (en ? "Goal reached" : "目標達成") : (en ? `${displayRemaining.toLocaleString()} remaining` : `残り${displayRemaining.toLocaleString()}${definition.unit}`)}</span>
+              </div>
             </>}
           </div>;
         })}
@@ -1913,6 +2043,15 @@ function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en }
       </button>
     </section>
   );
+}
+
+function getDaysRemainingInMonth(timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "numeric", day: "numeric" }).formatToParts(new Date());
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
+  const day = Number(parts.find((part) => part.type === "day")?.value);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return Math.max(0, daysInMonth - day);
 }
 
 function UserIdentity({ sessionImage, userName, userInitials, en }: { sessionImage?: string | null; userName: string; userInitials: string; en: boolean }) {
@@ -2007,6 +2146,10 @@ function StatCard({
   onClick,
   selected = false,
   detail,
+  periodText,
+  tone = "neutral",
+  loading = false,
+  requirement,
 }: {
   label: string;
   value: string;
@@ -2015,27 +2158,55 @@ function StatCard({
   onClick?: () => void;
   selected?: boolean;
   detail?: string;
+  periodText: string;
+  tone?: "success" | "warning" | "danger" | "info" | "neutral";
+  loading?: boolean;
+  requirement?: string;
 }) {
-  const { locale } = useLocale();
+  const toneClass = tone === "success"
+    ? "text-emerald-400"
+    : tone === "warning"
+      ? "text-amber-400"
+      : tone === "danger"
+        ? "text-rose-400"
+        : tone === "info"
+          ? "text-primary"
+          : "text-muted-foreground";
   const content = (
     <>
       <div className="flex items-start justify-between">
-        <p className="text-sm font-medium text-muted-foreground">{label}</p>
+        <div className="min-w-0 pr-2">
+          <p className="truncate text-sm font-medium text-muted-foreground" title={label}>{label}</p>
+          <span className="mt-1.5 inline-flex rounded-full border border-border bg-background/35 px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{periodText}</span>
+        </div>
         <span className="rounded-lg bg-primary/[0.12] p-2 text-primary">
           {icon}
         </span>
       </div>
-      <p className="mt-5 text-3xl font-extrabold tracking-tight">{value}</p>
-      <p className="mt-2 flex items-center gap-1 text-xs font-semibold text-emerald-400">
-        <ArrowUpRight className="h-3.5 w-3.5" />
-        {delta}
-        <span className="ml-1 font-normal text-muted-foreground">
-          {detail ?? (locale === "en" ? "vs. previous period" : "前期間比")}
-        </span>
-      </p>
+      {loading ? (
+        <div className="mt-5 space-y-3" aria-label="データを取得中">
+          <div className="h-9 w-28 animate-pulse rounded-lg bg-secondary" />
+          <div className="h-3 w-4/5 animate-pulse rounded bg-secondary/70" />
+        </div>
+      ) : (
+        <>
+          <p className="mt-4 text-3xl font-extrabold tracking-tight">{value}</p>
+          <p className={`mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs font-semibold ${toneClass}`}>
+            <span className="h-1.5 w-1.5 rounded-full bg-current" />
+            {delta}
+            {detail && <span className="font-normal text-muted-foreground">{detail}</span>}
+          </p>
+          {requirement && (
+            <p className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-amber-400">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              {requirement}
+            </p>
+          )}
+        </>
+      )}
     </>
   );
-  const className = `rounded-2xl border bg-card/55 p-5 text-left shadow-sm transition-colors ${selected ? "border-primary/70 bg-primary/[0.08]" : "border-border"} ${onClick ? "cursor-pointer hover:border-primary/40 hover:bg-card" : ""}`;
+  const className = `min-h-[178px] w-full rounded-2xl border bg-card/55 p-4 text-left shadow-sm transition-colors sm:p-5 ${selected ? "border-primary/70 bg-primary/[0.08]" : "border-border"} ${onClick ? "cursor-pointer hover:border-primary/40 hover:bg-card" : ""}`;
   return onClick ? (
     <button type="button" onClick={onClick} className={className}>
       {content}
@@ -2043,6 +2214,40 @@ function StatCard({
   ) : (
     <section className={className}>{content}</section>
   );
+}
+
+function StatusBadge({ tone, children }: { tone: "success" | "warning" | "danger" | "info" | "neutral"; children: React.ReactNode }) {
+  const classes = tone === "success"
+    ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-400"
+    : tone === "warning"
+      ? "border-amber-400/25 bg-amber-400/10 text-amber-400"
+      : tone === "danger"
+        ? "border-rose-400/25 bg-rose-400/10 text-rose-400"
+        : tone === "info"
+          ? "border-primary/25 bg-primary/10 text-primary"
+          : "border-border bg-secondary text-muted-foreground";
+  return <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${classes}`}><span className="h-1.5 w-1.5 rounded-full bg-current" />{children}</span>;
+}
+
+function DashboardLoadBadge({ state, lastUpdatedAt, periodLabel, en }: { state: DashboardLoadState; lastUpdatedAt: number | null; periodLabel: string; en: boolean }) {
+  if (state === "loading") return <StatusBadge tone="info"><LoaderCircle className="h-3 w-3 animate-spin" />{en ? `Loading ${periodLabel.toLowerCase()}` : `${periodLabel}を取得中`}</StatusBadge>;
+  if (state === "refreshing") return <StatusBadge tone="info"><LoaderCircle className="h-3 w-3 animate-spin" />{en ? "Refreshing automatically" : "自動更新中"}</StatusBadge>;
+  if (state === "error") return <StatusBadge tone="danger"><AlertCircle className="h-3 w-3" />{en ? "Refresh failed" : "更新に失敗"}</StatusBadge>;
+  if (state === "success") return <StatusBadge tone="success">{en ? `Updated ${lastUpdatedAt ? formatElapsed(lastUpdatedAt, true) : "now"}` : `更新完了・${lastUpdatedAt ? formatElapsed(lastUpdatedAt) : "たった今"}`}</StatusBadge>;
+  return <StatusBadge tone="neutral">{en ? "Select a server" : "サーバーを選択してください"}</StatusBadge>;
+}
+
+function EmptyDataState({ title, detail }: { title: string; detail?: string }) {
+  return <div className="rounded-xl border border-dashed border-border bg-background/25 px-4 py-6 text-center">
+    <p className="text-xs font-bold text-muted-foreground">{title}</p>
+    {detail && <p className="mt-1.5 text-[11px] text-amber-400">{detail}</p>}
+  </div>;
+}
+
+function clarifyComparisonText(text: string, previousPeriodLabel: string, en: boolean) {
+  return en
+    ? text.replace(/vs\. previous period/gi, `vs. ${previousPeriodLabel.toLowerCase()}`)
+    : text.replace(/前期間比/g, `${previousPeriodLabel}との差`);
 }
 
 function OverviewComparison({
@@ -2062,6 +2267,7 @@ function OverviewComparison({
   messagePoints,
   reactionPoints,
   periodLabel,
+  previousPeriodLabel,
   locale,
   en,
 }: {
@@ -2081,6 +2287,7 @@ function OverviewComparison({
   messagePoints: number[];
   reactionPoints: number[];
   periodLabel: string;
+  previousPeriodLabel: string;
   locale: "ja" | "en";
   en: boolean;
 }) {
@@ -2089,7 +2296,7 @@ function OverviewComparison({
       ? {
           title: en ? "Member comparison" : "メンバー数の比較",
           currentLabel: en ? "Members today" : "今日の総メンバー",
-          previousLabel: en ? "Before this period" : "前期間の総メンバー",
+          previousLabel: en ? `${previousPeriodLabel} ending value` : `${previousPeriodLabel}終了時の総メンバー`,
           current: memberCount,
           previous: previousMemberCount,
           points: memberPoints,
@@ -2100,8 +2307,8 @@ function OverviewComparison({
             title: en ? "Active member comparison" : "アクティブメンバーの比較",
             currentLabel: en ? "Active today" : "今日のアクティブメンバー",
             previousLabel: en
-              ? "Previous period"
-              : "前期間のアクティブメンバー",
+              ? "Active members yesterday"
+              : "前日のアクティブメンバー",
             current: activeMemberCount,
             previous: previousActiveMemberCount,
             points: activeMemberPoints,
@@ -2111,7 +2318,7 @@ function OverviewComparison({
           ? {
               title: en ? "Message comparison" : "送信メッセージの比較",
               currentLabel: en ? "Selected period" : "選択期間の送信メッセージ",
-              previousLabel: en ? "Previous period" : "前期間の送信メッセージ",
+              previousLabel: en ? previousPeriodLabel : `${previousPeriodLabel}の送信メッセージ`,
               current: periodMessageCount,
               previous: previousMessageCount,
               points: messagePoints,
@@ -2126,8 +2333,8 @@ function OverviewComparison({
                   ? "Selected period"
                   : "選択期間の平均リアクション率",
                 previousLabel: en
-                  ? "Previous period"
-                  : "前期間の平均リアクション率",
+                  ? previousPeriodLabel
+                  : `${previousPeriodLabel}の平均リアクション率`,
                 current: periodReactionRate,
                 previous: previousReactionRate,
                 points: reactionPoints,
@@ -2138,7 +2345,7 @@ function OverviewComparison({
                   ? "Longest voice session comparison"
                   : "最高連続通話時間の比較",
                 currentLabel: en ? "Selected period" : "選択期間の最高連続通話",
-                previousLabel: en ? "Previous period" : "前期間の最高連続通話",
+                previousLabel: en ? previousPeriodLabel : `${previousPeriodLabel}の最高連続通話`,
                 current: maxVoiceSessionSeconds,
                 previous: previousMaxVoiceSessionSeconds,
                 points: [],
@@ -2162,19 +2369,19 @@ function OverviewComparison({
           <p className="text-sm font-bold">{title}</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {en
-              ? `Current value compared with the previous ${periodLabel.toLowerCase()}.`
-              : `選択中の${periodLabel}と前期間を実データで比較します。`}
+              ? metric === "active" ? "Today compared with yesterday." : `${periodLabel} compared with ${previousPeriodLabel.toLowerCase()}.`
+              : metric === "active" ? "今日と前日の実データを比較します。" : `${periodLabel}と${previousPeriodLabel}を実データで比較します。`}
           </p>
         </div>
         <span
-          className={`rounded-full px-2.5 py-1 text-xs font-bold ${change >= 0 ? "bg-emerald-400/10 text-emerald-400" : "bg-rose-400/10 text-rose-400"}`}
+          className={`rounded-full px-2.5 py-1 text-xs font-bold ${change > 0 ? "bg-emerald-400/10 text-emerald-400" : change < 0 ? "bg-rose-400/10 text-rose-400" : "bg-secondary text-muted-foreground"}`}
         >
-          {change >= 0 ? "+" : ""}
+          {change > 0 ? "+" : change < 0 ? "−" : "±"}
           {metric === "voice"
             ? formatDuration(Math.abs(change), locale)
             : metric === "reactions"
-              ? `${change.toFixed(1)}%`
-              : change.toLocaleString()}
+              ? `${Math.abs(change).toFixed(1)}pt`
+              : Math.abs(change).toLocaleString()}
         </span>
       </div>
       <div className="mt-5 grid gap-5 md:grid-cols-[0.9fr_1.1fr]">

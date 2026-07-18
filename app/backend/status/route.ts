@@ -155,8 +155,7 @@ export async function GET(request: Request) {
           SELECT COUNT(*)::int
           FROM "daily_active_member"
           WHERE "guildId" = $1
-            AND date >= CURRENT_DATE - ($2::int * 2 - 1)
-          AND date <= CURRENT_DATE - $2::int
+            AND date = CURRENT_DATE - 1
         ), 0) AS "previousActiveMemberCount",
         COALESCE((
           SELECT SUM("messageCount")::int
@@ -289,6 +288,12 @@ export async function GET(request: Request) {
       messageCount: Number(row.messageCount ?? 0),
       previousMessageCount: Number(row.previousMessageCount ?? 0),
     }))
+    const coverage = {
+      statsDays: rows.length,
+      messageDays: messageTrend.filter((row) => Number(row.value) > 0).length,
+      insightRequiredDays: 10,
+      insightRemainingDays: Math.max(0, 10 - rows.length),
+    }
 
     // 💡 まだデータがない場合の初期値
     if (rows.length === 0) {
@@ -321,6 +326,7 @@ export async function GET(request: Request) {
           { kind: 'members', title: english ? 'Member flow' : 'メンバーの増減', body: english ? 'Waiting for activity records.' : '参加・退出の記録を待っています。' },
         ] satisfies InsightCard[],
         channelInsights,
+        coverage,
         activities: activityResult.rows,
         botStatus,
       });
@@ -435,6 +441,7 @@ export async function GET(request: Request) {
       insight,
       insightCards,
       channelInsights,
+      coverage,
       activities: activityResult.rows,
       botStatus,
     });

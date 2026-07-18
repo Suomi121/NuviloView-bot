@@ -254,6 +254,35 @@
 .landing-grid { animation: landing-grid-shift 20s linear infinite; }
 .landing-status-dot { animation: landing-status-pulse 2.4s ease-in-out infinite; }
 
+@keyframes showcase-chart-line {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes landing-demo-progress {
+  from { width: 0; }
+  to { width: 100%; }
+}
+
+@keyframes landing-demo-card {
+  from { opacity: 0; transform: translateY(14px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.showcase-chart-line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: showcase-chart-line 2.4s cubic-bezier(0.22, 1, 0.36, 1) 0.4s forwards;
+}
+
+.landing-demo-progress {
+  animation: landing-demo-progress 7.5s linear forwards;
+}
+
+.landing-demo-card {
+  animation: landing-demo-card 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 .landing-login-wrap {
   filter: drop-shadow(0 12px 22px oklch(0.58 0.215 268 / 0.2));
 }
@@ -302,6 +331,13 @@
     filter: none;
     opacity: 1;
     transform: none;
+  }
+
+  .showcase-chart-line,
+  .landing-demo-progress,
+  .landing-demo-card {
+    animation: none;
+    stroke-dashoffset: 0;
   }
 
   .landing-login-wrap > button,

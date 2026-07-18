@@ -3,18 +3,25 @@ import { HeroSection } from '@/components/hero-section'
 import { FeaturesSection } from '@/components/features-section'
 import { HowItWorksSection } from '@/components/how-it-works-section'
 import { SiteFooter } from '@/components/site-footer'
+import { DashboardShowcaseSection } from '@/components/dashboard-showcase-section'
 import { auth } from '@/lib/auth'
 import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 
-export default async function Page() {
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ landing?: string }>
+}) {
+  const { landing } = await searchParams
   const session = await auth.api.getSession({ headers: await headers() })
-  if (session?.user) redirect('/dashboard')
+  if (session?.user && landing !== '1') redirect('/dashboard')
 
   return (
     <main className="relative min-h-screen bg-background text-foreground">
       <SiteHeader />
       <HeroSection />
+      <DashboardShowcaseSection />
       <FeaturesSection />
       <HowItWorksSection />
       <SiteFooter />

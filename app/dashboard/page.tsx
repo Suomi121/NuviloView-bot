@@ -715,7 +715,7 @@ export default function DashboardPage() {
       </div>
 
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[248px] border-r border-border/70 bg-card/45 px-4 py-5 backdrop-blur-xl lg:flex lg:flex-col">
-        <a href="/" className="mb-9 flex items-center gap-2.5 px-2">
+        <a href="/?landing=1" className="mb-9 flex items-center gap-2.5 px-2" aria-label="NuviloView:OEM ランディングページへ">
           <BrandMark theme={guildTheme} />
           <BrandTitle className="text-base" />
         </a>
@@ -791,7 +791,7 @@ export default function DashboardPage() {
 
       <div className="relative lg:pl-[248px]">
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-border/70 bg-background/75 px-5 backdrop-blur-xl sm:px-8">
-          <a href="/" className="flex items-center gap-2 lg:hidden">
+          <a href="/?landing=1" className="flex items-center gap-2 lg:hidden" aria-label="NuviloView:OEM ランディングページへ">
             <BrandMark theme={guildTheme} />
             <BrandTitle />
           </a>

@@ -45,7 +45,12 @@ export function HeroSection() {
         </p>
 
         <div className="landing-reveal landing-reveal-delay-3 mt-10 flex flex-col items-center">
-          <div className="landing-login-wrap"><LoginButton /></div>
+          <div className="flex flex-col items-center gap-3 sm:flex-row">
+            <div className="landing-login-wrap"><LoginButton /></div>
+            <a href="#dashboard-demo" className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-card/70 px-5 text-sm font-bold text-foreground transition-colors hover:border-primary/40 hover:bg-primary/10">
+              デモを見る <ArrowRight className="h-4 w-4" />
+            </a>
+          </div>
           <p className="mt-4 flex items-center gap-1.5 text-xs text-muted-foreground/70">
             <ShieldCheck className="h-3.5 w-3.5" />
             Discord OAuth2を利用して安全に連携します（Discord公式サービスではありません）

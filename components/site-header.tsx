@@ -10,7 +10,7 @@ export function SiteHeader() {
   return (
     <header className="fixed inset-x-0 top-0 z-50 border-b border-border/60 bg-background/70 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-        <a href="/" className="flex items-center gap-2.5">
+        <a href="/?landing=1" className="flex items-center gap-2.5" aria-label="NuviloView:OEM ランディングページへ">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Coffee className="h-[18px] w-[18px]" strokeWidth={2.25} />
           </span>

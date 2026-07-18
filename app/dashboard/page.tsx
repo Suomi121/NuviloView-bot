@@ -246,11 +246,17 @@ export default function DashboardPage() {
   const memberChange = memberCount - previousMemberCount;
   const activeMemberChange = activeMemberCount - previousActiveMemberCount;
   const inactiveMemberCount = Math.max(0, memberCount - activeMemberCount);
+  const inactiveMemberStartIndex = memberPoints.findIndex((point) => point > 0);
   const inactiveMemberPoints = useMemo(
-    () => memberPoints.map((point, index) => Math.max(0, point - (activeMemberPoints[index] ?? 0))),
-    [activeMemberPoints, memberPoints],
+    () => inactiveMemberStartIndex < 0
+      ? []
+      : memberPoints
+          .slice(inactiveMemberStartIndex)
+          .map((point, index) => Math.max(0, point - (activeMemberPoints[inactiveMemberStartIndex + index] ?? 0))),
+    [activeMemberPoints, inactiveMemberStartIndex, memberPoints],
   );
-  const previousInactiveMemberCount = inactiveMemberPoints.at(-2) ?? 0;
+  const inactiveMemberLabels = inactiveMemberStartIndex < 0 ? [] : labels.slice(inactiveMemberStartIndex);
+  const previousInactiveMemberCount = inactiveMemberPoints.at(-2) ?? inactiveMemberCount;
   const inactiveMemberChange = inactiveMemberCount - previousInactiveMemberCount;
   const previousDayMessageCount = chartPoints.at(-2) ?? 0;
   const activeMessageChange = messageCount - previousDayMessageCount;
@@ -674,6 +680,7 @@ export default function DashboardPage() {
       );
     return chartPoints;
   }, [chartMetric, chartPoints, inactiveMemberPoints, memberPoints]);
+  const displayedChartLabels = chartMetric === "inactiveMembers" ? inactiveMemberLabels : labels;
   const chartCopy =
     chartMetric === "messages"
       ? {
@@ -1681,6 +1688,7 @@ export default function DashboardPage() {
             memberPoints={memberPoints}
             activeMemberPoints={activeMemberPoints}
             inactiveMemberPoints={inactiveMemberPoints}
+            inactiveMemberLabels={inactiveMemberLabels}
             messagePoints={chartPoints}
             reactionPoints={reactionPoints}
             labels={labels}
@@ -1765,7 +1773,7 @@ export default function DashboardPage() {
                     </linearGradient>
                     <clipPath id="message-trend-line-clip">
                       <rect
-                        key={`${guildId}-${chartMetric}-${labels.join("-")}`}
+                        key={`${guildId}-${chartMetric}-${displayedChartLabels.join("-")}`}
                         x="0"
                         y="0"
                         width="100"
@@ -1813,7 +1821,7 @@ export default function DashboardPage() {
                 </svg>
               </div>
               <div className="mt-3 flex justify-between text-[11px] text-muted-foreground">
-                {labels.map((label) => <span key={label}>{label}</span>)}
+                {displayedChartLabels.map((label) => <span key={label}>{label}</span>)}
               </div>
               </> : <div className="mt-7"><EmptyDataState title={en ? "No trend data yet" : "推移データがまだありません"} detail={chartMetric === "members" || chartMetric === "inactiveMembers" ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : (en ? "1 message needed" : "あと1件のメッセージ記録が必要")} /></div>}
             </section>
@@ -2348,6 +2356,7 @@ function OverviewComparison({
   memberPoints,
   activeMemberPoints,
   inactiveMemberPoints,
+  inactiveMemberLabels,
   messagePoints,
   reactionPoints,
   labels,
@@ -2371,6 +2380,7 @@ function OverviewComparison({
   memberPoints: number[];
   activeMemberPoints: number[];
   inactiveMemberPoints: number[];
+  inactiveMemberLabels: string[];
   messagePoints: number[];
   reactionPoints: number[];
   labels: string[];
@@ -2410,7 +2420,7 @@ function OverviewComparison({
               currentLabel: en ? "Inactive today" : "今日の非アクティブメンバー",
               previousLabel: en ? "Inactive yesterday" : "前日の非アクティブメンバー",
               current: Math.max(0, memberCount - activeMemberCount),
-              previous: inactiveMemberPoints.at(-2) ?? 0,
+              previous: inactiveMemberPoints.at(-2) ?? Math.max(0, memberCount - activeMemberCount),
               points: inactiveMemberPoints,
               format: (value: number) => value.toLocaleString(),
             }
@@ -2472,11 +2482,12 @@ function OverviewComparison({
   } = config;
   const max = Math.max(current, previous, ...points, 1);
   const change = current - previous;
+  const trendLabels = metric === "inactive" ? inactiveMemberLabels : labels;
   const selectedPoint =
     selectedPointIndex !== null && points[selectedPointIndex] !== undefined
       ? {
           index: selectedPointIndex,
-          date: labels[selectedPointIndex] ?? "—",
+          date: trendLabels[selectedPointIndex] ?? "—",
           value: points[selectedPointIndex],
         }
       : null;
@@ -2564,8 +2575,8 @@ function OverviewComparison({
                   onClick={() => setSelectedPointIndex(index)}
                   className={`min-w-[5px] flex-1 rounded-t-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${selectedPointIndex === index ? "bg-primary ring-2 ring-primary/35" : "bg-primary/70 hover:bg-primary"}`}
                   style={{ height: `${Math.max(5, (point / max) * 100)}%` }}
-                  title={`${labels[index] ?? ""} · ${formatTrendValue(point)}`}
-                  aria-label={`${labels[index] ?? ""} ${formatTrendValue(point)}`}
+                  title={`${trendLabels[index] ?? ""} · ${formatTrendValue(point)}`}
+                  aria-label={`${trendLabels[index] ?? ""} ${formatTrendValue(point)}`}
                   aria-pressed={selectedPointIndex === index}
                 />
               ))
@@ -2582,12 +2593,12 @@ function OverviewComparison({
               {points.map((point, index) => (
                 <button
                   type="button"
-                  key={`${labels[index] ?? index}-${index}`}
+                  key={`${trendLabels[index] ?? index}-${index}`}
                   onClick={() => setSelectedPointIndex(index)}
                   aria-pressed={selectedPointIndex === index}
                   className={`min-w-[76px] rounded-lg border px-2.5 py-2 text-center transition-colors ${selectedPointIndex === index ? "border-primary/60 bg-primary/[0.12]" : "border-border/70 bg-background/35 hover:border-primary/35"}`}
                 >
-                  <p className="text-[10px] text-muted-foreground">{labels[index] ?? "—"}</p>
+                  <p className="text-[10px] text-muted-foreground">{trendLabels[index] ?? "—"}</p>
                   <p className="mt-0.5 text-sm font-bold">{format(point)}</p>
                 </button>
               ))}

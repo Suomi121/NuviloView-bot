@@ -202,7 +202,7 @@ export default function DashboardPage() {
   );
   const [aiGuideOpen, setAiGuideOpen] = useState(false);
   const [overviewMetric, setOverviewMetric] = useState<
-    "members" | "active" | "messages" | "reactions" | "voice"
+    "members" | "active" | "activeMessages" | "messages" | "reactions" | "voice"
   >("members");
   const [activeView, setActiveView] = useState<"overview" | "analytics" | "members" | "messages" | "insights">("overview");
   const [guildTheme, setGuildTheme] = useState<GuildTheme>(defaultGuildTheme);
@@ -245,6 +245,8 @@ export default function DashboardPage() {
     : `${previousPeriodLabel}との比較`;
   const memberChange = memberCount - previousMemberCount;
   const activeMemberChange = activeMemberCount - previousActiveMemberCount;
+  const previousDayMessageCount = chartPoints.at(-2) ?? 0;
+  const activeMessageChange = messageCount - previousDayMessageCount;
   const reactionChange = periodReactionRate - previousReactionRate;
   const voiceSessionChange = maxVoiceSessionSeconds - previousMaxVoiceSessionSeconds;
   const dashboardPending = loadState === "loading";
@@ -667,7 +669,7 @@ export default function DashboardPage() {
   const chartCopy =
     chartMetric === "messages"
       ? {
-          title: en ? "Message trend" : "メッセージの推移",
+          title: en ? "Active message trend" : "アクティブメッセージの推移",
           description: en
             ? `Daily messages collected by the bot · ${periodLabel}`
             : `Botが収集した日別メッセージ数 · ${period}`,
@@ -1534,7 +1536,7 @@ export default function DashboardPage() {
               label={en ? "Active members" : "アクティブメンバー"}
               value={activeMemberCount.toLocaleString()}
               delta={`${activeMemberChange > 0 ? "+" : activeMemberChange < 0 ? "−" : "±"}${Math.abs(activeMemberChange).toLocaleString()}`}
-              detail={en ? "Compared with yesterday" : "前日との比較"}
+              detail={en ? "vs yesterday · Open daily history" : "前日との比較・押すと日別履歴"}
               tone={activeMemberChange > 0 ? "success" : activeMemberChange < 0 ? "danger" : "neutral"}
               periodText={en ? "Today" : "今日"}
               loading={dashboardPending}
@@ -1546,13 +1548,19 @@ export default function DashboardPage() {
             <StatCard
               label={en ? "Active messages" : "アクティブメッセージ"}
               value={messageCount.toLocaleString()}
-              delta={en ? "Live" : "ライブ"}
-              detail={en ? "Since 00:00 today" : "本日0:00からの送信数"}
-              tone="info"
+              delta={`${activeMessageChange > 0 ? "+" : activeMessageChange < 0 ? "−" : "±"}${Math.abs(activeMessageChange).toLocaleString()}`}
+              detail={en ? "Compared with yesterday" : "前日との比較"}
+              tone={activeMessageChange > 0 ? "success" : activeMessageChange < 0 ? "danger" : "neutral"}
               periodText={en ? "Today" : "今日"}
               loading={dashboardPending}
               requirement={messageCount === 0 ? (en ? "1 message needed to display" : "あと1件のメッセージで表示") : undefined}
               icon={<LineChart />}
+              onClick={() => {
+                setOverviewMetric("activeMessages");
+                setChartMetric("messages");
+                setMobileDetailsOpen(true);
+              }}
+              selected={overviewMetric === "activeMessages"}
             />
             <StatCard
               label={en ? "Total messages" : "総送信数"}
@@ -1642,6 +1650,7 @@ export default function DashboardPage() {
             previousMemberCount={previousMemberCount}
             activeMemberCount={activeMemberCount}
             previousActiveMemberCount={previousActiveMemberCount}
+            messageCount={messageCount}
             periodMessageCount={periodMessageCount}
             previousMessageCount={previousMessageCount}
             periodReactionRate={periodReactionRate}
@@ -1652,6 +1661,7 @@ export default function DashboardPage() {
             activeMemberPoints={activeMemberPoints}
             messagePoints={chartPoints}
             reactionPoints={reactionPoints}
+            labels={labels}
             periodLabel={periodLabel}
             previousPeriodLabel={previousPeriodLabel}
             locale={locale}
@@ -2305,6 +2315,7 @@ function OverviewComparison({
   previousMemberCount,
   activeMemberCount,
   previousActiveMemberCount,
+  messageCount,
   periodMessageCount,
   previousMessageCount,
   periodReactionRate,
@@ -2315,16 +2326,18 @@ function OverviewComparison({
   activeMemberPoints,
   messagePoints,
   reactionPoints,
+  labels,
   periodLabel,
   previousPeriodLabel,
   locale,
   en,
 }: {
-  metric: "members" | "active" | "messages" | "reactions" | "voice";
+  metric: "members" | "active" | "activeMessages" | "messages" | "reactions" | "voice";
   memberCount: number;
   previousMemberCount: number;
   activeMemberCount: number;
   previousActiveMemberCount: number;
+  messageCount: number;
   periodMessageCount: number;
   previousMessageCount: number;
   periodReactionRate: number;
@@ -2335,6 +2348,7 @@ function OverviewComparison({
   activeMemberPoints: number[];
   messagePoints: number[];
   reactionPoints: number[];
+  labels: string[];
   periodLabel: string;
   previousPeriodLabel: string;
   locale: "ja" | "en";
@@ -2363,7 +2377,17 @@ function OverviewComparison({
             points: activeMemberPoints,
             format: (value: number) => value.toLocaleString(),
           }
-        : metric === "messages"
+        : metric === "activeMessages"
+          ? {
+              title: en ? "Active message comparison" : "アクティブメッセージの比較",
+              currentLabel: en ? "Messages today" : "今日のアクティブメッセージ",
+              previousLabel: en ? "Messages yesterday" : "前日のアクティブメッセージ",
+              current: messageCount,
+              previous: messagePoints.at(-2) ?? 0,
+              points: messagePoints,
+              format: (value: number) => value.toLocaleString(),
+            }
+          : metric === "messages"
           ? {
               title: en ? "Message comparison" : "送信メッセージの比較",
               currentLabel: en ? "Selected period" : "選択期間の送信メッセージ",
@@ -2418,8 +2442,8 @@ function OverviewComparison({
           <p className="text-sm font-bold">{title}</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {en
-              ? metric === "active" ? "Today compared with yesterday." : `${periodLabel} compared with ${previousPeriodLabel.toLowerCase()}.`
-              : metric === "active" ? "今日と前日の実データを比較します。" : `${periodLabel}と${previousPeriodLabel}を実データで比較します。`}
+              ? metric === "active" || metric === "activeMessages" ? "Today compared with yesterday." : `${periodLabel} compared with ${previousPeriodLabel.toLowerCase()}.`
+              : metric === "active" || metric === "activeMessages" ? "今日と前日の実データを比較します。" : `${periodLabel}と${previousPeriodLabel}を実データで比較します。`}
           </p>
         </div>
         <span
@@ -2463,7 +2487,7 @@ function OverviewComparison({
                   key={index}
                   className="min-w-0 flex-1 rounded-t-sm bg-primary/70 transition-opacity hover:bg-primary"
                   style={{ height: `${Math.max(5, (point / max) * 100)}%` }}
-                  title={format(point)}
+                  title={`${labels[index] ?? ""} · ${format(point)}`}
                 />
               ))
             ) : (
@@ -2474,6 +2498,16 @@ function OverviewComparison({
               </span>
             )}
           </div>
+          {metric === "activeMessages" && points.length > 0 && (
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-1" aria-label={en ? "Daily active message history" : "アクティブメッセージの日別履歴"}>
+              {points.map((point, index) => (
+                <div key={`${labels[index] ?? index}-${index}`} className="min-w-[76px] rounded-lg border border-border/70 bg-background/35 px-2.5 py-2 text-center">
+                  <p className="text-[10px] text-muted-foreground">{labels[index] ?? "—"}</p>
+                  <p className="mt-0.5 text-sm font-bold">{format(point)}</p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </section>

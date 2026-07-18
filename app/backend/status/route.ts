@@ -111,14 +111,23 @@ export async function GET(request: Request) {
     const messageTrendResult = await pool.query<{ label: string; value: number }>(`
       WITH dates AS (
         SELECT generate_series(CURRENT_DATE - ($2::int - 1), CURRENT_DATE, interval '1 day')::date AS date
+      ), stored_messages AS (
+        SELECT "createdAt"::date AS date, COUNT("id")::int AS value
+        FROM "discord_message"
+        WHERE "guildId" = $1
+          AND "createdAt" >= CURRENT_DATE - ($2::int - 1)
+        GROUP BY "createdAt"::date
       )
-      SELECT to_char(dates.date, 'MM/DD') AS label, COUNT(messages."id")::int AS value
+      SELECT
+        to_char(dates.date, 'MM/DD') AS label,
+        GREATEST(
+          COALESCE(stats."messageCount", 0),
+          COALESCE(stored_messages.value, 0)
+        )::int AS value
       FROM dates
-      LEFT JOIN "discord_message" AS messages
-        ON messages."guildId" = $1
-        AND messages."createdAt" >= dates.date
-        AND messages."createdAt" < dates.date + interval '1 day'
-      GROUP BY dates.date
+      LEFT JOIN "daily_stats" AS stats
+        ON stats."guildId" = $1 AND stats.date = dates.date
+      LEFT JOIN stored_messages ON stored_messages.date = dates.date
       ORDER BY dates.date ASC
     `, [guildId, days])
     const messageTrend = messageTrendResult.rows
@@ -305,7 +314,7 @@ export async function GET(request: Request) {
         activeMemberPoints: messageTrend.map(() => 0),
         reactionPoints: messageTrend.map(() => 0),
         latestMemberCount: 0,  // カード用
-        latestMessageCount: 0, // カード用
+        latestMessageCount: messageTrend.at(-1)?.value ?? 0, // カード用
         totalMessageCount,
         activeMemberCount: activeMemberResult.rows[0]?.count ?? 0,
         previousMemberCount: comparison.previousMemberCount,
@@ -424,7 +433,7 @@ export async function GET(request: Request) {
       activeMemberPoints: rows.map(r => r.activeMemberCount),
       reactionPoints: rows.map(r => r.value > 0 ? Math.round((r.reactionCount / r.value) * 1000) / 10 : 0),
       latestMemberCount: latestData.memberCount, // ✨最新の総人数（カード用）
-      latestMessageCount: latestData.value,      // ✨最新のメッセージ数（カード用）
+      latestMessageCount: messageTrend.at(-1)?.value ?? latestData.value, // 今日の日次推移と同じ集計値
       totalMessageCount,
       activeMemberCount,
       previousMemberCount: comparison.previousMemberCount,

@@ -2,6 +2,9 @@ import {
   ActionRowBuilder,
   ActivityType,
   ApplicationCommandType,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
   Client,
   ContextMenuCommandBuilder,
   EmbedBuilder,
@@ -17,7 +20,8 @@ import {
   TextInputStyle,
 } from "discord.js";
 import { neon } from "@neondatabase/serverless";
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
+import { escapeScopeText, formatScopeMessage, plainComponentText } from "./lib/scopeserver-utils.mjs";
 
 if (!process.env.DATABASE_URL || !process.env.DISCORD_BOT_TOKEN) {
   throw new Error(
@@ -64,10 +68,16 @@ const commandSyncCooldownMs = 60 * 1000;
 const guildCommandSyncCooldownMs = 5 * 60 * 1000;
 const commandSyncAttempts = new Map();
 const botServersAttempts = new Map();
+const scopeServerAttempts = new Map();
 const guildCommandSyncAttempts = new Map();
 const blockedGuildIds = new Set();
 const translationAttempts = new Map();
 const translationRequests = new Map();
+const scopeServerRequests = new Map();
+const scopeServerRequestLifetimeMs = 5 * 60 * 1000;
+const scopeServerCooldownMs = 10 * 1000;
+const scopeChannelPageSize = 25;
+const scopeMessagePageSize = 5;
 const helpCommand = new SlashCommandBuilder()
   .setName("help")
   .setDescription("NuviloChan Botで使えるコマンドを表示します")
@@ -135,6 +145,24 @@ const botServersCommand = new SlashCommandBuilder()
       .setMinValue(1),
   )
   .toJSON();
+const scopeServerCommand = new SlashCommandBuilder()
+  .setName("scopeserver")
+  .setDescription("開発者用: 指定サーバーの最近のメッセージを安全に確認します")
+  .addStringOption((option) =>
+    option
+      .setName("server")
+      .setDescription("対象サーバー名またはGuild ID")
+      .setRequired(true)
+      .setAutocomplete(true),
+  )
+  .addIntegerOption((option) =>
+    option
+      .setName("limit")
+      .setDescription("取得する最近のメッセージ数（初期値10件）")
+      .setMinValue(1)
+      .setMaxValue(50),
+  )
+  .toJSON();
 const diagnosticsCommand = new SlashCommandBuilder()
   .setName("diagnostics")
   .setDescription("開発者用: Bot接続・記録・権限状態を診断します")
@@ -191,6 +219,7 @@ const extendedCommands = [
 const developerCommands = [
   commandUpdateCommand,
   botServersCommand,
+  scopeServerCommand,
   diagnosticsCommand,
   guildBlockCommand,
   guildUnblockCommand,
@@ -272,6 +301,342 @@ function formatGuildName(name) {
     .replace(/[\\`*_~|]/g, "\\$&")
     .replace(/@/g, "＠")
     .slice(0, 80);
+}
+
+function getAvailableBotGuilds() {
+  return [...client.guilds.cache.values()]
+    .filter((guild) => !isGuildBlocked(guild.id))
+    .sort((left, right) => left.name.localeCompare(right.name, "ja"));
+}
+
+function getScopeGuildChoices(focusedValue = "") {
+  const query = focusedValue.trim().toLowerCase();
+  return getAvailableBotGuilds()
+    .filter((guild) =>
+      !query || guild.id.includes(query) || guild.name.toLowerCase().includes(query),
+    )
+    .slice(0, 25)
+    .map((guild) => ({
+      name: plainComponentText(`${guild.name} — ${guild.id}`, 100),
+      value: guild.id,
+    }));
+}
+
+async function getScopeableChannels(guild) {
+  const botMember = guild.members.me ?? (await guild.members.fetchMe());
+  const fetched = await guild.channels.fetch();
+  const supported = [...fetched.values()].filter(
+    (channel) =>
+      channel &&
+      (channel.type === ChannelType.GuildText ||
+        channel.type === ChannelType.GuildAnnouncement),
+  );
+  const diagnostics = { supported: supported.length, missingView: 0, missingHistory: 0 };
+  const channels = [];
+
+  for (const channel of supported) {
+    const permissions = channel.permissionsFor(botMember);
+    if (!permissions?.has(PermissionFlagsBits.ViewChannel)) {
+      diagnostics.missingView += 1;
+      continue;
+    }
+    if (!permissions.has(PermissionFlagsBits.ReadMessageHistory)) {
+      diagnostics.missingHistory += 1;
+      continue;
+    }
+    channels.push({
+      id: channel.id,
+      name: channel.name,
+      categoryName: channel.parent?.name ?? "カテゴリなし",
+      position: channel.rawPosition ?? 0,
+    });
+  }
+
+  channels.sort((left, right) =>
+    left.position - right.position || left.name.localeCompare(right.name, "ja"),
+  );
+  return { channels, diagnostics };
+}
+
+function createScopeChannelPicker(request, requestedPage = 0) {
+  const totalPages = Math.max(1, Math.ceil(request.channels.length / scopeChannelPageSize));
+  const page = Math.min(Math.max(requestedPage, 0), totalPages - 1);
+  const currentChannels = request.channels.slice(
+    page * scopeChannelPageSize,
+    (page + 1) * scopeChannelPageSize,
+  );
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`nvscope:${request.id}:select:${page}`)
+    .setPlaceholder("確認するチャンネルを選択")
+    .addOptions(
+      currentChannels.map((channel) => ({
+        label: plainComponentText(`#${channel.name}`, 100),
+        value: channel.id,
+        description: plainComponentText(`${channel.categoryName} · ID ${channel.id}`, 100),
+      })),
+    );
+  const components = [new ActionRowBuilder().addComponents(select)];
+
+  if (totalPages > 1) {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`nvscope:${request.id}:channels:${page - 1}`)
+          .setLabel("前へ")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page === 0),
+        new ButtonBuilder()
+          .setCustomId(`nvscope:${request.id}:channels:${page + 1}`)
+          .setLabel("次へ")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page >= totalPages - 1),
+      ),
+    );
+  }
+
+  return {
+    content:
+      `**対象Guild:** ${escapeScopeText(request.guildName, 100)} \`${request.guildId}\`\n` +
+      `Botが閲覧・履歴取得できる通常テキストチャンネルは${request.channels.length.toLocaleString("ja-JP")}件です。確認するチャンネルを選択してください。` +
+      (totalPages > 1 ? `\n-# チャンネル一覧 ${page + 1}/${totalPages}ページ` : ""),
+    embeds: [],
+    components,
+    allowedMentions: { parse: [] },
+  };
+}
+
+function createScopeMessageView(request, requestedPage = 0) {
+  const pages = request.messagePages ?? [[]];
+  const totalPages = Math.max(1, pages.length);
+  const page = Math.min(Math.max(requestedPage, 0), totalPages - 1);
+  const blocks = pages[page] ?? [];
+  const embed = new EmbedBuilder()
+    .setColor(0x7877ff)
+    .setTitle(`${plainComponentText(request.guildName, 80)} · #${plainComponentText(request.channelName, 80)}`)
+    .setDescription(blocks.length ? blocks.join("\n\n") : "このチャンネルに取得可能なメッセージはありません。")
+    .setFooter({
+      text: `取得 ${request.messageCount}件 · Page ${page + 1}/${totalPages} · 古い順に表示 · ${new Date().toLocaleString("ja-JP")}`,
+    });
+  const components = [];
+  if (totalPages > 1) {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`nvscope:${request.id}:messages:${page - 1}`)
+          .setLabel("前へ")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page === 0),
+        new ButtonBuilder()
+          .setCustomId(`nvscope:${request.id}:messages:${page + 1}`)
+          .setLabel("次へ")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page >= totalPages - 1),
+      ),
+    );
+  }
+  return {
+    content:
+      `-# 開発者専用 · メッセージ本文・添付内容はDBや監査ログへ保存されません · 操作期限 ${Math.ceil(scopeServerRequestLifetimeMs / 60_000)}分`,
+    embeds: [embed],
+    components,
+    allowedMentions: { parse: [] },
+  };
+}
+
+function recordScopeServerAudit({ userId, guildId, channelId = null, count = 0, outcome, reason = null }) {
+  console.info("[scopeserver-audit]", JSON.stringify({
+    command: "scopeserver",
+    userId,
+    guildId,
+    channelId,
+    count,
+    outcome,
+    reason,
+    executedAt: new Date().toISOString(),
+  }));
+}
+
+function classifyScopeServerError(error) {
+  const code = Number(error?.code);
+  const status = Number(error?.status);
+  if (code === 10003) return { reason: "channel_deleted", message: "選択したチャンネルは削除されたか、取得できなくなりました。" };
+  if (code === 10004) return { reason: "guild_unavailable", message: "取得中にBotが対象Guildから退出しました。" };
+  if (code === 50001) return { reason: "missing_access", message: "Botが対象チャンネルへアクセスできません。" };
+  if (code === 50013) return { reason: "missing_permissions", message: "Botのチャンネル権限が不足しています。" };
+  if (status === 429 || code === 20028 || code === 20029) return { reason: "discord_rate_limit", message: "Discord APIのレート制限中です。少し待ってから再実行してください。" };
+  return { reason: `discord_api_${Number.isFinite(code) ? code : "unknown"}`, message: "Discordからメッセージを取得できませんでした。少し待ってから再実行してください。" };
+}
+
+function getScopeServerRequest(requestId) {
+  const request = scopeServerRequests.get(requestId);
+  if (!request || request.expiresAt <= Date.now()) {
+    scopeServerRequests.delete(requestId);
+    return null;
+  }
+  return request;
+}
+
+function scheduleScopeServerExpiry(interaction, request) {
+  const timer = setTimeout(() => {
+    scopeServerRequests.delete(request.id);
+    void interaction.editReply({ components: [] }).catch(() => {});
+  }, scopeServerRequestLifetimeMs);
+  timer.unref?.();
+}
+
+async function handleScopeServerCommand(interaction) {
+  if (!canUseBotServers(interaction)) {
+    await interaction.reply({ content: "このコマンドを実行する権限がありません。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const guildId = interaction.options.getString("server", true).trim();
+  const limit = Math.min(Math.max(interaction.options.getInteger("limit") ?? 10, 1), 50);
+  if (!/^\d{16,22}$/.test(guildId)) {
+    await interaction.reply({ content: "サーバーを候補から選ぶか、正しいGuild IDを入力してください。", flags: MessageFlags.Ephemeral });
+    recordScopeServerAudit({ userId: interaction.user.id, guildId, count: limit, outcome: "failure", reason: "invalid_guild_id" });
+    return;
+  }
+  const guild = client.guilds.cache.get(guildId);
+  if (!guild || isGuildBlocked(guildId)) {
+    await interaction.reply({ content: "Botが参加している対象Guildが見つかりません。退出済み・停止済みの可能性があります。", flags: MessageFlags.Ephemeral });
+    recordScopeServerAudit({ userId: interaction.user.id, guildId, count: limit, outcome: "failure", reason: "guild_not_found" });
+    return;
+  }
+
+  const previousAttempt = scopeServerAttempts.get(interaction.user.id) ?? 0;
+  const remainingSeconds = Math.ceil((scopeServerCooldownMs - (Date.now() - previousAttempt)) / 1000);
+  if (remainingSeconds > 0) {
+    await interaction.reply({ content: `このコマンドは${remainingSeconds}秒後に再実行できます。`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  scopeServerAttempts.set(interaction.user.id, Date.now());
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const { channels, diagnostics } = await getScopeableChannels(guild);
+    if (channels.length === 0) {
+      const detail = diagnostics.supported === 0
+        ? "通常のテキスト・アナウンスチャンネルがありません。"
+        : `対象${diagnostics.supported}件のうち、ViewChannel不足 ${diagnostics.missingView}件、ReadMessageHistory不足 ${diagnostics.missingHistory}件です。`;
+      await interaction.editReply({ content: `Botが安全に履歴を取得できるチャンネルがありません。\n${detail}`, allowedMentions: { parse: [] } });
+      recordScopeServerAudit({ userId: interaction.user.id, guildId, count: limit, outcome: "failure", reason: "no_readable_channels" });
+      return;
+    }
+
+    const request = {
+      id: randomUUID().replaceAll("-", "").slice(0, 20),
+      userId: interaction.user.id,
+      guildId,
+      guildName: guild.name,
+      limit,
+      channels,
+      expiresAt: Date.now() + scopeServerRequestLifetimeMs,
+      channelId: null,
+      channelName: null,
+      messageCount: 0,
+      messagePages: null,
+    };
+    scopeServerRequests.set(request.id, request);
+    scheduleScopeServerExpiry(interaction, request);
+    await interaction.editReply(createScopeChannelPicker(request));
+  } catch (error) {
+    const classified = classifyScopeServerError(error);
+    console.error("Scope server channel discovery failed:", safeErrorText(error));
+    await interaction.editReply({ content: classified.message, components: [], allowedMentions: { parse: [] } });
+    recordScopeServerAudit({ userId: interaction.user.id, guildId, count: limit, outcome: "failure", reason: classified.reason });
+  }
+}
+
+async function handleScopeServerComponent(interaction) {
+  if (!canUseBotServers(interaction)) {
+    await interaction.reply({ content: "この操作は開発者本人だけが実行できます。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const [, requestId, action, rawPage] = interaction.customId.split(":");
+  const request = getScopeServerRequest(requestId);
+  if (!request) {
+    await interaction.reply({ content: "この操作は期限切れです。`/scopeserver` をもう一度実行してください。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (request.userId !== interaction.user.id) {
+    await interaction.reply({ content: "この操作はコマンド実行者本人だけが使用できます。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (interaction.isButton() && action === "channels") {
+    const page = Number.parseInt(rawPage, 10);
+    await interaction.update(createScopeChannelPicker(request, Number.isInteger(page) ? page : 0));
+    return;
+  }
+  if (interaction.isButton() && action === "messages") {
+    if (!request.messagePages) {
+      await interaction.reply({ content: "メッセージ一覧を取得できません。コマンドをやり直してください。", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const page = Number.parseInt(rawPage, 10);
+    await interaction.update(createScopeMessageView(request, Number.isInteger(page) ? page : 0));
+    return;
+  }
+  if (!interaction.isStringSelectMenu() || action !== "select") {
+    await interaction.reply({ content: "この操作を処理できませんでした。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const channelId = interaction.values[0];
+  if (!request.channels.some((channel) => channel.id === channelId)) {
+    await interaction.reply({ content: "選択されたチャンネルは許可済み候補にありません。", flags: MessageFlags.Ephemeral });
+    recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "forged_channel_id" });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  try {
+    const guild = client.guilds.cache.get(request.guildId);
+    if (!guild || isGuildBlocked(request.guildId)) {
+      await interaction.editReply({ content: "取得中にBotが対象Guildから退出したか、Guildが停止されました。", embeds: [], components: [], allowedMentions: { parse: [] } });
+      recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "guild_left_during_request" });
+      return;
+    }
+    const channel = await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
+      await interaction.editReply({ content: "選択したチャンネルは削除されたか、対応対象ではなくなりました。", embeds: [], components: [], allowedMentions: { parse: [] } });
+      recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "channel_deleted" });
+      return;
+    }
+    const botMember = guild.members.me ?? (await guild.members.fetchMe());
+    const permissions = channel.permissionsFor(botMember);
+    if (!permissions?.has(PermissionFlagsBits.ViewChannel)) {
+      await interaction.editReply({ content: "Botにこのチャンネルの `ViewChannel` 権限がありません。", embeds: [], components: [], allowedMentions: { parse: [] } });
+      recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "missing_view_channel" });
+      return;
+    }
+    if (!permissions.has(PermissionFlagsBits.ReadMessageHistory)) {
+      await interaction.editReply({ content: "Botにこのチャンネルの `ReadMessageHistory` 権限がありません。", embeds: [], components: [], allowedMentions: { parse: [] } });
+      recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "missing_read_message_history" });
+      return;
+    }
+
+    const fetched = await channel.messages.fetch({ limit: request.limit, cache: false });
+    const messages = [...fetched.values()].sort((left, right) => left.createdTimestamp - right.createdTimestamp);
+    const blocks = messages.map((message, index) => formatScopeMessage(message, index + 1));
+    request.channelId = channel.id;
+    request.channelName = channel.name;
+    request.messageCount = messages.length;
+    request.messagePages = [];
+    for (let index = 0; index < blocks.length; index += scopeMessagePageSize) {
+      request.messagePages.push(blocks.slice(index, index + scopeMessagePageSize));
+    }
+    if (request.messagePages.length === 0) request.messagePages.push([]);
+
+    await interaction.editReply(createScopeMessageView(request));
+    recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: messages.length, outcome: "success" });
+  } catch (error) {
+    const classified = classifyScopeServerError(error);
+    console.error("Scope server message fetch failed:", safeErrorText(error));
+    await interaction.editReply({ content: classified.message, embeds: [], components: [], allowedMentions: { parse: [] } });
+    recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: classified.reason });
+  }
 }
 
 const translationLanguages = [
@@ -1181,6 +1546,25 @@ client.on("guildDelete", (guild) => {
 });
 
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    if (interaction.commandName !== "scopeserver") return;
+    if (!canUseBotServers(interaction)) {
+      await interaction.respond([]).catch(() => {});
+      return;
+    }
+    const focused = interaction.options.getFocused();
+    await interaction.respond(getScopeGuildChoices(String(focused))).catch(() => {});
+    return;
+  }
+
+  if (
+    (interaction.isButton() || interaction.isStringSelectMenu()) &&
+    interaction.customId.startsWith("nvscope:")
+  ) {
+    await handleScopeServerComponent(interaction);
+    return;
+  }
+
   if (
     interaction.isMessageContextMenuCommand() &&
     interaction.commandName === "NuviloChan 翻訳"
@@ -1432,11 +1816,7 @@ client.on("interactionCreate", async (interaction) => {
     botServersAttempts.set(interaction.user.id, Date.now());
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const guilds = [...client.guilds.cache.values()]
-      .filter((guild) => !isGuildBlocked(guild.id))
-      .sort((left, right) =>
-      left.name.localeCompare(right.name, "ja"),
-      );
+    const guilds = getAvailableBotGuilds();
     const pageSize = 10;
     const totalPages = Math.max(1, Math.ceil(guilds.length / pageSize));
     const requestedPage = interaction.options.getInteger("page") ?? 1;
@@ -1483,6 +1863,11 @@ client.on("interactionCreate", async (interaction) => {
       embeds,
       allowedMentions: { parse: [] },
     });
+    return;
+  }
+
+  if (interaction.commandName === "scopeserver") {
+    await handleScopeServerCommand(interaction);
     return;
   }
 

@@ -36,6 +36,7 @@ export default function PrivacyPage() {
           </PolicySection>
           <PolicySection title="4. 取得方法と閲覧範囲">
             <p>アカウント情報はDiscord OAuthの<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">identify</code>および<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">guilds</code>権限を通じて取得し、サーバー活動情報はBotが付与された権限の範囲で取得します。ダッシュボードには、Discord上で所有または管理権限を持つと確認できたサーバーを表示します。サーバー管理者は、メンバーに対して本サービスの導入と収集範囲を適切に案内してください。</p>
+            <p className="mt-3">サービス運用、障害・権限問題の調査、不正利用への対応またはサポートに必要な場合、登録済みの開発者本人だけが、Botに閲覧権限と履歴取得権限の両方があるチャンネルの直近メッセージを一時的に確認することがあります。この確認によって本文や添付内容を新たにデータベースへ保存せず、実行者、対象サーバー・チャンネル、取得件数、実行日時および成否だけを監査記録に残します。</p>
           </PolicySection>
           <PolicySection title="5. 保存期間と削除">
             <p>検索用に保存するメッセージ本文は原則として最大90日間保存し、保存期間を過ぎたデータは順次削除します。履歴取り込みで取得した本文にも同じ保存期間を適用します。Botが削除イベントを受信したメッセージは保存データからも削除します。認証情報、設定、統計、監査ログおよび問い合わせ情報は、機能提供、法令対応、不正利用防止または紛争対応に必要な期間保存します。</p>

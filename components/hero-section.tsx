@@ -1,4 +1,4 @@
-import { ArrowRight, ArrowUpRight, BarChart3, Bot, Check, ShieldCheck, Users, Zap } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Bot, Check, ShieldCheck } from 'lucide-react'
 import { LoginButton } from '@/components/login-button'
 
 export function HeroSection() {
@@ -88,30 +88,6 @@ export function HeroSection() {
           </div>
         </div>
 
-        <section aria-labelledby="analysis-examples" className="mt-16 w-full max-w-5xl text-left">
-          <div className="mb-6 text-center">
-            <p className="text-xs font-bold tracking-[0.2em] text-primary">WHAT YOU CAN ANALYZE</p>
-            <h2 id="analysis-examples" className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">何を分析できる？</h2>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <article className="landing-analysis-card landing-reveal landing-reveal-delay-5 rounded-2xl border border-border/80 bg-card/50 p-5 backdrop-blur-sm">
-              <Users className="h-5 w-5 text-primary" />
-              <h3 className="mt-4 font-bold">コミュニティの成長</h3>
-              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">今日の総メンバーと前期間を比べ、参加・退出の流れを確認できます。</p>
-            </article>
-            <article className="landing-analysis-card landing-reveal landing-reveal-delay-6 rounded-2xl border border-border/80 bg-card/50 p-5 backdrop-blur-sm">
-              <BarChart3 className="h-5 w-5 text-primary" />
-              <h3 className="mt-4 font-bold">会話の活発さ</h3>
-              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">総送信数、今日のアクティブメッセージ、アクティブ・非アクティブメンバーを追えます。</p>
-            </article>
-            <article className="landing-analysis-card landing-reveal landing-reveal-delay-7 rounded-2xl border border-border/80 bg-card/50 p-5 backdrop-blur-sm">
-              <Zap className="h-5 w-5 text-primary" />
-              <h3 className="mt-4 font-bold">通話の盛り上がり</h3>
-              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">サーバー内の通話合計・最長連続通話に加え、Botの接続状態と読み取れないチャンネルも確認できます。</p>
-            </article>
-          </div>
-          <a href="/guides" className="mx-auto mt-6 inline-flex w-fit items-center gap-2 text-sm font-bold text-primary hover:underline">サーバー運営ガイドを読む <ArrowRight className="h-4 w-4" /></a>
-        </section>
       </div>
     </section>
   )

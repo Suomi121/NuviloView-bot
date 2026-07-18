@@ -4,6 +4,7 @@ import { FeaturesSection } from '@/components/features-section'
 import { HowItWorksSection } from '@/components/how-it-works-section'
 import { SiteFooter } from '@/components/site-footer'
 import { DashboardShowcaseSection } from '@/components/dashboard-showcase-section'
+import { AnalysisExamplesSection } from '@/components/analysis-examples-section'
 import { auth } from '@/lib/auth'
 import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
@@ -22,6 +23,7 @@ export default async function Page({
       <SiteHeader />
       <HeroSection />
       <DashboardShowcaseSection />
+      <AnalysisExamplesSection />
       <FeaturesSection />
       <HowItWorksSection />
       <SiteFooter />

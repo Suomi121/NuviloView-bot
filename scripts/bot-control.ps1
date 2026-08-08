@@ -10,11 +10,14 @@ Set-StrictMode -Version 2.0
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $runnerScript = Join-Path $PSScriptRoot 'run-bot-forever.ps1'
 $logDirectory = Join-Path $projectRoot 'logs'
+$runtimeDirectory = Join-Path $projectRoot 'data\runtime'
 $runnerLog = Join-Path $logDirectory 'bot-runner.log'
 $runnerPidFile = Join-Path $logDirectory 'bot-runner.pid'
 $stopRequestFile = Join-Path $logDirectory 'bot-runner.stop'
+$disabledFlagFile = Join-Path $runtimeDirectory 'bot-disabled.flag'
 
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
 
 function Get-LastRunnerEvent {
   if (-not (Test-Path -LiteralPath $runnerLog)) { return $null }
@@ -61,6 +64,7 @@ function Get-RunnerProcessInfo {
 
 function Get-ControlStatus {
   $runner = Get-RunnerProcessInfo
+  $startupEnabled = -not (Test-Path -LiteralPath $disabledFlagFile)
   $startedAt = $null
   if ($runner -and $runner.CreationDate) {
     try {
@@ -76,11 +80,12 @@ function Get-ControlStatus {
 
   return [ordered]@{
     ok = $true
-    state = if ($runner) { 'running' } else { 'stopped' }
+    state = if ($runner) { 'running' } elseif ($startupEnabled) { 'stopped' } else { 'disabled' }
     running = [bool]$runner
     pid = if ($runner) { [int]$runner.ProcessId } else { $null }
     startedAt = $startedAt
-    autoRestart = [bool]$runner
+    autoRestart = ([bool]$runner -and $startupEnabled)
+    startupEnabled = $startupEnabled
     lastEvent = Get-LastRunnerEvent
   }
 }
@@ -95,10 +100,11 @@ function Get-PowerShellExecutable {
 }
 
 function Start-BotRunner {
+  Remove-Item -LiteralPath $disabledFlagFile -Force -ErrorAction SilentlyContinue
   $current = Get-RunnerProcessInfo
   if ($current) {
     $status = Get-ControlStatus
-    $status.message = 'Botはすでに起動しています。'
+    $status.message = 'Botはすでに起動しています。PC再起動後もオンになります。'
     return $status
   }
   if (-not (Test-Path -LiteralPath $runnerScript)) { throw 'Botランナーが見つかりません。' }
@@ -119,7 +125,7 @@ function Start-BotRunner {
       Start-Sleep -Milliseconds 500
       $status = Get-ControlStatus
       if ($status.running) {
-        $status.message = 'Botを起動しました。異常終了時は自動再起動します。'
+        $status.message = 'Botを起動しました。異常終了時とPC再起動後も自動起動します。'
         return $status
       }
     }
@@ -154,11 +160,12 @@ function Get-DescendantProcessIds {
 }
 
 function Stop-BotRunner {
+  Set-Content -LiteralPath $disabledFlagFile -Value (Get-Date).ToString('o') -Encoding ASCII
   $runner = Get-RunnerProcessInfo
   if (-not $runner) {
     Remove-Item -LiteralPath $stopRequestFile -Force -ErrorAction SilentlyContinue
     $status = Get-ControlStatus
-    $status.message = 'Botはすでに停止しています。'
+    $status.message = 'Botは停止中です。PC再起動後もオフを維持します。'
     return $status
   }
 
@@ -169,7 +176,7 @@ function Stop-BotRunner {
     Start-Sleep -Milliseconds 250
     if (-not (Get-RunnerProcessInfo)) {
       $status = Get-ControlStatus
-      $status.message = 'Botを安全に停止しました。'
+      $status.message = 'Botを安全に停止しました。PC再起動後もオフを維持します。'
       return $status
     }
   }
@@ -185,7 +192,7 @@ function Stop-BotRunner {
   Remove-Item -LiteralPath $stopRequestFile -Force -ErrorAction SilentlyContinue
 
   $status = Get-ControlStatus
-  $status.message = '通常停止が完了しなかったため、NuviloView Botのプロセスだけを終了しました。'
+  $status.message = 'NuviloView Botのプロセスだけを終了しました。PC再起動後もオフを維持します。'
   return $status
 }
 
@@ -212,6 +219,7 @@ try {
     pid = $null
     startedAt = $null
     autoRestart = $false
+    startupEnabled = -not (Test-Path -LiteralPath $disabledFlagFile)
     lastEvent = Get-LastRunnerEvent
     message = $_.Exception.Message
   }

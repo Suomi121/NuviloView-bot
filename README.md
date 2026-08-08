@@ -40,6 +40,9 @@ npm run bot:control
 The controller never displays or returns the Bot token. Runtime PID and stop
 request files are kept under the ignored `logs` directory. A normal stop asks
 the Bot to disconnect and update its heartbeat before the runner exits.
+Selecting off also writes an ignored persistent flag under `data/runtime`.
+The Windows startup launchers respect this flag, so the Bot remains off after
+a PC restart until on is selected again.
 
 ## Learn More
 

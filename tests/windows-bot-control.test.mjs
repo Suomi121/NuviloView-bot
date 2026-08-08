@@ -13,6 +13,8 @@ test("Windows controller exposes only bounded local Bot lifecycle actions", () =
   assert.match(controller, /run-bot-forever\.ps1/);
   assert.match(controller, /bot-runner\.pid/);
   assert.match(controller, /bot-runner\.stop/);
+  assert.match(controller, /bot-disabled\.flag/);
+  assert.match(controller, /startupEnabled/);
   assert.match(controller, /WindowStyle Hidden/);
   assert.match(controller, /Test-IsRunnerProcess/);
   assert.match(controller, /Get-DescendantProcessIds/);
@@ -36,6 +38,8 @@ test("Windows runner and Bot cooperate on graceful local stop requests", () => {
   assert.match(runner, /Wait-ForStopRequest/);
   assert.match(runner, /bot-runner\.pid/);
   assert.match(runner, /bot-runner\.stop/);
+  assert.match(runner, /bot-disabled\.flag/);
+  assert.match(runner, /persistent PC control setting/);
   assert.match(bot, /NUVILOVIEW_BOT_STOP_FILE/);
   assert.match(bot, /LOCAL_STOP_REQUEST/);
   assert.match(bot, /existsSync\(localStopFile\)/);

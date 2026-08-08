@@ -142,8 +142,9 @@ function Show-ControlStatus {
   }
   $statusText.Text = if ($isRunning) { 'オン' } else { 'オフ' }
   $details = New-Object System.Collections.Generic.List[string]
-  if ($isRunning -and $Result.pid) { $details.Add("自動再起動 ON / PID $($Result.pid)") }
-  if (-not $isRunning) { $details.Add('Botと自動再起動は停止中です') }
+  if ($isRunning -and $Result.pid) { $details.Add("自動再起動 ON / PC起動時 ON / PID $($Result.pid)") }
+  if (-not $isRunning -and -not $Result.startupEnabled) { $details.Add('PC再起動後もオフを維持します') }
+  if (-not $isRunning -and $Result.startupEnabled) { $details.Add('停止中ですがPC起動時はオンになります') }
   $messageProperty = $Result.PSObject.Properties['message']
   if ($messageProperty -and $messageProperty.Value) { $details.Add($messageProperty.Value) }
   elseif ($Result.lastEvent) { $details.Add($Result.lastEvent) }

@@ -11,11 +11,13 @@ $envFile = Join-Path $projectRoot '.env.local'
 $botFile = Join-Path $projectRoot 'discord-bot.mjs'
 $tokenCheckFile = Join-Path $PSScriptRoot 'token-leak-check.mjs'
 $logDirectory = Join-Path $projectRoot 'logs'
+$runtimeDirectory = Join-Path $projectRoot 'data\runtime'
 $runnerLog = Join-Path $logDirectory 'bot-runner.log'
 $botOutputLog = Join-Path $logDirectory 'bot-output.log'
 $tokenCheckLog = Join-Path $logDirectory 'token-leak-check.log'
 $runnerPidFile = Join-Path $logDirectory 'bot-runner.pid'
 $stopRequestFile = Join-Path $logDirectory 'bot-runner.stop'
+$disabledFlagFile = Join-Path $runtimeDirectory 'bot-disabled.flag'
 $mutexName = 'Global\NuviloViewDiscordBotRunner'
 $maxLogSizeBytes = 10MB
 $logRetentionDays = 14
@@ -32,6 +34,7 @@ $nodePath = if (Test-Path -LiteralPath 'C:\Program Files\nodejs\node.exe') {
 }
 
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
 Set-Location $projectRoot
 
 function Write-RunnerLog {
@@ -170,6 +173,11 @@ try {
 
   if (-not $hasMutex) {
     Write-RunnerLog 'Another Bot runner is already active. This duplicate launch will exit.'
+    exit 0
+  }
+
+  if (-not $ValidateOnly -and (Test-Path -LiteralPath $disabledFlagFile)) {
+    Write-RunnerLog 'Bot is disabled by the persistent PC control setting. Runner will exit.'
     exit 0
   }
 

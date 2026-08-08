@@ -26,6 +26,8 @@ import {
 } from "discord.js";
 import { neon } from "@neondatabase/serverless";
 import { createHmac, randomInt, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { escapeScopeText, formatScopeMessage, plainComponentText } from "./lib/scopeserver-utils.mjs";
 import { createGuildResetService } from "./lib/guild-reset-service.mjs";
 import { getGuildResetConfig, isResetDeveloper, parseIdList } from "./lib/guild-reset-utils.mjs";
@@ -5736,9 +5738,11 @@ setInterval(() => {
 }, 60 * 1000);
 
 let shuttingDown = false;
+let localStopWatcher;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (localStopWatcher) clearInterval(localStopWatcher);
   console.log(`${signal} received. Disconnecting NuviloChan Bot...`);
   try {
     await sql`
@@ -5755,5 +5759,13 @@ async function shutdown(signal) {
 
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 process.once("SIGINT", () => void shutdown("SIGINT"));
+
+const localStopFile = process.env.NUVILOVIEW_BOT_STOP_FILE?.trim();
+if (localStopFile && isAbsolute(localStopFile)) {
+  localStopWatcher = setInterval(() => {
+    if (existsSync(localStopFile)) void shutdown("LOCAL_STOP_REQUEST");
+  }, 1_000);
+  localStopWatcher.unref();
+}
 
 await client.login(process.env.NUVILOVIEW_BOT_TOKEN);

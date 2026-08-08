@@ -5,6 +5,9 @@ import { SiteHeader } from '@/components/site-header'
 export const metadata = {
   title: 'ログイン不要のダッシュボードデモ | NuviloView:OEM',
   description: 'NuviloView:OEMのPC・スマホ向けダッシュボードを、架空サーバーのサンプルデータで確認できます。',
+  alternates: {
+    canonical: '/demo',
+  },
 }
 
 export default function DemoPage() {

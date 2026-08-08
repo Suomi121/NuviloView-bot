@@ -2,6 +2,7 @@ import 'server-only'
 
 import { auth } from '@/lib/auth'
 import { pool } from '@/lib/db'
+import { parseDeveloperIds } from '@/lib/guild-reset-utils.mjs'
 
 export type DeveloperAccess = {
   userId: string
@@ -12,8 +13,8 @@ export type DeveloperAccess = {
 // Access is based on the Discord account actually linked to the current
 // Better Auth session, not a browser-supplied ID or display name.
 export async function getDeveloperAccess(request: Request): Promise<DeveloperAccess | null> {
-  const ownerDiscordId = process.env.DISCORD_OWNER_USER_ID?.trim()
-  if (!ownerDiscordId) return null
+  const developerDiscordIds = parseDeveloperIds(process.env)
+  if (developerDiscordIds.size === 0) return null
 
   const session = await auth.api.getSession({ headers: request.headers })
   if (!session?.user?.id) return null
@@ -26,7 +27,7 @@ export async function getDeveloperAccess(request: Request): Promise<DeveloperAcc
     LIMIT 1
   `, [session.user.id])
   const discordUserId = result.rows[0]?.accountId
-  if (!discordUserId || discordUserId !== ownerDiscordId) return null
+  if (!discordUserId || !developerDiscordIds.has(discordUserId)) return null
 
   return {
     userId: session.user.id,

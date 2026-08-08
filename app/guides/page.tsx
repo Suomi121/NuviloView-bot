@@ -1,6 +1,16 @@
 import { ArrowRight, BarChart3, MessageSquareText, UsersRound } from 'lucide-react'
+import type { Metadata } from 'next'
 import { SiteFooter } from '@/components/site-footer'
 import { SiteHeader } from '@/components/site-header'
+
+export const metadata: Metadata = {
+  title: '運営ガイド | NuviloView:OEM',
+  description:
+    'Discordコミュニティのメンバー推移や会話量を読み取り、改善につなげるための運営ガイドです。',
+  alternates: {
+    canonical: '/guides',
+  },
+}
 
 const guides = [
   {

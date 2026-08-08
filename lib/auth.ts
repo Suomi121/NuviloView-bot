@@ -1,6 +1,9 @@
 import { betterAuth } from "better-auth"
 import { pool } from "@/lib/db"
 
+const discordClientId = process.env.NUVILOVIEW_CLIENT_ID ?? process.env.DISCORD_CLIENT_ID
+const discordClientSecret = process.env.NUVILOVIEW_CLIENT_SECRET ?? process.env.DISCORD_CLIENT_SECRET
+
 const baseURL =
   process.env.BETTER_AUTH_URL ??
   (process.env.NODE_ENV !== 'production' ? 'http://localhost:3000' : undefined)
@@ -20,10 +23,13 @@ export const auth = betterAuth({
   // collecting or storing the user's real Discord email address.
   socialProviders: {
     discord: {
-      clientId: process.env.DISCORD_CLIENT_ID as string,
-      clientSecret: process.env.DISCORD_CLIENT_SECRET as string,
+      clientId: discordClientId as string,
+      clientSecret: discordClientSecret as string,
       disableDefaultScope: true,
       scope: ["identify", "guilds"],
+      // Refresh the stored Discord display name and avatar whenever the user
+      // signs in, so profile changes are reflected in the dashboard.
+      overrideUserInfoOnSignIn: true,
       mapProfileToUser: (profile) => ({
         email: `discord-${profile.id}@users.invalid`,
         emailVerified: false,

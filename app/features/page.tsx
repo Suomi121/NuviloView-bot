@@ -1,6 +1,16 @@
 import { Activity, ArrowRight, Bot, ChartNoAxesCombined, LockKeyhole, Sparkles, Users } from 'lucide-react'
+import type { Metadata } from 'next'
 import { SiteHeader } from '@/components/site-header'
 import { SiteFooter } from '@/components/site-footer'
+
+export const metadata: Metadata = {
+  title: '機能 | NuviloView:OEM',
+  description:
+    'Discordサーバーの日次分析、活動状況、成長インサイト、権限ベースの閲覧など、NuviloView:OEMの機能をご紹介します。',
+  alternates: {
+    canonical: '/features',
+  },
+}
 
 const features = [
   { icon: ChartNoAxesCombined, title: '日次アナリティクス', body: '総メンバー数、送信数、リアクション率を日ごとに集計し、推移グラフで確認できます。' },
@@ -8,7 +18,7 @@ const features = [
   { icon: Activity, title: '最近のアクティビティ', body: 'メッセージ送信・参加・退出を時系列で表示します。検索機能のため、閲覧可能なチャンネルの本文を保存します。' },
   { icon: Sparkles, title: '成長インサイト', body: '直近の実績と前期間を比較し、メンバーと会話量の変化を自動で要約します。' },
   { icon: LockKeyhole, title: '権限ベースの閲覧', body: 'Discordで管理権限を持つサーバーだけを表示。Botが読み取れないチャンネルもダッシュボードで確認できます。' },
-  { icon: Bot, title: '軽量な分析Bot', body: 'Botはメンバー数・件数・リアクション・通話時間を集計。/tactive、/week、/suc、/permissions などの運営コマンドも使えます。' },
+  { icon: Bot, title: '分析＋安全なモデレーションBot', body: '活動分析に加え、権限・ロール階層・監査ログで保護されたBAN、Kick、Timeout、メッセージ整理を利用できます。' },
 ]
 
 export default function FeaturesPage() {

@@ -7,6 +7,7 @@ import {
   date,
   serial,
   uniqueIndex,
+  index,
   jsonb,
 } from "drizzle-orm/pg-core";
 
@@ -174,9 +175,14 @@ export const supportRequest = pgTable("support_request", {
 export const discordMessage = pgTable("discord_message", {
   id: text("id").primaryKey(),
   guildId: text("guildId").notNull(),
+  channelId: text("channelId"),
   channelName: text("channelName").notNull(),
   authorId: text("authorId").notNull(),
   authorName: text("authorName").notNull(),
+  authorIsBot: boolean("authorIsBot").notNull().default(false),
+  // Event-time roles only. Existing rows remain an empty array rather than
+  // applying a member's current roles retroactively to historical activity.
+  authorRoleIds: jsonb("authorRoleIds").notNull().default([]),
   content: text("content").notNull(),
   createdAt: timestamp("createdAt", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true })
@@ -191,11 +197,92 @@ export const voiceSession = pgTable("voice_session", {
   guildId: text("guildId").notNull(),
   userId: text("userId").notNull(),
   channelId: text("channelId").notNull(),
+  userIsBot: boolean("userIsBot").notNull().default(false),
+  userRoleIds: jsonb("userRoleIds").notNull().default([]),
   startedAt: timestamp("startedAt", { withTimezone: true })
     .notNull()
     .defaultNow(),
   endedAt: timestamp("endedAt", { withTimezone: true }),
 });
+
+// Join/leave history is intentionally separate from the human-readable
+// activity feed: retention requires stable Discord IDs, bot flags and
+// repeated join cycles while the feed remains privacy-conscious.
+export const guildMemberEvent = pgTable("guild_member_event", {
+  id: serial("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  userId: text("userId").notNull(),
+  eventType: text("eventType").notNull(),
+  isBot: boolean("isBot").notNull().default(false),
+  roleIds: jsonb("roleIds").notNull().default([]),
+  source: text("source").notNull().default("gateway"),
+  occurredAt: timestamp("occurredAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("guild_member_event_guild_occurred_idx").on(table.guildId, table.occurredAt),
+  index("guild_member_event_guild_user_occurred_idx").on(table.guildId, table.userId, table.occurredAt),
+]);
+
+export const discordReactionEvent = pgTable("discord_reaction_event", {
+  id: serial("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  channelId: text("channelId"),
+  messageId: text("messageId").notNull(),
+  reactorId: text("reactorId").notNull(),
+  recipientId: text("recipientId"),
+  reactorIsBot: boolean("reactorIsBot").notNull().default(false),
+  reactorRoleIds: jsonb("reactorRoleIds").notNull().default([]),
+  occurredAt: timestamp("occurredAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("discord_reaction_event_guild_occurred_idx").on(table.guildId, table.occurredAt),
+  index("discord_reaction_event_guild_channel_occurred_idx").on(table.guildId, table.channelId, table.occurredAt),
+]);
+
+// Inventories preserve names for deleted objects and keep current role member
+// counts separate from event-time role snapshots used by historical analysis.
+export const guildChannelRegistry = pgTable("guild_channel_registry", {
+  guildId: text("guildId").notNull(),
+  channelId: text("channelId").notNull(),
+  channelName: text("channelName").notNull(),
+  channelType: text("channelType").notNull(),
+  deletedAt: timestamp("deletedAt", { withTimezone: true }),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("guild_channel_registry_guild_channel_unique").on(table.guildId, table.channelId),
+  index("guild_channel_registry_guild_updated_idx").on(table.guildId, table.updatedAt),
+]);
+
+export const guildRoleRegistry = pgTable("guild_role_registry", {
+  guildId: text("guildId").notNull(),
+  roleId: text("roleId").notNull(),
+  roleName: text("roleName").notNull(),
+  memberCount: integer("memberCount").notNull().default(0),
+  isManaged: boolean("isManaged").notNull().default(false),
+  isBotRole: boolean("isBotRole").notNull().default(false),
+  isEveryone: boolean("isEveryone").notNull().default(false),
+  color: integer("color").notNull().default(0),
+  position: integer("position").notNull().default(0),
+  deletedAt: timestamp("deletedAt", { withTimezone: true }),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("guild_role_registry_guild_role_unique").on(table.guildId, table.roleId),
+  index("guild_role_registry_guild_position_idx").on(table.guildId, table.position),
+]);
+
+// A small daily cache provides score history without sending or recalculating
+// raw events in the browser. Missing categories are recorded as null.
+export const analyticsHealthSnapshot = pgTable("analytics_health_snapshot", {
+  id: serial("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  date: date("date").notNull(),
+  periodDays: integer("periodDays").notNull(),
+  score: integer("score"),
+  confidence: text("confidence").notNull(),
+  categories: jsonb("categories").notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("analytics_health_snapshot_guild_date_period_unique").on(table.guildId, table.date, table.periodDays),
+]);
 
 // Server-level voice activity. Time advances once while at least one human is
 // in any voice channel, regardless of how many members are connected.
@@ -249,6 +336,32 @@ export const botGuildBlockAudit = pgTable("bot_guild_block_audit", {
     .notNull()
     .defaultNow(),
 });
+
+// Every moderation command is recorded independently from analytics data.
+// Pending rows are written before Discord is mutated so audit-storage failure
+// fails closed instead of allowing an unlogged moderation action.
+export const botModerationAudit = pgTable("bot_moderation_audit", {
+  id: text("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  guildName: text("guildName"),
+  action: text("action").notNull(),
+  actorId: text("actorId").notNull(),
+  actorName: text("actorName"),
+  targetId: text("targetId"),
+  targetName: text("targetName"),
+  channelId: text("channelId"),
+  reason: text("reason").notNull(),
+  requestedCount: integer("requestedCount"),
+  affectedCount: integer("affectedCount"),
+  status: text("status").notNull().default("pending"),
+  errorCode: text("errorCode"),
+  errorMessage: text("errorMessage"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completedAt", { withTimezone: true }),
+}, (table) => [
+  index("bot_moderation_audit_guild_created_idx").on(table.guildId, table.createdAt),
+  index("bot_moderation_audit_actor_created_idx").on(table.actorId, table.createdAt),
+]);
 
 // Bot-maintained inventory. This lets the protected developer dashboard show
 // real installation and connection information without calling Discord from
@@ -353,3 +466,146 @@ export const historyImportJob = pgTable("history_import_job", {
   completedAt: timestamp("completedAt", { withTimezone: true }),
   error: text("error"),
 });
+
+// Developer-only destructive reset controls. These tables are intentionally
+// isolated from analytics data so the feature can remain disabled without
+// affecting normal Bot collection or dashboard reads.
+export const guildResetSettings = pgTable("guild_reset_settings", {
+  guildId: text("guildId").primaryKey(),
+  enabled: boolean("enabled").notNull().default(false),
+  protectedChannelIds: jsonb("protectedChannelIds").notNull().default([]),
+  protectedRoleIds: jsonb("protectedRoleIds").notNull().default([]),
+  resetLogChannelId: text("resetLogChannelId"),
+  backupChannelId: text("backupChannelId"),
+  allowedAdminIds: jsonb("allowedAdminIds").notNull().default([]),
+  maxChannelDeletes: integer("maxChannelDeletes"),
+  maxRoleDeletes: integer("maxRoleDeletes"),
+  maxTotalOperations: integer("maxTotalOperations"),
+  guildCooldownHours: integer("guildCooldownHours"),
+  developerCooldownMinutes: integer("developerCooldownMinutes"),
+  defaultMode: text("defaultMode").notNull().default("channels_only"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const guildResetPlan = pgTable("guild_reset_plan", {
+  id: text("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  developerId: text("developerId").notNull(),
+  developerName: text("developerName"),
+  mode: text("mode").notNull(),
+  dryRun: boolean("dryRun").notNull().default(true),
+  requestedOptions: jsonb("requestedOptions").notNull(),
+  targetSnapshotHash: text("targetSnapshotHash").notNull(),
+  targetSummary: jsonb("targetSummary").notNull(),
+  status: text("status").notNull().default("active"),
+  expiresAt: timestamp("expiresAt", { withTimezone: true }).notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  usedAt: timestamp("usedAt", { withTimezone: true }),
+}, (table) => [
+  index("guild_reset_plan_guild_created_idx").on(table.guildId, table.createdAt),
+  index("guild_reset_plan_developer_created_idx").on(table.developerId, table.createdAt),
+]);
+
+export const guildResetConfirmation = pgTable("guild_reset_confirmation", {
+  id: text("id").primaryKey(),
+  planId: text("planId").notNull(),
+  guildId: text("guildId").notNull(),
+  developerId: text("developerId").notNull(),
+  codeHash: text("codeHash").notNull(),
+  expiresAt: timestamp("expiresAt", { withTimezone: true }).notNull(),
+  usedAt: timestamp("usedAt", { withTimezone: true }),
+  usedByRequestId: text("usedByRequestId"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("guild_reset_confirmation_plan_created_idx").on(table.planId, table.createdAt),
+]);
+
+export const guildResetExecution = pgTable("guild_reset_execution", {
+  id: text("id").primaryKey(),
+  planId: text("planId").notNull(),
+  guildId: text("guildId").notNull(),
+  developerId: text("developerId").notNull(),
+  developerName: text("developerName"),
+  mode: text("mode").notNull(),
+  dryRun: boolean("dryRun").notNull().default(true),
+  reason: text("reason").notNull(),
+  source: text("source").notNull().default("bot_command"),
+  status: text("status").notNull().default("running"),
+  backupPath: text("backupPath"),
+  requestedCount: integer("requestedCount").notNull().default(0),
+  successCount: integer("successCount").notNull().default(0),
+  failedCount: integer("failedCount").notNull().default(0),
+  skippedCount: integer("skippedCount").notNull().default(0),
+  operationStarted: boolean("operationStarted").notNull().default(false),
+  beforeSummary: jsonb("beforeSummary"),
+  afterSummary: jsonb("afterSummary"),
+  errorSummary: text("errorSummary"),
+  startedAt: timestamp("startedAt", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finishedAt", { withTimezone: true }),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("guild_reset_execution_guild_created_idx").on(table.guildId, table.createdAt),
+  index("guild_reset_execution_developer_created_idx").on(table.developerId, table.createdAt),
+]);
+
+export const guildResetExecutionItem = pgTable("guild_reset_execution_item", {
+  id: serial("id").primaryKey(),
+  executionId: text("executionId").notNull(),
+  targetType: text("targetType").notNull(),
+  targetId: text("targetId"),
+  targetName: text("targetName"),
+  action: text("action").notNull(),
+  status: text("status").notNull(),
+  errorCode: text("errorCode"),
+  errorMessage: text("errorMessage"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("guild_reset_execution_item_execution_idx").on(table.executionId, table.id),
+]);
+
+export const guildResetBackup = pgTable("guild_reset_backup", {
+  id: text("id").primaryKey(),
+  executionId: text("executionId").notNull(),
+  planId: text("planId").notNull(),
+  guildId: text("guildId").notNull(),
+  fileName: text("fileName").notNull(),
+  filePath: text("filePath").notNull(),
+  fileSize: integer("fileSize").notNull(),
+  checksum: text("checksum").notNull(),
+  schemaVersion: integer("schemaVersion").notNull().default(1),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("guild_reset_backup_guild_created_idx").on(table.guildId, table.createdAt),
+]);
+
+export const guildResetLock = pgTable("guild_reset_lock", {
+  scope: text("scope").primaryKey(),
+  guildId: text("guildId").notNull(),
+  executionId: text("executionId").notNull(),
+  lockedAt: timestamp("lockedAt", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expiresAt", { withTimezone: true }).notNull(),
+});
+
+// Vercel never receives the Bot token. Dashboard actions are therefore
+// authenticated in the web app, stored without secrets, and claimed by the
+// connected Bot through this bounded single-consumer queue.
+export const guildResetRequest = pgTable("guild_reset_request", {
+  id: text("id").primaryKey(),
+  action: text("action").notNull(),
+  guildId: text("guildId").notNull(),
+  developerId: text("developerId").notNull(),
+  developerName: text("developerName"),
+  payload: jsonb("payload").notNull(),
+  confirmationId: text("confirmationId"),
+  status: text("status").notNull().default("queued"),
+  result: jsonb("result"),
+  errorCode: text("errorCode"),
+  errorMessage: text("errorMessage"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  claimedAt: timestamp("claimedAt", { withTimezone: true }),
+  completedAt: timestamp("completedAt", { withTimezone: true }),
+}, (table) => [
+  index("guild_reset_request_status_created_idx").on(table.status, table.createdAt),
+  index("guild_reset_request_guild_created_idx").on(table.guildId, table.createdAt),
+]);

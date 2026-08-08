@@ -112,6 +112,12 @@ try {
     CREATE INDEX IF NOT EXISTS "discord_message_guild_created_at_idx"
     ON "discord_message" ("guildId", "createdAt" DESC)
   `);
+  await pool.query('ALTER TABLE "discord_message" ADD COLUMN IF NOT EXISTS "channelId" text');
+  await pool.query('ALTER TABLE "discord_message" ADD COLUMN IF NOT EXISTS "authorIsBot" boolean NOT NULL DEFAULT false');
+  await pool.query(`ALTER TABLE "discord_message" ADD COLUMN IF NOT EXISTS "authorRoleIds" jsonb NOT NULL DEFAULT '[]'::jsonb`);
+  await pool.query('CREATE INDEX IF NOT EXISTS "discord_message_guild_channel_created_idx" ON "discord_message" ("guildId", "channelId", "createdAt" DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS "discord_message_guild_author_created_idx" ON "discord_message" ("guildId", "authorId", "createdAt" DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS "discord_message_author_roles_gin_idx" ON "discord_message" USING gin ("authorRoleIds")');
   await pool.query(`
     CREATE TABLE IF NOT EXISTS "voice_session" (
       "id" serial PRIMARY KEY,
@@ -130,6 +136,84 @@ try {
     CREATE UNIQUE INDEX IF NOT EXISTS "voice_session_one_active_session_per_member_idx"
     ON "voice_session" ("guildId", "userId")
     WHERE "endedAt" IS NULL
+  `);
+  await pool.query('ALTER TABLE "voice_session" ADD COLUMN IF NOT EXISTS "userIsBot" boolean NOT NULL DEFAULT false');
+  await pool.query(`ALTER TABLE "voice_session" ADD COLUMN IF NOT EXISTS "userRoleIds" jsonb NOT NULL DEFAULT '[]'::jsonb`);
+  await pool.query('CREATE INDEX IF NOT EXISTS "voice_session_guild_channel_started_idx" ON "voice_session" ("guildId", "channelId", "startedAt" DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS "voice_session_user_roles_gin_idx" ON "voice_session" USING gin ("userRoleIds")');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_member_event" (
+      "id" serial PRIMARY KEY,
+      "guildId" text NOT NULL,
+      "userId" text NOT NULL,
+      "eventType" text NOT NULL CHECK ("eventType" IN ('join', 'leave')),
+      "isBot" boolean NOT NULL DEFAULT false,
+      "roleIds" jsonb NOT NULL DEFAULT '[]'::jsonb,
+      "source" text NOT NULL DEFAULT 'gateway',
+      "occurredAt" timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_member_event_guild_occurred_idx" ON "guild_member_event" ("guildId", "occurredAt" DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_member_event_guild_user_occurred_idx" ON "guild_member_event" ("guildId", "userId", "occurredAt" DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_member_event_roles_gin_idx" ON "guild_member_event" USING gin ("roleIds")');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "discord_reaction_event" (
+      "id" serial PRIMARY KEY,
+      "guildId" text NOT NULL,
+      "channelId" text,
+      "messageId" text NOT NULL,
+      "reactorId" text NOT NULL,
+      "recipientId" text,
+      "reactorIsBot" boolean NOT NULL DEFAULT false,
+      "reactorRoleIds" jsonb NOT NULL DEFAULT '[]'::jsonb,
+      "occurredAt" timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "discord_reaction_event_guild_occurred_idx" ON "discord_reaction_event" ("guildId", "occurredAt" DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS "discord_reaction_event_guild_channel_occurred_idx" ON "discord_reaction_event" ("guildId", "channelId", "occurredAt" DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS "discord_reaction_event_roles_gin_idx" ON "discord_reaction_event" USING gin ("reactorRoleIds")');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_channel_registry" (
+      "guildId" text NOT NULL,
+      "channelId" text NOT NULL,
+      "channelName" text NOT NULL,
+      "channelType" text NOT NULL,
+      "deletedAt" timestamptz,
+      "updatedAt" timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY ("guildId", "channelId")
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_channel_registry_guild_updated_idx" ON "guild_channel_registry" ("guildId", "updatedAt" DESC)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_role_registry" (
+      "guildId" text NOT NULL,
+      "roleId" text NOT NULL,
+      "roleName" text NOT NULL,
+      "memberCount" integer NOT NULL DEFAULT 0,
+      "isManaged" boolean NOT NULL DEFAULT false,
+      "isBotRole" boolean NOT NULL DEFAULT false,
+      "isEveryone" boolean NOT NULL DEFAULT false,
+      "color" integer NOT NULL DEFAULT 0,
+      "position" integer NOT NULL DEFAULT 0,
+      "deletedAt" timestamptz,
+      "updatedAt" timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY ("guildId", "roleId")
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_role_registry_guild_position_idx" ON "guild_role_registry" ("guildId", "position" DESC)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "analytics_health_snapshot" (
+      "id" serial PRIMARY KEY,
+      "guildId" text NOT NULL,
+      "date" date NOT NULL,
+      "periodDays" integer NOT NULL,
+      "score" integer,
+      "confidence" text NOT NULL,
+      "categories" jsonb NOT NULL,
+      "createdAt" timestamptz NOT NULL DEFAULT now(),
+      "updatedAt" timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT "analytics_health_snapshot_guild_date_period_unique" UNIQUE ("guildId", "date", "periodDays")
+    )
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS "voice_server_session" (
@@ -184,6 +268,37 @@ try {
   await pool.query('ALTER TABLE "bot_guild_block_audit" ADD COLUMN IF NOT EXISTS "previousHash" text');
   await pool.query('ALTER TABLE "bot_guild_block_audit" ADD COLUMN IF NOT EXISTS "entryHash" text');
   await pool.query('CREATE INDEX IF NOT EXISTS "bot_guild_block_audit_hash_idx" ON "bot_guild_block_audit" ("entryHash") WHERE "entryHash" IS NOT NULL');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "bot_moderation_audit" (
+      "id" text PRIMARY KEY,
+      "guildId" text NOT NULL,
+      "guildName" text,
+      "action" text NOT NULL,
+      "actorId" text NOT NULL,
+      "actorName" text,
+      "targetId" text,
+      "targetName" text,
+      "channelId" text,
+      "reason" text NOT NULL,
+      "requestedCount" integer,
+      "affectedCount" integer,
+      "status" text NOT NULL DEFAULT 'pending',
+      "errorCode" text,
+      "errorMessage" text,
+      "createdAt" timestamptz NOT NULL DEFAULT now(),
+      "completedAt" timestamptz,
+      CONSTRAINT "bot_moderation_audit_status_check"
+        CHECK ("status" IN ('pending', 'success', 'failed'))
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS "bot_moderation_audit_guild_created_idx"
+    ON "bot_moderation_audit" ("guildId", "createdAt" DESC)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS "bot_moderation_audit_actor_created_idx"
+    ON "bot_moderation_audit" ("actorId", "createdAt" DESC)
+  `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS "bot_guild_registry" (
       "guildId" text PRIMARY KEY,
@@ -312,6 +427,161 @@ try {
     ON "history_import_job" ("guildId")
     WHERE "status" IN ('queued', 'running')
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_reset_settings" (
+      "guildId" text PRIMARY KEY,
+      "enabled" boolean NOT NULL DEFAULT false,
+      "protectedChannelIds" jsonb NOT NULL DEFAULT '[]'::jsonb,
+      "protectedRoleIds" jsonb NOT NULL DEFAULT '[]'::jsonb,
+      "resetLogChannelId" text,
+      "backupChannelId" text,
+      "allowedAdminIds" jsonb NOT NULL DEFAULT '[]'::jsonb,
+      "maxChannelDeletes" integer,
+      "maxRoleDeletes" integer,
+      "maxTotalOperations" integer,
+      "guildCooldownHours" integer,
+      "developerCooldownMinutes" integer,
+      "defaultMode" text NOT NULL DEFAULT 'channels_only',
+      "createdAt" timestamptz NOT NULL DEFAULT now(),
+      "updatedAt" timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT "guild_reset_settings_default_mode_check"
+        CHECK ("defaultMode" IN ('channels_only', 'channels_and_roles', 'settings_reset')),
+      CONSTRAINT "guild_reset_settings_nonnegative_limits_check"
+        CHECK (
+          ("maxChannelDeletes" IS NULL OR "maxChannelDeletes" >= 0)
+          AND ("maxRoleDeletes" IS NULL OR "maxRoleDeletes" >= 0)
+          AND ("maxTotalOperations" IS NULL OR "maxTotalOperations" >= 1)
+          AND ("guildCooldownHours" IS NULL OR "guildCooldownHours" >= 0)
+          AND ("developerCooldownMinutes" IS NULL OR "developerCooldownMinutes" >= 0)
+        )
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_reset_plan" (
+      "id" text PRIMARY KEY,
+      "guildId" text NOT NULL,
+      "developerId" text NOT NULL,
+      "developerName" text,
+      "mode" text NOT NULL,
+      "dryRun" boolean NOT NULL DEFAULT true,
+      "requestedOptions" jsonb NOT NULL,
+      "targetSnapshotHash" text NOT NULL,
+      "targetSummary" jsonb NOT NULL,
+      "status" text NOT NULL DEFAULT 'active',
+      "expiresAt" timestamptz NOT NULL,
+      "createdAt" timestamptz NOT NULL DEFAULT now(),
+      "usedAt" timestamptz,
+      CONSTRAINT "guild_reset_plan_mode_check"
+        CHECK ("mode" IN ('channels_only', 'channels_and_roles', 'settings_reset'))
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_reset_plan_guild_created_idx" ON "guild_reset_plan" ("guildId", "createdAt" DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_reset_plan_developer_created_idx" ON "guild_reset_plan" ("developerId", "createdAt" DESC)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_reset_confirmation" (
+      "id" text PRIMARY KEY,
+      "planId" text NOT NULL REFERENCES "guild_reset_plan"("id") ON DELETE CASCADE,
+      "guildId" text NOT NULL,
+      "developerId" text NOT NULL,
+      "codeHash" text NOT NULL,
+      "expiresAt" timestamptz NOT NULL,
+      "usedAt" timestamptz,
+      "usedByRequestId" text,
+      "createdAt" timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_reset_confirmation_plan_created_idx" ON "guild_reset_confirmation" ("planId", "createdAt" DESC)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_reset_execution" (
+      "id" text PRIMARY KEY,
+      "planId" text NOT NULL REFERENCES "guild_reset_plan"("id"),
+      "guildId" text NOT NULL,
+      "developerId" text NOT NULL,
+      "developerName" text,
+      "mode" text NOT NULL,
+      "dryRun" boolean NOT NULL DEFAULT true,
+      "reason" text NOT NULL,
+      "source" text NOT NULL DEFAULT 'bot_command',
+      "status" text NOT NULL DEFAULT 'running',
+      "backupPath" text,
+      "requestedCount" integer NOT NULL DEFAULT 0,
+      "successCount" integer NOT NULL DEFAULT 0,
+      "failedCount" integer NOT NULL DEFAULT 0,
+      "skippedCount" integer NOT NULL DEFAULT 0,
+      "operationStarted" boolean NOT NULL DEFAULT false,
+      "beforeSummary" jsonb,
+      "afterSummary" jsonb,
+      "errorSummary" text,
+      "startedAt" timestamptz NOT NULL DEFAULT now(),
+      "finishedAt" timestamptz,
+      "createdAt" timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_reset_execution_guild_created_idx" ON "guild_reset_execution" ("guildId", "createdAt" DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_reset_execution_developer_created_idx" ON "guild_reset_execution" ("developerId", "createdAt" DESC)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_reset_execution_item" (
+      "id" serial PRIMARY KEY,
+      "executionId" text NOT NULL REFERENCES "guild_reset_execution"("id") ON DELETE CASCADE,
+      "targetType" text NOT NULL,
+      "targetId" text,
+      "targetName" text,
+      "action" text NOT NULL,
+      "status" text NOT NULL,
+      "errorCode" text,
+      "errorMessage" text,
+      "createdAt" timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_reset_execution_item_execution_idx" ON "guild_reset_execution_item" ("executionId", "id")');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_reset_backup" (
+      "id" text PRIMARY KEY,
+      "executionId" text NOT NULL REFERENCES "guild_reset_execution"("id") ON DELETE CASCADE,
+      "planId" text NOT NULL REFERENCES "guild_reset_plan"("id"),
+      "guildId" text NOT NULL,
+      "fileName" text NOT NULL,
+      "filePath" text NOT NULL,
+      "fileSize" integer NOT NULL,
+      "checksum" text NOT NULL,
+      "schemaVersion" integer NOT NULL DEFAULT 1,
+      "createdAt" timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_reset_backup_guild_created_idx" ON "guild_reset_backup" ("guildId", "createdAt" DESC)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_reset_lock" (
+      "scope" text PRIMARY KEY,
+      "guildId" text NOT NULL,
+      "executionId" text NOT NULL,
+      "lockedAt" timestamptz NOT NULL DEFAULT now(),
+      "expiresAt" timestamptz NOT NULL
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS "guild_reset_request" (
+      "id" text PRIMARY KEY,
+      "action" text NOT NULL,
+      "guildId" text NOT NULL,
+      "developerId" text NOT NULL,
+      "developerName" text,
+      "payload" jsonb NOT NULL,
+      "confirmationId" text,
+      "status" text NOT NULL DEFAULT 'queued',
+      "result" jsonb,
+      "errorCode" text,
+      "errorMessage" text,
+      "createdAt" timestamptz NOT NULL DEFAULT now(),
+      "claimedAt" timestamptz,
+      "completedAt" timestamptz,
+      CONSTRAINT "guild_reset_request_action_check"
+        CHECK ("action" IN ('plan', 'confirm')),
+      CONSTRAINT "guild_reset_request_status_check"
+        CHECK ("status" IN ('queued', 'running', 'completed', 'failed'))
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_reset_request_status_created_idx" ON "guild_reset_request" ("status", "createdAt")');
+  await pool.query('CREATE INDEX IF NOT EXISTS "guild_reset_request_guild_created_idx" ON "guild_reset_request" ("guildId", "createdAt" DESC)');
   await pool.query(`
     DO $$ BEGIN
       IF EXISTS (

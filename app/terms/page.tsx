@@ -1,5 +1,14 @@
 import { SiteFooter } from '@/components/site-footer'
 import { SiteHeader } from '@/components/site-header'
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: '利用規約 | NuviloView:OEM',
+  description: 'NuviloView:OEMおよびNuviloChan Botの利用条件をご確認いただけます。',
+  alternates: {
+    canonical: '/terms',
+  },
+}
 
 export default function TermsPage() {
   return (
@@ -8,19 +17,19 @@ export default function TermsPage() {
       <section className="mx-auto max-w-3xl px-6 pb-24 pt-32">
         <p className="text-sm font-bold tracking-widest text-primary">TERMS OF SERVICE</p>
         <h1 className="mt-4 text-4xl font-extrabold tracking-tight">利用規約</h1>
-        <p className="mt-3 text-sm text-muted-foreground">最終更新日：2026年7月18日</p>
+        <p className="mt-3 text-sm text-muted-foreground">最終更新日：2026年7月26日</p>
         <div className="mt-10 space-y-8 text-sm leading-7 text-muted-foreground">
           <TermsSection title="1. 適用">
             <p>本規約は、NuviloView:OEMおよびNuviloChan Bot（以下「本サービス」）の利用条件を定めるものです。本サービスを利用した時点で、本規約およびプライバシーポリシーに同意したものとみなします。本サービスはDiscord公式の提供・提携・承認サービスではありません。</p>
           </TermsSection>
           <TermsSection title="2. サービス内容">
-            <p>本サービスは、Discordコミュニティの運営を支援するため、Botが取得したメンバー数、メッセージ数、リアクション、通話時間、参加・退出、チャンネル権限状態および検索機能用のメッセージ本文などを集計・分析・表示します。翻訳、レポート出力、通知、目標管理その他の補助機能を提供する場合があります。</p>
+            <p>本サービスは、Discordコミュニティの運営を支援するため、Botが取得したメンバー数、メッセージ数、リアクション、通話時間、参加・退出、チャンネル権限状態および検索機能用のメッセージ本文などを集計・分析・表示します。翻訳、レポート出力、通知、目標管理に加え、権限を持つ運営者向けに個別BAN、Kick、Timeout、BAN解除、メッセージ整理および一定時間内の連続投稿を対象とする自動スパム検知などのモデレーション機能を提供する場合があります。</p>
           </TermsSection>
           <TermsSection title="3. アカウントと利用資格">
             <p>利用者は、Discordの利用条件および年齢要件を満たし、正確なアカウント情報を利用するものとします。利用者は自身のアカウント、セッションおよび端末を適切に管理し、不正利用を発見した場合は速やかにサポートへ連絡してください。</p>
           </TermsSection>
           <TermsSection title="4. サーバー管理者の責任">
-            <p>Botを導入し、またはダッシュボードからサーバー情報を取り扱う利用者は、当該サーバーを管理する正当な権限を有するものとします。メッセージ本文の保存、活動状況の分析および翻訳機能を利用する場合、サーバーのルールや案内に本サービスの利用と収集範囲を記載するなど、メンバーへの必要な通知・同意取得を利用者の責任で行ってください。</p>
+            <p>Botを導入し、またはダッシュボードからサーバー情報を取り扱う利用者は、当該サーバーを管理する正当な権限を有するものとします。メッセージ本文の保存、活動状況の分析、翻訳およびモデレーション機能を利用する場合、サーバーのルールや案内に本サービスの利用と収集範囲を記載するなど、メンバーへの必要な通知・同意取得を利用者の責任で行ってください。モデレーション機能は各サーバーの規則とDiscordの利用規約に従い、正当な目的に限って使用してください。</p>
           </TermsSection>
           <TermsSection title="5. 投稿データ等の取扱い">
             <p>メッセージその他の投稿内容に関する権利は、投稿者または正当な権利者に留保されます。利用者は、本サービスの提供、保守、セキュリティ対策および障害対応に必要な範囲で、当該データを処理することを許諾するものとします。利用者は、第三者の個人情報、秘密情報または権利を侵害する情報の取扱いに十分注意してください。</p>

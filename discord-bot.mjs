@@ -2,30 +2,88 @@ import {
   ActionRowBuilder,
   ActivityType,
   ApplicationCommandType,
+  AuditLogEvent,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
   Client,
+  ContainerBuilder,
   ContextMenuCommandBuilder,
   EmbedBuilder,
   GatewayIntentBits,
   ModalBuilder,
   MessageFlags,
+  Partials,
   PermissionFlagsBits,
   REST,
   Routes,
+  SectionBuilder,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
+  TextDisplayBuilder,
 } from "discord.js";
 import { neon } from "@neondatabase/serverless";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomInt, randomUUID } from "node:crypto";
 import { escapeScopeText, formatScopeMessage, plainComponentText } from "./lib/scopeserver-utils.mjs";
+import { createGuildResetService } from "./lib/guild-reset-service.mjs";
+import { getGuildResetConfig, isResetDeveloper, parseIdList } from "./lib/guild-reset-utils.mjs";
+import {
+  formatModerationActionResult,
+  getModerationTargetError,
+  normalizeModerationReason,
+  validateDiscordId,
+  validateTimeoutMinutes,
+} from "./lib/moderation-utils.mjs";
+import {
+  evaluateSecurityPermissionChecks,
+  extractConfirmation,
+  getSecurityCommandDefinition,
+  parseDiscordTargetId,
+  parseSecurityCommand,
+  securityCommandDefinitions,
+  securityPermissionCheckDefinitions,
+} from "./lib/prefix-security-commands.mjs";
+import {
+  canUseDiscordNativeDice,
+  createDiscordNativeDiceUrl,
+  createDiceRollCustomId,
+  entertainmentCommandDefinitions,
+  formatDiceNotation,
+  getEntertainmentCommandDefinition,
+  parseDiceNotation,
+  parseDiceRollCustomId,
+  parseEntertainmentCommand,
+  rollDice,
+} from "./lib/entertainment-commands.mjs";
+import {
+  canManageSpamAction,
+  createSpamActionCustomId,
+  createSpamTracker,
+  defaultSpamProtectionConfig,
+  getAutomaticSpamProtectionBlockReason,
+  parseSpamActionCustomId,
+} from "./lib/spam-protection.mjs";
+import {
+  SNIPE_HISTORY_LIMIT,
+  SNIPE_RETENTION_MS,
+  SNIPE_RESULT_SESSION_MS,
+  canDeleteSnipeResult,
+  createSnipeDeleteCustomId,
+  createSnipePageCustomId,
+  parseSnipeDeleteCustomId,
+  parseSnipePageCustomId,
+} from "./lib/snipe-utils.mjs";
+import {
+  getTranslationAutocompleteChoices,
+  preferredTranslationLanguages,
+  resolveAvailableTranslationLanguage,
+} from "./lib/translation-command.mjs";
 
-if (!process.env.DATABASE_URL || !process.env.DISCORD_BOT_TOKEN) {
+if (!process.env.DATABASE_URL || !process.env.NUVILOVIEW_BOT_TOKEN) {
   throw new Error(
-    "DATABASE_URL and DISCORD_BOT_TOKEN must be set before starting the bot.",
+    "DATABASE_URL and NUVILOVIEW_BOT_TOKEN must be set before starting the bot.",
   );
 }
 
@@ -43,6 +101,42 @@ const translationRequestLimit = 8;
 const translationRequestLifetimeMs = 5 * 60 * 1000;
 const inactivityAlertHours = 24;
 const departureAlertThreshold = 3;
+
+function boundedEnvironmentInteger(name, fallback, minimum, maximum) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value)
+    ? Math.min(Math.max(value, minimum), maximum)
+    : fallback;
+}
+
+const spamProtectionEnabled =
+  process.env.SPAM_PROTECTION_ENABLED?.trim().toLowerCase() !== "false";
+const spamMessageLimit = boundedEnvironmentInteger(
+  "SPAM_MESSAGE_LIMIT",
+  defaultSpamProtectionConfig.messageLimit,
+  3,
+  30,
+);
+const spamWindowMs =
+  boundedEnvironmentInteger(
+    "SPAM_WINDOW_SECONDS",
+    defaultSpamProtectionConfig.windowMs / 1_000,
+    2,
+    60,
+  ) * 1_000;
+const spamTimeoutMinutes = boundedEnvironmentInteger(
+  "SPAM_TIMEOUT_MINUTES",
+  defaultSpamProtectionConfig.timeoutMinutes,
+  1,
+  1_440,
+);
+const spamDetectionCooldownMs =
+  boundedEnvironmentInteger(
+    "SPAM_DETECTION_COOLDOWN_MINUTES",
+    defaultSpamProtectionConfig.detectionCooldownMs / 60_000,
+    1,
+    1_440,
+  ) * 60_000;
 const botStartedAt = new Date();
 const botHeartbeatId = "primary";
 const client = new Client({
@@ -54,10 +148,11 @@ const client = new Client({
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.MessageContent,
   ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
 });
 
 const dashboardUrl = "https://nuviloview-oem.vercel.app/";
-const applicationId = process.env.DISCORD_CLIENT_ID;
+const applicationId = process.env.NUVILOVIEW_CLIENT_ID;
 const developerGuildId = process.env.DISCORD_DEV_GUILD_ID;
 const developerOwnerUserId = process.env.DISCORD_OWNER_USER_ID?.trim() || null;
 const auditSigningKey = process.env.AUDIT_LOG_SIGNING_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim() || null;
@@ -71,8 +166,30 @@ const botServersAttempts = new Map();
 const scopeServerAttempts = new Map();
 const guildCommandSyncAttempts = new Map();
 const blockedGuildIds = new Set();
+const guildResetConfig = getGuildResetConfig();
+let lastPresenceGuildCount = null;
 const translationAttempts = new Map();
 const translationRequests = new Map();
+const moderationAttempts = new Map();
+const moderationCooldownMs = 5 * 1000;
+const entertainmentAttempts = new Map();
+const entertainmentCooldownMs = 2 * 1000;
+const spamTracker = createSpamTracker({
+  messageLimit: spamMessageLimit,
+  windowMs: spamWindowMs,
+  detectionCooldownMs: spamDetectionCooldownMs,
+});
+const spamActionLocks = new Set();
+const spamAlertMessages = new Map();
+const deletedMessageSnipes = new Map();
+const snipeHistoryCleanupTimers = new Map();
+const ignoredSnipeDeleteIds = new Set();
+const snipeResultSessions = new Map();
+const spamTrackerPruneTimer = setInterval(
+  () => spamTracker.prune(),
+  Math.max(spamWindowMs * 2, 60_000),
+);
+spamTrackerPruneTimer.unref();
 const scopeServerRequests = new Map();
 const scopeServerRequestLifetimeMs = 5 * 60 * 1000;
 const scopeServerCooldownMs = 10 * 1000;
@@ -121,6 +238,53 @@ const dashboardCommand = new SlashCommandBuilder()
 const privacyCommand = new SlashCommandBuilder()
   .setName("privacy")
   .setDescription("NuviloChan Botが保存するデータと保持期間を表示します")
+  .toJSON();
+const translateCommand = new SlashCommandBuilder()
+  .setName("translate")
+  .setDescription("入力したテキストをローカル翻訳します")
+  .setDMPermission(false)
+  .addStringOption((option) =>
+    option
+      .setName("text")
+      .setDescription("翻訳するテキスト")
+      .setRequired(true)
+      .setMinLength(1)
+      .setMaxLength(2_000),
+  )
+  .addStringOption((option) =>
+    option
+      .setName("language")
+      .setDescription("翻訳先（省略すると一覧から選択）")
+      .setAutocomplete(true),
+  )
+  .toJSON();
+const zxCommand = new SlashCommandBuilder()
+  .setName("zx")
+  .setDescription("NuviloChanの娯楽コマンドを選びます")
+  .setDMPermission(false)
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("help")
+      .setDescription("zx?で使える娯楽コマンドの一覧を表示します"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("dice")
+      .setDescription("なにがでるかな…")
+      .addStringOption((option) =>
+        option
+          .setName("dice")
+          .setDescription("なにがでるかな…")
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(8),
+      ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("snipe")
+      .setDescription("このチャンネルで削除されたメッセージを表示します"),
+  )
   .toJSON();
 const translateMessageCommand = new ContextMenuCommandBuilder()
   .setName("NuviloChan 翻訳")
@@ -199,12 +363,111 @@ const guildBlocksCommand = new SlashCommandBuilder()
   .setName("guildblocks")
   .setDescription("開発者用: Botを停止しているサーバー一覧を表示します")
   .toJSON();
+const devResetPlanCommand = new SlashCommandBuilder()
+  .setName("dev-reset-plan")
+  .setDescription("開発者用: Guild初期化の安全なPlanを作成します")
+  .addStringOption((option) =>
+    option
+      .setName("guild_id")
+      .setDescription("対象Guild ID")
+      .setRequired(true),
+  )
+  .addStringOption((option) =>
+    option
+      .setName("mode")
+      .setDescription("初期化モード（初期値: channels_only）")
+      .addChoices(
+        { name: "Channels only", value: "channels_only" },
+        { name: "Channels and roles", value: "channels_and_roles" },
+        { name: "Settings reset", value: "settings_reset" },
+      ),
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("dry_run")
+      .setDescription("Discord上のデータを変更せず検証します（初期値: true）"),
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("delete_channels")
+      .setDescription("保護対象以外のチャンネルを削除対象にします（初期値: true）"),
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("delete_roles")
+      .setDescription("ロール削除を明示的に有効化します（初期値: false）"),
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("reset_settings")
+      .setDescription("Guild設定初期化を明示的に有効化します（初期値: false）"),
+  )
+  .addStringOption((option) =>
+    option
+      .setName("keep_channel_ids")
+      .setDescription("追加で保護するチャンネルID（カンマ区切り）"),
+  )
+  .addStringOption((option) =>
+    option
+      .setName("keep_role_ids")
+      .setDescription("追加で保護するロールID（カンマ区切り）"),
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("create_default_channels")
+      .setDescription("実行後にgeneral/logs/rulesを作成します（初期値: false）"),
+  )
+  .addStringOption((option) =>
+    option
+      .setName("reason")
+      .setDescription("実行理由（監査記録用）")
+      .setRequired(true)
+      .setMinLength(3)
+      .setMaxLength(300),
+  )
+  .toJSON();
+const devResetCodeCommand = new SlashCommandBuilder()
+  .setName("dev-reset-code")
+  .setDescription("開発者用: 有効なReset Planのワンタイム確認コードを発行します")
+  .addStringOption((option) =>
+    option
+      .setName("plan_id")
+      .setDescription("Plan ID")
+      .setRequired(true),
+  )
+  .toJSON();
+const devResetConfirmCommand = new SlashCommandBuilder()
+  .setName("dev-reset-confirm")
+  .setDescription("開発者用: 確認コードを検証してReset Planを実行します")
+  .addStringOption((option) =>
+    option
+      .setName("plan_id")
+      .setDescription("Plan ID")
+      .setRequired(true),
+  )
+  .addStringOption((option) =>
+    option
+      .setName("code")
+      .setDescription("Ephemeralで発行されたワンタイム確認コード")
+      .setRequired(true)
+      .setMinLength(6)
+      .setMaxLength(12),
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("acknowledge")
+      .setDescription("削除と復元制約の警告を理解した場合のみtrue")
+      .setRequired(true),
+  )
+  .toJSON();
 // Keep the public surface intentionally small. Detailed administration is
 // available in the dashboard; the developer guild receives the extended set.
 const publicCommands = [
   helpCommand,
   todayActiveCommand,
   serverCommandUpdateCommand,
+  translateCommand,
+  zxCommand,
 ];
 // These are registered per guild so newly-added management tools can appear
 // immediately without duplicating the small global command set.
@@ -224,16 +487,26 @@ const developerCommands = [
   guildBlockCommand,
   guildUnblockCommand,
   guildBlocksCommand,
+  ...(guildResetConfig.enabled
+    ? [devResetPlanCommand, devResetCodeCommand, devResetConfirmCommand]
+    : []),
 ];
 
+const guildResetService = createGuildResetService({
+  client,
+  sql,
+  isGuildBlocked,
+  botVersion: "0.1.0",
+});
+
 function getRestClient() {
-  return new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
+  return new REST({ version: "10" }).setToken(process.env.NUVILOVIEW_BOT_TOKEN);
 }
 
 function safeErrorText(error) {
   const raw = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   return raw
-    .replaceAll(process.env.DISCORD_BOT_TOKEN ?? "", "[REDACTED]")
+    .replaceAll(process.env.NUVILOVIEW_BOT_TOKEN ?? "", "[REDACTED]")
     .replace(/(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,})/g, "[REDACTED]")
     .slice(0, 1_500);
 }
@@ -264,7 +537,7 @@ function getGuildCommandDefinitions(guildId) {
 async function syncGuildCommands(guildId) {
   if (!applicationId)
     throw new Error(
-      "DISCORD_CLIENT_ID must be set before registering slash commands.",
+      "NUVILOVIEW_CLIENT_ID must be set before registering slash commands.",
     );
   await getRestClient().put(
     Routes.applicationGuildCommands(applicationId, guildId),
@@ -275,7 +548,7 @@ async function syncGuildCommands(guildId) {
 async function registerCommands() {
   if (!applicationId)
     throw new Error(
-      "DISCORD_CLIENT_ID must be set before registering slash commands.",
+      "NUVILOVIEW_CLIENT_ID must be set before registering slash commands.",
     );
   const rest = getRestClient();
   await rest.put(Routes.applicationCommands(applicationId), {
@@ -296,6 +569,15 @@ function canUseBotServers(interaction) {
   );
 }
 
+function canUseGuildReset(interaction) {
+  return Boolean(
+    guildResetConfig.enabled &&
+      developerGuildId &&
+      interaction.guildId === developerGuildId &&
+      isResetDeveloper(interaction.user.id),
+  );
+}
+
 function formatGuildName(name) {
   return name
     .replace(/[\\`*_~|]/g, "\\$&")
@@ -303,10 +585,217 @@ function formatGuildName(name) {
     .slice(0, 80);
 }
 
+function formatResetTargets(items, emptyText, limit = 12) {
+  if (!Array.isArray(items) || items.length === 0) return emptyText;
+  const visible = items.slice(0, limit).map(
+    (item) => `• ${formatGuildName(item.name ?? "名称なし")} (\`${item.id}\`)`,
+  );
+  if (items.length > limit) visible.push(`…ほか ${items.length - limit}件`);
+  return visible.join("\n").slice(0, 1_024);
+}
+
+async function replyGuildResetError(interaction, error) {
+  const output = guildResetService.publicError(error);
+  const content = `❌ ${output.message}\n-# エラーコード: ${output.code}`;
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply({ content, embeds: [], components: [] }).catch(() => {});
+  } else {
+    await interaction.reply({
+      content,
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    }).catch(() => {});
+  }
+}
+
+async function handleDevResetPlanCommand(interaction) {
+  if (!canUseGuildReset(interaction)) {
+    await interaction.reply({
+      content: "このコマンドを実行する権限がありません。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const plan = await guildResetService.createPlan({
+      guildId: interaction.options.getString("guild_id", true).trim(),
+      developerId: interaction.user.id,
+      developerName: interaction.user.username,
+      source: "bot_command",
+      input: {
+        mode: interaction.options.getString("mode") ?? "channels_only",
+        dryRun: interaction.options.getBoolean("dry_run") ?? true,
+        deleteChannels: interaction.options.getBoolean("delete_channels") ?? undefined,
+        deleteRoles: interaction.options.getBoolean("delete_roles") ?? false,
+        resetSettings: interaction.options.getBoolean("reset_settings") ?? false,
+        keepChannelIds: parseIdList(interaction.options.getString("keep_channel_ids") ?? ""),
+        keepRoleIds: parseIdList(interaction.options.getString("keep_role_ids") ?? ""),
+        createDefaultChannels:
+          interaction.options.getBoolean("create_default_channels") ?? false,
+        reason: interaction.options.getString("reason", true),
+      },
+    });
+    const summary = plan.targetSummary;
+    const limitText = summary.limitExceeded
+      ? `🔴 超過: ${summary.limitReasons.join("、")}`
+      : `🟢 上限内（Channel ${summary.channelDeleteCount}/${summary.limits.maxChannelDeletes}、Role ${summary.roleDeleteCount}/${summary.limits.maxRoleDeletes}、合計 ${summary.totalOperationCount}/${summary.limits.maxTotalOperations}）`;
+    const permissionText = summary.missingPermissions.length
+      ? `不足: ${summary.missingPermissions.join(", ")}`
+      : "必要権限を確認済み";
+    const embed = new EmbedBuilder()
+      .setColor(
+        summary.limitExceeded || summary.missingPermissions.length
+          ? 0xf0a34a
+          : plan.dryRun
+            ? 0x56b6ff
+            : 0xed4245,
+      )
+      .setTitle(`Guild Reset Plan · ${formatGuildName(summary.guild.name)}`)
+      .setDescription(
+        [
+          `**Mode:** \`${plan.mode}\``,
+          `**Dry Run:** ${plan.dryRun ? "Yes（変更なし）" : "No（実変更あり）"}`,
+          `**Guild:** \`${plan.guildId}\``,
+          `**所有者:** ${formatGuildName(summary.guild.ownerName)} (\`${summary.guild.ownerId}\`)`,
+          `**メンバー:** ${summary.guild.memberCount.toLocaleString("ja-JP")}`,
+          `**現在:** ${summary.guild.channelCount} channels / ${summary.guild.roleCount} roles`,
+        ].join("\n"),
+      )
+      .addFields(
+        {
+          name: `削除予定チャンネル · ${summary.deleteChannels.length}件`,
+          value: formatResetTargets(summary.deleteChannels, "なし"),
+        },
+        {
+          name: `保護チャンネル · ${summary.protectedChannels.length}件`,
+          value: formatResetTargets(summary.protectedChannels, "なし"),
+        },
+        {
+          name: `削除予定ロール · ${summary.deleteRoles.length}件`,
+          value: formatResetTargets(summary.deleteRoles, "なし"),
+        },
+        {
+          name: `保護ロール · ${summary.protectedRoles.length}件`,
+          value: formatResetTargets(summary.protectedRoles, "なし"),
+        },
+        {
+          name: "変更予定設定",
+          value: summary.settingsChanges.length
+            ? summary.settingsChanges.map((item) => `• ${item}`).join("\n").slice(0, 1_024)
+            : "なし",
+          inline: true,
+        },
+        { name: "実行上限", value: limitText.slice(0, 1_024), inline: true },
+        { name: "Bot権限", value: permissionText, inline: true },
+        {
+          name: "警告",
+          value: summary.warnings.map((warning) => `⚠️ ${warning}`).join("\n").slice(0, 1_024),
+        },
+        { name: "Plan ID", value: `\`${plan.id}\`` },
+        {
+          name: "Plan有効期限",
+          value: `<t:${Math.floor(new Date(plan.expiresAt).getTime() / 1000)}:F>`,
+        },
+      )
+      .setFooter({
+        text: "この時点ではDiscord上のデータを変更していません。",
+      });
+    await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } });
+  } catch (error) {
+    await replyGuildResetError(interaction, error);
+  }
+}
+
+async function handleDevResetCodeCommand(interaction) {
+  if (!canUseGuildReset(interaction)) {
+    await interaction.reply({
+      content: "このコマンドを実行する権限がありません。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const issued = await guildResetService.issueCode({
+      planId: interaction.options.getString("plan_id", true).trim(),
+      developerId: interaction.user.id,
+    });
+    await interaction.editReply({
+      content: [
+        "🔐 **ワンタイム確認コード**",
+        `\`${issued.code}\``,
+        `有効期限: <t:${Math.floor(new Date(issued.expiresAt).getTime() / 1000)}:R>`,
+        `Plan: \`${issued.plan.planId}\``,
+        "",
+        "このコードはこのEphemeralレスポンスにだけ表示されます。再発行すると古いコードは無効になります。",
+      ].join("\n"),
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    await replyGuildResetError(interaction, error);
+  }
+}
+
+async function handleDevResetConfirmCommand(interaction) {
+  if (!canUseGuildReset(interaction)) {
+    await interaction.reply({
+      content: "このコマンドを実行する権限がありません。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (interaction.options.getBoolean("acknowledge", true) !== true) {
+    await interaction.reply({
+      content:
+        "実行するには、削除と復元制約の警告を理解したうえで`acknowledge`をtrueにしてください。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const planId = interaction.options.getString("plan_id", true).trim();
+  try {
+    const guildId = await guildResetService.getPlanGuildId(planId, interaction.user.id);
+    const result = await guildResetService.executePlan({
+      planId,
+      guildId,
+      developerId: interaction.user.id,
+      developerName: interaction.user.username,
+      code: interaction.options.getString("code", true).trim(),
+      source: "bot_command",
+    });
+    await interaction.editReply({
+      content: [
+        result.dryRun ? "✅ **Guild Reset Dry Run完了**" : "✅ **Guild Reset完了**",
+        `Guild: ${formatGuildName(result.guildName)} (\`${result.guildId}\`)`,
+        `Execution: \`${result.executionId}\``,
+        `成功 ${result.successCount} / 失敗 ${result.failedCount} / スキップ ${result.skippedCount}`,
+        `バックアップ: \`${result.backupFileName}\``,
+      ].join("\n"),
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    await replyGuildResetError(interaction, error);
+  }
+}
+
 function getAvailableBotGuilds() {
   return [...client.guilds.cache.values()]
     .filter((guild) => !isGuildBlocked(guild.id))
     .sort((left, right) => left.name.localeCompare(right.name, "ja"));
+}
+
+function updateBotPresence() {
+  if (!client.user) return;
+  const guildCount = getAvailableBotGuilds().length;
+  if (guildCount === lastPresenceGuildCount) return;
+
+  client.user.setActivity(
+    `NuviloView | Supporting ${guildCount} ${guildCount === 1 ? "server" : "servers"}`,
+    { type: ActivityType.Playing },
+  );
+  lastPresenceGuildCount = guildCount;
 }
 
 function getScopeGuildChoices(focusedValue = "") {
@@ -639,31 +1128,9 @@ async function handleScopeServerComponent(interaction) {
   }
 }
 
-const translationLanguages = [
-  ["🇯🇵", "日本語", "ja"],
-  ["🇺🇸", "English", "en"],
-  ["🇨🇳", "简体中文", "zh-Hans"],
-  ["🇹🇼", "繁體中文", "zh-Hant"],
-  ["🇰🇷", "한국어", "ko"],
-  ["🇪🇸", "Español", "es"],
-  ["🇫🇷", "Français", "fr"],
-  ["🇩🇪", "Deutsch", "de"],
-  ["🇮🇹", "Italiano", "it"],
-  ["🇵🇹", "Português", "pt"],
-  ["🇷🇺", "Русский", "ru"],
-  ["🇺🇦", "Українська", "uk"],
-  ["🇸🇦", "العربية", "ar"],
-  ["🇮🇳", "हिन्दी", "hi"],
-  ["🇮🇩", "Bahasa Indonesia", "id"],
-  ["🇻🇳", "Tiếng Việt", "vi"],
-  ["🇹🇭", "ไทย", "th"],
-  ["🇹🇷", "Türkçe", "tr"],
-  ["🇵🇱", "Polski", "pl"],
-  ["🇳🇱", "Nederlands", "nl"],
-  ["🇸🇪", "Svenska", "sv"],
-  ["🇫🇮", "Suomi", "fi"],
-  ["🇬🇷", "Ελληνικά", "el"],
-];
+const translationLanguages = preferredTranslationLanguages.map(
+  ({ emoji, name, code }) => [emoji, name, code],
+);
 
 async function getLibreTranslateLanguages() {
   const response = await fetch(`${libreTranslateUrl}/languages`, {
@@ -880,6 +1347,141 @@ function createTranslationLanguagePicker(requestId, availableLanguages, page = 0
   ];
 }
 
+function createTranslationLanguageMetadata(availableLanguages) {
+  return {
+    supportedLanguages: new Set(
+      availableLanguages.map((language) => language.code),
+    ),
+    languageNames: new Map(
+      availableLanguages.map((language) => [language.code, language.name]),
+    ),
+    availableLanguages,
+  };
+}
+
+function createTranslationResultEmbed({
+  translated,
+  targetLanguage,
+  languageNames,
+}) {
+  return new EmbedBuilder()
+    .setColor(0x56b6ff)
+    .setTitle(
+      `${languageNames.get(targetLanguage) ?? getLanguageLabel(targetLanguage)} に翻訳`,
+    )
+    .setDescription(translated.text.slice(0, 4_000))
+    .setFooter({
+      text:
+        `検出言語: ${translated.detectedLanguage ?? "自動"} · ` +
+        `今月の残り処理枠: ${translated.remainingCharacters.toLocaleString("ja-JP")}文字`,
+    });
+}
+
+async function handleTranslateSlashCommand(interaction) {
+  if (!interaction.inGuild() || !interaction.guild) {
+    await interaction.reply({
+      content: "このコマンドはサーバー内でのみ利用できます。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (isGuildBlocked(interaction.guildId)) {
+    await interaction.reply({
+      content: "このサーバーではBot機能が停止されています。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const content = interaction.options.getString("text", true).trim();
+  const requestedLanguage = interaction.options.getString("language")?.trim() ?? "";
+  if (!content || [...content].length > 2_000) {
+    await interaction.reply({
+      content: "翻訳するテキストを1〜2000文字で入力してください。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let availableLanguages;
+  try {
+    availableLanguages = await getLibreTranslateLanguages();
+  } catch (error) {
+    console.error("Local translation service is unavailable:", error.message);
+    await interaction.editReply(
+      "ローカル翻訳サービスに接続できません。Bot用PCが起動しているか、少し待ってからお試しください。",
+    );
+    return;
+  }
+  if (availableLanguages.length === 0) {
+    await interaction.editReply(
+      "翻訳用の言語モデルを準備中です。少し待ってからもう一度お試しください。",
+    );
+    return;
+  }
+
+  const languageMetadata = createTranslationLanguageMetadata(availableLanguages);
+  if (!requestedLanguage) {
+    const requestId = createTranslationRequest(
+      interaction.user.id,
+      content,
+      languageMetadata,
+    );
+    await interaction.editReply({
+      content:
+        "翻訳先を選択してください。結果はあなたにだけ表示され、入力本文・翻訳結果は保存されません。\n" +
+        `-# LibreTranslate v${libreTranslateVersion} · ローカル処理`,
+      components: createTranslationLanguagePicker(requestId, availableLanguages),
+    });
+    return;
+  }
+
+  const target = resolveAvailableTranslationLanguage(
+    requestedLanguage,
+    availableLanguages,
+  );
+  if (!target) {
+    await interaction.editReply({
+      content:
+        `翻訳先 \`${requestedLanguage.slice(0, 40)}\` は現在のローカル翻訳に対応していません。` +
+        "候補から選択するか、languageを省略して一覧を開いてください。",
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  try {
+    const translated = await translateMessageText({
+      content,
+      targetLanguage: target.code,
+      userId: interaction.user.id,
+    });
+    await interaction.editReply({
+      embeds: [
+        createTranslationResultEmbed({
+          translated,
+          targetLanguage: target.code,
+          languageNames: languageMetadata.languageNames,
+        }),
+      ],
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    console.error("Slash translation failed:", error.message);
+    await interaction.editReply({
+      content:
+        error.code === "MONTHLY_LIMIT" || error.code === "RATE_LIMIT"
+          ? error.message
+          : "翻訳に失敗しました。少し待ってからもう一度お試しください。",
+      embeds: [],
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+  }
+}
+
 function isGuildBlocked(guildId) {
   return blockedGuildIds.has(guildId);
 }
@@ -934,6 +1536,7 @@ async function markGuildDisconnected(guildId) {
 
 async function enforceBlockedGuilds() {
   await loadBlockedGuilds();
+  updateBotPresence();
   await Promise.allSettled(
     client.guilds.cache.map((guild) => leaveBlockedGuild(guild, "blocklist refresh")),
   );
@@ -947,6 +1550,11 @@ async function purgeGuildData(guildId) {
     sql`DELETE FROM "discord_message" WHERE "guildId" = ${guildId}`,
     sql`DELETE FROM "voice_session" WHERE "guildId" = ${guildId}`,
     sql`DELETE FROM "voice_server_session" WHERE "guildId" = ${guildId}`,
+    sql`DELETE FROM "guild_member_event" WHERE "guildId" = ${guildId}`,
+    sql`DELETE FROM "discord_reaction_event" WHERE "guildId" = ${guildId}`,
+    sql`DELETE FROM "guild_channel_registry" WHERE "guildId" = ${guildId}`,
+    sql`DELETE FROM "guild_role_registry" WHERE "guildId" = ${guildId}`,
+    sql`DELETE FROM "analytics_health_snapshot" WHERE "guildId" = ${guildId}`,
     sql`DELETE FROM "bot_channel_access" WHERE "guildId" = ${guildId}`,
     sql`DELETE FROM "history_import_job" WHERE "guildId" = ${guildId}`,
     sql`DELETE FROM "user_notification" WHERE "guildId" = ${guildId}`,
@@ -1128,6 +1736,2093 @@ async function requireGuildManager(interaction) {
   return false;
 }
 
+const moderationActionConfig = {
+  ban: {
+    actorPermission: PermissionFlagsBits.BanMembers,
+    botPermission: PermissionFlagsBits.BanMembers,
+    capability: "bannable",
+  },
+  kick: {
+    actorPermission: PermissionFlagsBits.KickMembers,
+    botPermission: PermissionFlagsBits.KickMembers,
+    capability: "kickable",
+  },
+  timeout: {
+    actorPermission: PermissionFlagsBits.ModerateMembers,
+    botPermission: PermissionFlagsBits.ModerateMembers,
+    capability: "moderatable",
+  },
+  untimeout: {
+    actorPermission: PermissionFlagsBits.ModerateMembers,
+    botPermission: PermissionFlagsBits.ModerateMembers,
+    capability: "moderatable",
+  },
+  unban: {
+    actorPermission: PermissionFlagsBits.BanMembers,
+    botPermission: PermissionFlagsBits.BanMembers,
+  },
+  banlist: {
+    actorPermission: PermissionFlagsBits.BanMembers,
+    botPermission: PermissionFlagsBits.BanMembers,
+  },
+  clear: {
+    actorPermission: PermissionFlagsBits.ManageMessages,
+    botPermission: PermissionFlagsBits.ManageMessages,
+  },
+};
+
+function getInteractionMemberName(interaction) {
+  return (
+    interaction.member?.displayName ??
+    interaction.user.globalName ??
+    interaction.user.username
+  ).slice(0, 100);
+}
+
+function getModerationCooldownSeconds(interaction, action) {
+  const key = `${interaction.guildId}:${interaction.user.id}:${action}`;
+  const previous = moderationAttempts.get(key) ?? 0;
+  const remainingMs = moderationCooldownMs - (Date.now() - previous);
+  if (remainingMs > 0) return Math.ceil(remainingMs / 1000);
+  moderationAttempts.set(key, Date.now());
+  return 0;
+}
+
+async function replyModerationError(interaction, message) {
+  const content = `❌ ${message}`;
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply({ content, embeds: [], allowedMentions: { parse: [] } });
+    return;
+  }
+  await interaction.reply({
+    content,
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+}
+
+function normalizePrefixReply(payload) {
+  if (typeof payload === "string") {
+    return { content: payload, allowedMentions: { parse: [] } };
+  }
+  const { flags: _flags, ...messagePayload } = payload;
+  return {
+    ...messagePayload,
+    allowedMentions: { parse: [] },
+  };
+}
+
+function createPrefixModerationContext(message, optionValues) {
+  const context = {
+    guild: message.guild,
+    guildId: message.guild.id,
+    channel: message.channel,
+    channelId: message.channelId,
+    user: message.author,
+    member: message.member,
+    memberPermissions: message.member?.permissions ?? null,
+    sourceMessageId: message.id,
+    deferred: false,
+    replied: false,
+    responseMessage: null,
+    inGuild: () => true,
+    options: {
+      getBoolean: (name) => optionValues[name] ?? null,
+      getInteger: (name) => optionValues[name] ?? null,
+      getString: (name) => optionValues[name] ?? null,
+      getUser: (name) => optionValues[name] ?? null,
+    },
+    async reply(payload) {
+      context.responseMessage = await message.channel.send(
+        normalizePrefixReply(payload),
+      );
+      context.replied = true;
+      return context.responseMessage;
+    },
+    async deferReply() {
+      context.deferred = true;
+    },
+    async editReply(payload) {
+      const normalized = normalizePrefixReply(payload);
+      if (context.responseMessage?.editable) {
+        await context.responseMessage.edit(normalized);
+      } else {
+        context.responseMessage = await message.channel.send(normalized);
+      }
+      context.deferred = false;
+      context.replied = true;
+      return context.responseMessage;
+    },
+  };
+  return context;
+}
+
+function createComponentModerationContext(interaction, optionValues) {
+  const context = {
+    guild: interaction.guild,
+    guildId: interaction.guildId,
+    channel: interaction.channel,
+    channelId: interaction.channelId,
+    user: interaction.user,
+    member: interaction.member,
+    memberPermissions: interaction.memberPermissions,
+    sourceMessageId: null,
+    deferred: interaction.deferred,
+    replied: interaction.replied,
+    inGuild: () => interaction.inGuild(),
+    options: {
+      getBoolean: (name) => optionValues[name] ?? null,
+      getInteger: (name) => optionValues[name] ?? null,
+      getString: (name) => optionValues[name] ?? null,
+      getUser: (name) => optionValues[name] ?? null,
+    },
+    async reply(payload) {
+      const result = await interaction.reply(payload);
+      context.replied = true;
+      return result;
+    },
+    async deferReply(payload) {
+      const result = await interaction.deferReply(payload);
+      context.deferred = true;
+      return result;
+    },
+    async editReply(payload) {
+      const result = await interaction.editReply(payload);
+      context.deferred = false;
+      context.replied = true;
+      return result;
+    },
+  };
+  return context;
+}
+
+function ignoreSnipeDeletion(messageId) {
+  if (!messageId) return;
+  ignoredSnipeDeleteIds.add(messageId);
+  const cleanupTimer = setTimeout(
+    () => ignoredSnipeDeleteIds.delete(messageId),
+    10_000,
+  );
+  cleanupTimer.unref();
+}
+
+async function replyWithSecurityUsage(message, commandName, detail = null) {
+  const definition = getSecurityCommandDefinition(commandName);
+  const content = definition
+    ? `${detail ? `❌ ${detail}\n` : ""}使い方: \`${definition.usage}\``
+    : "❌ 不明なセキュリティコマンドです。`r?help` で一覧を確認してください。";
+  await message.channel.send({ content, allowedMentions: { parse: [] } });
+}
+
+async function replyWithEntertainmentUsage(message, commandName, detail = null) {
+  const definition = getEntertainmentCommandDefinition(commandName);
+  const content = definition
+    ? `${detail ? `❌ ${detail}\n` : ""}使い方: \`${definition.usage}\``
+    : "❌ 不明な娯楽コマンドです。`zx?help` で一覧を確認してください。";
+  await message.channel.send({ content, allowedMentions: { parse: [] } });
+}
+
+const securityCommandPresentation = Object.freeze({
+  ban: {
+    icon: "🔨",
+    permission: "BanMembers",
+    note: "`--confirm`必須・対象とのロール階層を検証",
+  },
+  unban: {
+    icon: "🔓",
+    permission: "BanMembers",
+    note: "BAN済みユーザーのDiscord IDを指定",
+  },
+  kick: {
+    icon: "🚪",
+    permission: "KickMembers",
+    note: "`--confirm`必須・対象とのロール階層を検証",
+  },
+  timeout: {
+    icon: "⏳",
+    permission: "ModerateMembers",
+    note: "1〜40320分・対象とのロール階層を検証",
+  },
+  untimeout: {
+    icon: "✅",
+    permission: "ModerateMembers",
+    note: "対象のTimeoutを解除",
+  },
+  banlist: {
+    icon: "📋",
+    permission: "BanMembers",
+    note: "1ページ10件・最大100件を確認",
+  },
+  clear: {
+    icon: "🧹",
+    permission: "ManageMessages",
+    note: "`--confirm`必須・ピン留めと14日超の投稿を保護",
+  },
+  ping: {
+    icon: "🏓",
+    permission: "不要",
+    note: "Discord GatewayとNeonDBの接続を確認",
+  },
+  perm_check: {
+    icon: "🔐",
+    permission: "不要",
+    note: "実行者とBotの権限を機能別に診断",
+  },
+});
+
+async function handleSecurityHelpCommand(message, args) {
+  if (args.length > 1) {
+    await replyWithSecurityUsage(
+      message,
+      "help",
+      "確認するコマンド名は1つだけ指定してください。",
+    );
+    return;
+  }
+  const requestedName = args[0]?.toLowerCase();
+  if (requestedName) {
+    const definition = getSecurityCommandDefinition(requestedName);
+    if (!definition) {
+      await replyWithSecurityUsage(message, requestedName);
+      return;
+    }
+    const presentation = securityCommandPresentation[definition.name] ?? {
+      icon: "🛡️",
+      permission: "コマンドごとに判定",
+      note: "実行時に権限を検証",
+    };
+    const container = new ContainerBuilder()
+      .setAccentColor(0xed4245)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+          `## ${presentation.icon} ${definition.usage}\n` +
+            `-# ${formatGuildName(message.guild.name)} · NuviloChan Security Center`,
+        ),
+        new TextDisplayBuilder().setContent(
+          [
+            definition.description,
+            "",
+            `**使い方:** \`${definition.usage}\``,
+            `**必要権限:** \`${presentation.permission}\``,
+            `**安全機構:** ${presentation.note}`,
+          ].join("\n"),
+        ),
+        new TextDisplayBuilder().setContent(
+          "-# 権限を確認: r?perm_check · 一覧へ戻る: r?help",
+        ),
+      );
+    await message.channel.send({
+      components: [container],
+      flags: MessageFlags.IsComponentsV2,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const commandList = securityCommandDefinitions
+    .filter(
+      (definition) =>
+        definition.name !== "help" && definition.name !== "perm_check",
+    )
+    .map((definition) => {
+      const presentation = securityCommandPresentation[definition.name] ?? {
+        icon: "🛡️",
+        permission: "コマンドごとに判定",
+        note: "実行時に権限を検証",
+      };
+      return (
+        `${presentation.icon} **\`${definition.usage}\`**\n` +
+        `${definition.description}\n` +
+        `-# 必要権限: ${presentation.permission} · ${presentation.note}`
+      );
+    })
+    .join("\n\n");
+  const container = new ContainerBuilder()
+    .setAccentColor(0xed4245)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        "## 🛡️ NuviloChan Security Center\n" +
+          `-# ${formatGuildName(message.guild.name)} · r? Commands`,
+      ),
+      new TextDisplayBuilder().setContent(
+        "サーバーを安全に運営するためのモデレーション・診断コマンドです。\n" +
+          "`r?help <command>`で詳しい使い方、`r?perm_check`で現在利用できる機能を確認できます。",
+      ),
+      new TextDisplayBuilder().setContent(
+        `### 🚨 自動スパム検知 — ${spamProtectionEnabled ? "稼働中" : "停止中"}\n` +
+          `${spamWindowMs / 1_000}秒以内に同一メンバーが${spamMessageLimit}件送信すると、` +
+          `通常メンバーを${spamTimeoutMinutes}分タイムアウトします。\n` +
+          "-# 検知カードからTimeout解除・Kick・BANを選択でき、成功後はカードを自動削除します。",
+      ),
+      new TextDisplayBuilder().setContent(
+        "### 🔐 権限・実行可否チェック\n" +
+          "**`r?perm_check`** — 実行者とBotの権限を照合し、利用可能な機能を一覧表示します。",
+      ),
+      new TextDisplayBuilder().setContent(
+        `### 🧰 セキュリティコマンド\n${commandList}`,
+      ),
+      new TextDisplayBuilder().setContent(
+        "### 🔒 権限と安全機構\n" +
+          "実行者権限・Bot権限・対象とのロール階層を毎回検証します。BAN・Kick・Clearは`--confirm`必須です。\n" +
+          "-# 理由は3〜300文字 · 件数制限・クールダウン・監査ログあり · コマンド本文は分析データへ保存しません。",
+      ),
+    );
+  await message.channel.send({
+    components: [container],
+    flags: MessageFlags.IsComponentsV2,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handlePrefixMemberModeration(message, invocation) {
+  const { confirmed, args } = extractConfirmation(invocation.args);
+  const targetId = parseDiscordTargetId(args[0]);
+  if (!targetId) {
+    await replyWithSecurityUsage(
+      message,
+      invocation.name,
+      "対象メンバーをメンションまたはDiscord IDで指定してください。",
+    );
+    return;
+  }
+
+  let targetMember;
+  try {
+    targetMember = await message.guild.members.fetch(targetId);
+  } catch {
+    await replyWithSecurityUsage(
+      message,
+      invocation.name,
+      "対象メンバーをこのサーバーで確認できません。",
+    );
+    return;
+  }
+
+  let reasonStart = 1;
+  let minutes = null;
+  if (invocation.name === "timeout") {
+    minutes = Number(args[1]);
+    if (!Number.isInteger(minutes)) {
+      await replyWithSecurityUsage(
+        message,
+        invocation.name,
+        "タイムアウト時間を分単位で指定してください。",
+      );
+      return;
+    }
+    reasonStart = 2;
+  }
+
+  const reason = args.slice(reasonStart).join(" ").trim();
+  const context = createPrefixModerationContext(message, {
+    user: targetMember.user,
+    minutes,
+    reason,
+    confirm: confirmed,
+  });
+  await handleMemberModerationCommand(context, invocation.name);
+}
+
+async function handlePrefixUnban(message, invocation) {
+  const targetId = parseDiscordTargetId(invocation.args[0]);
+  if (!targetId) {
+    await replyWithSecurityUsage(
+      message,
+      "unban",
+      "BANを解除するユーザーのDiscord IDを指定してください。",
+    );
+    return;
+  }
+  const reason = invocation.args.slice(1).join(" ").trim();
+  const context = createPrefixModerationContext(message, {
+    user_id: targetId,
+    reason,
+  });
+  await handleUnbanCommand(context);
+}
+
+async function handlePrefixBanlist(message, invocation) {
+  const page = invocation.args[0] ? Number(invocation.args[0]) : 1;
+  if (!Number.isInteger(page) || page < 1 || invocation.args.length > 1) {
+    await replyWithSecurityUsage(message, "banlist", "ページ番号が正しくありません。");
+    return;
+  }
+  const context = createPrefixModerationContext(message, { page });
+  await handleBanlistCommand(context);
+}
+
+async function handlePrefixClear(message, invocation) {
+  const { confirmed, args } = extractConfirmation(invocation.args);
+  const amount = Number(args[0]);
+  if (!Number.isInteger(amount) || amount < 1 || amount > 100) {
+    await replyWithSecurityUsage(
+      message,
+      "clear",
+      "削除件数は1〜100で指定してください。",
+    );
+    return;
+  }
+  const reason = args.slice(1).join(" ").trim();
+  const context = createPrefixModerationContext(message, {
+    amount,
+    reason,
+    confirm: confirmed,
+  });
+  await handleClearCommand(context);
+}
+
+function getSnipeChannelKey(guildId, channelId) {
+  return `${guildId}:${channelId}`;
+}
+
+function getLiveDeletedMessageSnipes(key, now = Date.now()) {
+  const stored = deletedMessageSnipes.get(key);
+  const records = Array.isArray(stored) ? stored : stored ? [stored] : [];
+  const liveRecords = records
+    .filter(
+      (record) =>
+        record &&
+        Number.isFinite(record.deletedAt) &&
+        now - record.deletedAt <= SNIPE_RETENTION_MS,
+    )
+    .slice(0, SNIPE_HISTORY_LIMIT);
+  if (liveRecords.length > 0) {
+    deletedMessageSnipes.set(key, liveRecords);
+  } else {
+    deletedMessageSnipes.delete(key);
+    const cleanupTimer = snipeHistoryCleanupTimers.get(key);
+    if (cleanupTimer) clearTimeout(cleanupTimer);
+    snipeHistoryCleanupTimers.delete(key);
+  }
+  return liveRecords;
+}
+
+function scheduleSnipeHistoryCleanup(key) {
+  const previousTimer = snipeHistoryCleanupTimers.get(key);
+  if (previousTimer) clearTimeout(previousTimer);
+  const records = getLiveDeletedMessageSnipes(key);
+  if (records.length === 0) return;
+  const earliestExpiry = Math.min(
+    ...records.map((record) => record.deletedAt + SNIPE_RETENTION_MS),
+  );
+  const cleanupTimer = setTimeout(() => {
+    snipeHistoryCleanupTimers.delete(key);
+    const remainingRecords = getLiveDeletedMessageSnipes(key);
+    if (remainingRecords.length > 0) scheduleSnipeHistoryCleanup(key);
+  }, Math.max(1, earliestExpiry - Date.now() + 10));
+  cleanupTimer.unref();
+  snipeHistoryCleanupTimers.set(key, cleanupTimer);
+}
+
+function formatSnipeIdentity(userId, fallbackName = "不明なユーザー") {
+  const normalizedId = String(userId ?? "").trim();
+  if (/^\d{17,20}$/.test(normalizedId)) return `<@${normalizedId}>`;
+  return escapeScopeText(fallbackName, 80);
+}
+
+function buildSnipeEmbed(session) {
+  const deleted = session.deletedMessages[session.currentIndex] ?? null;
+  if (deleted) {
+    const body = deleted.content
+      ? escapeScopeText(deleted.content, 850)
+      : "（本文なし・添付またはEmbedのみ）";
+    const details = deleted.deletedById
+      ? [`-# 削除者: ${formatSnipeIdentity(deleted.deletedById, deleted.deletedByName)}`]
+      : [];
+    return new EmbedBuilder()
+      .setColor(0xed4245)
+      .setTitle(`削除されたメッセージ (${session.currentIndex + 1}個前)`)
+      .setDescription(
+        [
+          `${formatSnipeIdentity(deleted.authorId, deleted.authorName)} ` +
+            `(<t:${Math.floor(deleted.deletedAt / 1_000)}:R>)`,
+          `\`\`\`\n${body}\n\`\`\``,
+          ...details,
+        ].join("\n"),
+      );
+  }
+
+  return new EmbedBuilder()
+    .setColor(0xed4245)
+    .setTitle("削除されたメッセージ")
+    .setDescription("このチャンネルには確認できる削除履歴がありません。");
+}
+
+function buildSnipeComponents(session) {
+  const lastIndex = session.deletedMessages.length - 1;
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(createSnipePageCustomId("previous"))
+        .setEmoji("◀️")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(session.currentIndex <= 0),
+      new ButtonBuilder()
+        .setCustomId(createSnipePageCustomId("next"))
+        .setEmoji("▶️")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(lastIndex < 1 || session.currentIndex >= lastIndex),
+      new ButtonBuilder()
+        .setCustomId(createSnipeDeleteCustomId(session.executorId))
+        .setEmoji("🗑️")
+        .setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+async function createSnipeSession({ guildId, channelId, executorId }) {
+  const key = getSnipeChannelKey(guildId, channelId);
+  const deletedMessages = getLiveDeletedMessageSnipes(key);
+
+  return {
+    executorId,
+    guildId,
+    channelId,
+    deletedMessages,
+    currentIndex: 0,
+    expiresAt: Date.now() + SNIPE_RESULT_SESSION_MS,
+  };
+}
+
+function registerSnipeResultSession(response, session) {
+  snipeResultSessions.set(response.id, session);
+  const cleanupTimer = setTimeout(
+    () => snipeResultSessions.delete(response.id),
+    SNIPE_RESULT_SESSION_MS,
+  );
+  cleanupTimer.unref();
+}
+
+async function handlePrefixSnipe(message, invocation) {
+  if (invocation.args.length > 0) {
+    await replyWithEntertainmentUsage(message, "snipe", "zx?snipeに引数は必要ありません。");
+    return;
+  }
+
+  const session = await createSnipeSession({
+    guildId: message.guild.id,
+    channelId: message.channelId,
+    executorId: message.author.id,
+  });
+  const response = await message.channel.send({
+    embeds: [buildSnipeEmbed(session)],
+    components: buildSnipeComponents(session),
+    allowedMentions: { parse: [] },
+  });
+  registerSnipeResultSession(response, session);
+}
+
+async function handleSnipePageComponent(interaction, parsed) {
+  const session = snipeResultSessions.get(interaction.message.id);
+  if (
+    !session ||
+    session.expiresAt < Date.now() ||
+    session.guildId !== interaction.guildId ||
+    session.channelId !== interaction.channelId
+  ) {
+    snipeResultSessions.delete(interaction.message.id);
+    await interaction.reply({
+      content: "❌ このSnipe表示は期限切れです。zx?snipeをもう一度実行してください。",
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const previousIndex = session.currentIndex;
+  if (parsed.direction === "previous") {
+    session.currentIndex = Math.max(0, session.currentIndex - 1);
+  } else {
+    session.currentIndex = Math.min(
+      Math.max(0, session.deletedMessages.length - 1),
+      session.currentIndex + 1,
+    );
+  }
+  if (previousIndex === session.currentIndex) {
+    await interaction.deferUpdate();
+    return;
+  }
+  await interaction.update({
+    embeds: [buildSnipeEmbed(session)],
+    components: buildSnipeComponents(session),
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handleSnipeDeleteComponent(interaction) {
+  const parsed = parseSnipeDeleteCustomId(interaction.customId);
+  if (!parsed || !interaction.inGuild()) {
+    await interaction.reply({
+      content: "❌ このSnipe削除ボタンは無効です。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const allowed = canDeleteSnipeResult({
+    userId: interaction.user.id,
+    executorId: parsed.executorId,
+    guildOwnerId: interaction.guild.ownerId,
+    isAdministrator: Boolean(
+      interaction.memberPermissions?.has(PermissionFlagsBits.Administrator),
+    ),
+  });
+  if (!allowed) {
+    await interaction.reply({
+      content: "❌ この結果を削除できるのは、zx?snipeの実行者またはサーバー管理者だけです。",
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  snipeResultSessions.delete(interaction.message.id);
+  ignoreSnipeDeletion(interaction.message.id);
+  await interaction.message.delete().catch(async (error) => {
+    console.error("Failed to delete Snipe result:", error);
+    await interaction.followUp({
+      content: "❌ Snipe結果を削除できませんでした。",
+      flags: MessageFlags.Ephemeral,
+    }).catch(() => {});
+  });
+}
+
+async function handleSnipeComponent(interaction) {
+  const page = parseSnipePageCustomId(interaction.customId);
+  if (page) {
+    await handleSnipePageComponent(interaction, page);
+    return;
+  }
+  await handleSnipeDeleteComponent(interaction);
+}
+
+async function handlePrefixPing(message, invocation) {
+  if (invocation.args.length > 0) {
+    await replyWithSecurityUsage(message, "ping", "r?pingに引数は必要ありません。");
+    return;
+  }
+
+  const context = createPrefixModerationContext(message, {});
+  const remainingSeconds = getModerationCooldownSeconds(context, "ping");
+  if (remainingSeconds > 0) {
+    await replyModerationError(
+      context,
+      `連続実行を防ぐため、${remainingSeconds}秒後にもう一度お試しください。`,
+    );
+    return;
+  }
+
+  const databaseStartedAt = Date.now();
+  let databaseConnected = false;
+  try {
+    await sql`SELECT 1 AS "connected"`;
+    databaseConnected = true;
+  } catch (error) {
+    console.warn("Ping command could not reach NeonDB:", safeErrorText(error));
+  }
+  const databaseLatencyMs = Date.now() - databaseStartedAt;
+  const gatewayConnected = client.isReady();
+  const gatewayLatencyMs =
+    Number.isFinite(client.ws.ping) && client.ws.ping >= 0
+      ? Math.round(client.ws.ping)
+      : Math.max(0, Date.now() - message.createdTimestamp);
+
+  await message.channel.send({
+    content:
+      `pong!🏓 ${gatewayLatencyMs}ms\n` +
+      `-# 接続先: Discord Gateway（${gatewayConnected ? "接続済み" : "未接続"}）・` +
+      `NeonDB（${databaseConnected ? `接続済み / ${databaseLatencyMs}ms` : "未接続"}）`,
+    allowedMentions: { parse: [] },
+  });
+}
+
+function hasNamedPermission(permissions, permissionName) {
+  const permission = PermissionFlagsBits[permissionName];
+  return Boolean(permission && permissions?.has(permission));
+}
+
+async function handlePrefixPermissionCheck(message, invocation) {
+  if (invocation.args.length > 0) {
+    await replyWithSecurityUsage(
+      message,
+      "perm_check",
+      "r?perm_checkに引数は必要ありません。",
+    );
+    return;
+  }
+
+  const context = createPrefixModerationContext(message, {});
+  const remainingSeconds = getModerationCooldownSeconds(context, "perm_check");
+  if (remainingSeconds > 0) {
+    await replyModerationError(
+      context,
+      `連続実行を防ぐため、${remainingSeconds}秒後にもう一度お試しください。`,
+    );
+    return;
+  }
+
+  const [actorMember, botMember] = await Promise.all([
+    message.member ?? message.guild.members.fetch(message.author.id),
+    message.guild.members.me ?? message.guild.members.fetchMe(),
+  ]);
+  const channelPermissions =
+    message.channel.permissionsFor?.(botMember) ?? botMember.permissions;
+  const actorPermissions = securityPermissionCheckDefinitions
+    .filter((definition) =>
+      hasNamedPermission(actorMember.permissions, definition.actorPermission),
+    )
+    .map((definition) => definition.actorPermission);
+  const botPermissions = securityPermissionCheckDefinitions
+    .filter((definition) => {
+      const permissions =
+        definition.key === "clear"
+          ? channelPermissions
+          : botMember.permissions;
+      return hasNamedPermission(permissions, definition.botPermission);
+    })
+    .map((definition) => definition.botPermission);
+  const actorIsOwner = message.author.id === message.guild.ownerId;
+  const actorIsAdministrator = actorMember.permissions.has(
+    PermissionFlagsBits.Administrator,
+  );
+  const checks = evaluateSecurityPermissionChecks({
+    actorIsOwner,
+    actorIsAdministrator,
+    actorPermissions,
+    botPermissions,
+  });
+  const availableCount = checks.filter((check) => check.available).length;
+  const actorLabel = actorIsOwner
+    ? "サーバー所有者"
+    : actorIsAdministrator
+      ? "Administrator"
+      : "個別権限";
+  const sendPermission = message.channel.isThread?.()
+    ? PermissionFlagsBits.SendMessagesInThreads
+    : PermissionFlagsBits.SendMessages;
+  const commonChecks = [
+    {
+      label: "チャンネルを表示",
+      available: channelPermissions.has(PermissionFlagsBits.ViewChannel),
+      permission: "ViewChannel",
+    },
+    {
+      label: "メッセージを送信",
+      available: channelPermissions.has(sendPermission),
+      permission: message.channel.isThread?.()
+        ? "SendMessagesInThreads"
+        : "SendMessages",
+    },
+  ];
+
+  const accentColor =
+      availableCount === checks.length
+        ? 0x57f287
+        : availableCount > 0
+          ? 0xfee75c
+          : 0xed4245;
+  const capabilityText = checks
+    .map(
+      (check) =>
+        `### ${check.available ? "✅" : "❌"} ${check.label}\n` +
+        `実行者: ${check.actorAllowed ? "✅ 利用可能" : `❌ \`${check.actorPermission}\`が必要`}\n` +
+        `Bot: ${check.botAllowed ? "✅ 権限あり" : `❌ \`${check.botPermission}\`が必要`}\n` +
+        `-# ${check.commands}`,
+    )
+    .join("\n\n");
+  const container = new ContainerBuilder()
+    .setAccentColor(accentColor)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        "## 🔐 Security Permission Check\n" +
+          `-# ${formatGuildName(message.guild.name)} · NuviloChan Security Diagnostics`,
+      ),
+      new TextDisplayBuilder().setContent(
+        [
+        `<@${message.author.id}>のセキュリティ機能を診断しました。`,
+        `**判定方式:** ${actorLabel} / Bot実効権限`,
+        `**利用可能:** ${availableCount}/${checks.length}カテゴリ`,
+        ].join("\n"),
+      ),
+      new TextDisplayBuilder().setContent(capabilityText),
+      new TextDisplayBuilder().setContent(
+        "### 📡 共通チャンネル権限\n" +
+          commonChecks
+          .map(
+            (check) =>
+              `${check.available ? "✅" : "❌"} ${check.label} — \`${check.permission}\``,
+          )
+          .join("\n"),
+      ),
+      new TextDisplayBuilder().setContent(
+        "### 🧱 実行時に再確認される項目\n" +
+          "対象メンバーとのロール階層、サーバー所有者・Bot・自分自身などの保護対象、確認フラグ、件数上限、クールダウンを実行時に再検証します。\n" +
+          "-# 豪華表示はComponents V2を使用するため、EmbedLinks権限は不要です。",
+      ),
+    );
+  await message.channel.send({
+    components: [container],
+    flags: MessageFlags.IsComponentsV2,
+    allowedMentions: { parse: [] },
+  });
+}
+
+function getEntertainmentCooldownSeconds(guildId, userId, action) {
+  const key = `${guildId}:${userId}:${action}`;
+  const now = Date.now();
+  const activeUntil = entertainmentAttempts.get(key) ?? 0;
+  if (activeUntil > now) return Math.ceil((activeUntil - now) / 1_000);
+
+  const expiresAt = now + entertainmentCooldownMs;
+  entertainmentAttempts.set(key, expiresAt);
+  const cleanupTimer = setTimeout(() => {
+    if (entertainmentAttempts.get(key) === expiresAt) {
+      entertainmentAttempts.delete(key);
+    }
+  }, entertainmentCooldownMs + 100);
+  cleanupTimer.unref();
+  return 0;
+}
+
+function buildDiceResultComponents({ executorId, count, sides, notation }, result) {
+  const rerollButton = new ButtonBuilder()
+    .setCustomId(createDiceRollCustomId({ count, sides }))
+    .setLabel(`${notation}をロール`)
+    .setStyle(ButtonStyle.Primary);
+  const resultSection = new SectionBuilder()
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        `### 🎲 <@${executorId}>\n**${notation}をロールして${result.total}が出た！**`,
+      ),
+    )
+    .setButtonAccessory(rerollButton);
+  const rolls = result.rolls.map((value) => `🎲 ${value}`).join("　");
+  return [
+    new ContainerBuilder()
+      .setAccentColor(0x5865f2)
+      .addSectionComponents(resultSection)
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent(rolls)),
+  ];
+}
+
+function buildDiscordNativeDiceLaunch({ guildId, channelId, dice }) {
+  const url = createDiscordNativeDiceUrl({
+    guildId,
+    channelId,
+    count: dice.count,
+    sides: dice.sides,
+  });
+  return {
+    content:
+      `🎲 [${dice.notation}をDiscord標準でロール](${url})\n` +
+      "-# リンクまたはボタンを押すと、結果があなた本人の投稿として送信されます。",
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel(`${dice.notation}をロール`)
+          .setStyle(ButtonStyle.Link)
+          .setURL(url),
+      ),
+    ],
+    allowedMentions: { parse: [] },
+  };
+}
+
+function buildEntertainmentHelpEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle("🎮 娯楽コマンド")
+    .setDescription(
+      "`zx?dice`・`zx?snipe`と`/zx`は全メンバーが利用できます。",
+    )
+    .addFields(
+      entertainmentCommandDefinitions.map((definition) => ({
+        name: definition.usage,
+        value: definition.description,
+        inline: false,
+      })),
+    )
+    .setFooter({
+      text: "詳細: zx?help <command> または /zx help · 再ロールボタンは誰でも使えます。",
+    });
+}
+
+async function handleEntertainmentHelpCommand(message, args) {
+  if (args.length > 1) {
+    await message.channel.send({
+      content: "❌ 使い方: `zx?help [command]`",
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const requestedName = args[0]?.toLowerCase();
+  if (requestedName) {
+    const definition = getEntertainmentCommandDefinition(requestedName);
+    if (!definition) {
+      await message.channel.send({
+        content: "❌ 不明な娯楽コマンドです。`zx?help` で一覧を確認してください。",
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+    const details =
+      definition.name === "dice"
+        ? "\n`10d` は10個の10面ダイス、`2d6` は2個の6面ダイスです。1回1〜50個、2〜1000面まで指定できます。"
+        : "";
+    await message.channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle(`🎮 ${definition.usage}`)
+          .setDescription(`${definition.description}${details}`),
+      ],
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  await message.channel.send({
+    embeds: [buildEntertainmentHelpEmbed()],
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handlePrefixDice(message, invocation) {
+  const dice = parseDiceNotation(invocation.argumentText);
+  if (!dice) {
+    await message.channel.send({
+      content:
+        "❌ ダイス指定が正しくありません。使い方: `zx?dice [10d | 2d6]`\n" +
+        "-# 1〜50個、2〜1000面まで指定できます。",
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+  const remainingSeconds = getEntertainmentCooldownSeconds(
+    message.guild.id,
+    message.author.id,
+    "dice",
+  );
+  if (remainingSeconds > 0) {
+    await message.channel.send({
+      content: `⏳ ${remainingSeconds}秒後にもう一度ロールできます。`,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  if (canUseDiscordNativeDice(dice)) {
+    await message.channel.send(
+      buildDiscordNativeDiceLaunch({
+        guildId: message.guild.id,
+        channelId: message.channelId,
+        dice,
+      }),
+    );
+    return;
+  }
+
+  const result = rollDice(dice, randomInt);
+  await message.channel.send({
+    components: buildDiceResultComponents(
+      { executorId: message.author.id, ...dice },
+      result,
+    ),
+    flags: MessageFlags.IsComponentsV2,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handleZxSlashDice(interaction) {
+  const dice = parseDiceNotation(interaction.options.getString("dice", true));
+  if (!dice) {
+    await interaction.reply({
+      content:
+        "❌ ダイス指定が正しくありません。`10d` または `2d6` の形式で入力してください。\n" +
+        "-# 1〜50個、2〜1000面まで指定できます。",
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+  const remainingSeconds = getEntertainmentCooldownSeconds(
+    interaction.guildId,
+    interaction.user.id,
+    "dice",
+  );
+  if (remainingSeconds > 0) {
+    await interaction.reply({
+      content: `⏳ ${remainingSeconds}秒後にもう一度ロールできます。`,
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  if (canUseDiscordNativeDice(dice)) {
+    await interaction.reply({
+      ...buildDiscordNativeDiceLaunch({
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        dice,
+      }),
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const result = rollDice(dice, randomInt);
+  await interaction.reply({
+    components: buildDiceResultComponents(
+      { executorId: interaction.user.id, ...dice },
+      result,
+    ),
+    flags: MessageFlags.IsComponentsV2,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handleZxSlashSnipe(interaction) {
+  const session = await createSnipeSession({
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    executorId: interaction.user.id,
+  });
+  await interaction.reply({
+    embeds: [buildSnipeEmbed(session)],
+    components: buildSnipeComponents(session),
+    allowedMentions: { parse: [] },
+  });
+  const response = await interaction.fetchReply();
+  registerSnipeResultSession(response, session);
+}
+
+async function handleZxSlashCommand(interaction) {
+  if (!interaction.inGuild() || !interaction.guild || !interaction.channel) {
+    await interaction.reply({
+      content: "❌ このコマンドはサーバー内でのみ利用できます。",
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+  if (isGuildBlocked(interaction.guildId)) {
+    await interaction.reply({
+      content: "❌ このサーバーではBot機能が停止されています。",
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === "help") {
+    await interaction.reply({
+      embeds: [buildEntertainmentHelpEmbed()],
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+  if (subcommand === "dice") {
+    await handleZxSlashDice(interaction);
+    return;
+  }
+  if (subcommand === "snipe") {
+    await handleZxSlashSnipe(interaction);
+  }
+}
+
+async function handlePrefixEntertainmentCommand(message, invocation) {
+  if (!invocation.definition) {
+    await message.channel.send({
+      content: "❌ 不明な娯楽コマンドです。`zx?help` で一覧を確認してください。",
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+  if (invocation.name === "help") {
+    await handleEntertainmentHelpCommand(message, invocation.args);
+    return;
+  }
+  if (invocation.name === "dice") {
+    await handlePrefixDice(message, invocation);
+    return;
+  }
+  if (invocation.name === "snipe") {
+    await handlePrefixSnipe(message, invocation);
+  }
+}
+
+async function handleDiceRollComponent(interaction) {
+  const parsed = parseDiceRollCustomId(interaction.customId);
+  if (!parsed || !interaction.inGuild()) {
+    await interaction.reply({
+      content: "❌ このダイスボタンは無効です。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const remainingSeconds = getEntertainmentCooldownSeconds(
+    interaction.guildId,
+    interaction.user.id,
+    "dice",
+  );
+  if (remainingSeconds > 0) {
+    await interaction.reply({
+      content: `⏳ ${remainingSeconds}秒後にもう一度ロールできます。`,
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const dice = {
+    count: parsed.count,
+    sides: parsed.sides,
+    notation: formatDiceNotation(parsed.count, parsed.sides),
+  };
+  const result = rollDice(dice, randomInt);
+  await interaction.reply({
+    components: buildDiceResultComponents(
+      { executorId: interaction.user.id, ...dice },
+      result,
+    ),
+    flags: MessageFlags.IsComponentsV2,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handlePrefixSecurityCommand(message, invocation) {
+  if (!invocation.definition) {
+    await replyWithSecurityUsage(message, invocation.name);
+    return;
+  }
+  if (invocation.name === "help") {
+    await handleSecurityHelpCommand(message, invocation.args);
+    return;
+  }
+  if (["ban", "kick", "timeout", "untimeout"].includes(invocation.name)) {
+    await handlePrefixMemberModeration(message, invocation);
+    return;
+  }
+  if (invocation.name === "unban") {
+    await handlePrefixUnban(message, invocation);
+    return;
+  }
+  if (invocation.name === "banlist") {
+    await handlePrefixBanlist(message, invocation);
+    return;
+  }
+  if (invocation.name === "clear") {
+    await handlePrefixClear(message, invocation);
+    return;
+  }
+  if (invocation.name === "ping") {
+    await handlePrefixPing(message, invocation);
+    return;
+  }
+  if (invocation.name === "perm_check") {
+    await handlePrefixPermissionCheck(message, invocation);
+  }
+}
+
+function getSpamProtectedReason(member) {
+  const protectedPermissions = [
+    PermissionFlagsBits.Administrator,
+    PermissionFlagsBits.ManageGuild,
+    PermissionFlagsBits.ManageMessages,
+    PermissionFlagsBits.ModerateMembers,
+    PermissionFlagsBits.KickMembers,
+    PermissionFlagsBits.BanMembers,
+  ];
+  return getAutomaticSpamProtectionBlockReason({
+    isBot: member.user.bot,
+    isOwner: member.id === member.guild.ownerId,
+    hasModerationPermission: protectedPermissions.some((permission) =>
+      member.permissions.has(permission),
+    ),
+  });
+}
+
+function canBotSendToChannel(channel, botMember) {
+  if (!channel?.isTextBased?.() || typeof channel.send !== "function") return false;
+  const permissions = channel.permissionsFor?.(botMember);
+  const sendPermission = channel.isThread?.()
+    ? PermissionFlagsBits.SendMessagesInThreads
+    : PermissionFlagsBits.SendMessages;
+  return Boolean(
+    permissions?.has(PermissionFlagsBits.ViewChannel) &&
+      permissions.has(sendPermission),
+  );
+}
+
+function findSpamAlertChannel(message, botMember) {
+  const candidates = [
+    message.channel,
+    message.guild.systemChannel,
+    ...message.guild.channels.cache
+      .filter((channel) => /(?:mod|moderation|log|監査|管理)/i.test(channel.name ?? ""))
+      .values(),
+    ...message.guild.channels.cache.values(),
+  ];
+  const seen = new Set();
+  return (
+    candidates.find((channel) => {
+      if (!channel || seen.has(channel.id)) return false;
+      seen.add(channel.id);
+      return canBotSendToChannel(channel, botMember);
+    }) ?? null
+  );
+}
+
+function createSpamActionRow(detectionId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(
+        createSpamActionCustomId({
+          stage: "execute",
+          action: "untimeout",
+          detectionId,
+        }),
+      )
+      .setLabel("TO解除")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(
+        createSpamActionCustomId({
+          stage: "confirm",
+          action: "kick",
+          detectionId,
+        }),
+      )
+      .setLabel("Kick")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(
+        createSpamActionCustomId({
+          stage: "confirm",
+          action: "ban",
+          detectionId,
+        }),
+      )
+      .setLabel("BAN")
+      .setStyle(ButtonStyle.Danger),
+  );
+}
+
+async function sendSpamDetectionAlert(message, {
+  auditId,
+  targetMember,
+  detectedCount,
+  actionResult,
+  protectedReason = null,
+}) {
+  const botMember =
+    message.guild.members.me ?? (await message.guild.members.fetchMe());
+  const alertChannel = findSpamAlertChannel(message, botMember);
+  if (!alertChannel) {
+    console.warn(
+      `[spam-protection] No sendable alert channel in Guild ${message.guild.id}; audit ${auditId}`,
+    );
+    return;
+  }
+
+  const targetName = formatGuildName(
+    targetMember.displayName ??
+      targetMember.user.globalName ??
+      targetMember.user.username,
+  );
+  const content =
+    `🚨 **スパムを検知しました**\n` +
+    `対象: **${targetName}**（\`${targetMember.id}\`）\n` +
+    `検知条件: ${(spamWindowMs / 1_000).toLocaleString("ja-JP")}秒以内に` +
+    `${detectedCount.toLocaleString("ja-JP")}件\n` +
+    `自動対応: ${actionResult}` +
+    (protectedReason ? `\n保護理由: ${protectedReason}` : "") +
+    `\n-# 所有者・Administrator・対応権限を持つ運営者が操作できます · 監査ID: ${auditId}`;
+  const alertMessage = await alertChannel.send({
+    content,
+    components: protectedReason ? [] : [createSpamActionRow(auditId)],
+    allowedMentions: { parse: [] },
+  });
+  spamAlertMessages.set(auditId, {
+    channelId: alertMessage.channelId,
+    messageId: alertMessage.id,
+  });
+  const cleanupTimer = setTimeout(
+    () => spamAlertMessages.delete(auditId),
+    24 * 60 * 60 * 1_000,
+  );
+  cleanupTimer.unref();
+}
+
+async function handleSpamDetection(message, detection) {
+  let targetMember;
+  try {
+    targetMember =
+      message.member ?? (await message.guild.members.fetch(message.author.id));
+  } catch (error) {
+    console.warn("Spam target could not be fetched:", safeErrorText(error));
+    return;
+  }
+
+  const botMember =
+    message.guild.members.me ?? (await message.guild.members.fetchMe());
+  const context = {
+    guild: message.guild,
+    guildId: message.guild.id,
+    user: client.user,
+    member: botMember,
+  };
+  const reason =
+    `自動スパム検知: ${spamWindowMs / 1_000}秒以内に` +
+    `${detection.count}件のメッセージ`;
+  let auditId;
+  try {
+    auditId = await startModerationAudit(context, {
+      action: "spam_timeout",
+      targetId: targetMember.id,
+      targetName: (
+        targetMember.displayName ??
+        targetMember.user.globalName ??
+        targetMember.user.username
+      ).slice(0, 100),
+      channelId: message.channelId,
+      reason,
+      requestedCount: detection.count,
+    });
+  } catch (error) {
+    console.error("Failed to start spam detection audit:", error);
+    return;
+  }
+
+  const protectedReason = getSpamProtectedReason(targetMember);
+  if (protectedReason) {
+    await finishModerationAudit(auditId, {
+      status: "success",
+      affectedCount: 0,
+    });
+    await sendSpamDetectionAlert(message, {
+      auditId,
+      targetMember,
+      detectedCount: detection.count,
+      actionResult: "保護対象のため自動タイムアウトなし",
+      protectedReason,
+    }).catch((error) =>
+      console.error("Failed to send protected spam alert:", error),
+    );
+    return;
+  }
+
+  const canTimeout =
+    botMember.permissions.has(PermissionFlagsBits.ModerateMembers) &&
+    targetMember.moderatable;
+  if (!canTimeout) {
+    const permissionError = Object.assign(
+      new Error("Bot lacks permission or role hierarchy for automatic timeout."),
+      { code: "AUTO_TIMEOUT_UNAVAILABLE" },
+    );
+    await finishModerationAudit(auditId, {
+      status: "failed",
+      affectedCount: 0,
+      error: permissionError,
+    });
+    await sendSpamDetectionAlert(message, {
+      auditId,
+      targetMember,
+      detectedCount: detection.count,
+      actionResult: "Bot権限またはロール階層不足のためタイムアウト失敗",
+    }).catch((error) => console.error("Failed to send spam alert:", error));
+    return;
+  }
+
+  let actionResult;
+  try {
+    if (
+      targetMember.communicationDisabledUntilTimestamp &&
+      targetMember.communicationDisabledUntilTimestamp > Date.now()
+    ) {
+      actionResult = "すでにタイムアウト中";
+      await finishModerationAudit(auditId, {
+        status: "success",
+        affectedCount: 0,
+      });
+    } else {
+      await targetMember.timeout(
+        spamTimeoutMinutes * 60_000,
+        moderationAuditReason(reason, context, auditId),
+      );
+      actionResult = `${spamTimeoutMinutes.toLocaleString("ja-JP")}分間のタイムアウト`;
+      await finishModerationAudit(auditId, {
+        status: "success",
+        affectedCount: 1,
+      });
+    }
+  } catch (error) {
+    console.error("Automatic spam timeout failed:", error);
+    actionResult = "Discord APIエラーのためタイムアウト失敗";
+    await finishModerationAudit(auditId, {
+      status: "failed",
+      affectedCount: 0,
+      error,
+    }).catch((auditError) =>
+      console.error("Failed to finish spam audit:", auditError),
+    );
+  }
+
+  await sendSpamDetectionAlert(message, {
+    auditId,
+    targetMember,
+    detectedCount: detection.count,
+    actionResult,
+  }).catch((error) => console.error("Failed to send spam alert:", error));
+}
+
+async function replySpamComponentError(interaction, message) {
+  const payload = {
+    content: `❌ ${message}`,
+    flags: MessageFlags.Ephemeral,
+    components: [],
+    allowedMentions: { parse: [] },
+  };
+  if (interaction.deferred || interaction.replied) {
+    const { flags: _flags, ...editPayload } = payload;
+    await interaction.editReply(editPayload);
+  } else {
+    await interaction.reply(payload);
+  }
+}
+
+async function getSpamDetectionForComponent(interaction, detectionId) {
+  if (!/^[0-9a-f-]{36}$/i.test(detectionId)) return null;
+  const rows = await sql`
+    SELECT
+      "id", "guildId", "targetId", "targetName", "createdAt"
+    FROM "bot_moderation_audit"
+    WHERE
+      "id" = ${detectionId}
+      AND "action" = 'spam_timeout'
+    LIMIT 1
+  `;
+  const detection = rows[0] ?? null;
+  if (
+    !detection ||
+    detection.guildId !== interaction.guildId ||
+    !detection.targetId ||
+    Date.now() - new Date(detection.createdAt).getTime() > 24 * 60 * 60 * 1_000
+  ) {
+    return null;
+  }
+  return detection;
+}
+
+async function deleteSpamDetectionAlert({
+  interaction,
+  detectionId,
+  alertChannelId,
+  alertMessageId,
+}) {
+  const cachedReference = spamAlertMessages.get(detectionId);
+  const channelId = alertChannelId ?? cachedReference?.channelId;
+  const messageId = alertMessageId ?? cachedReference?.messageId;
+  if (!channelId || !messageId) return false;
+
+  try {
+    const channel =
+      interaction.guild.channels.cache.get(channelId) ??
+      (await interaction.guild.channels.fetch(channelId));
+    if (
+      !channel ||
+      channel.guildId !== interaction.guildId ||
+      !channel.isTextBased?.() ||
+      !channel.messages?.fetch
+    ) {
+      return false;
+    }
+    const alertMessage =
+      interaction.message.id === messageId
+        ? interaction.message
+        : await channel.messages.fetch(messageId);
+    if (
+      alertMessage.author.id !== client.user.id ||
+      !alertMessage.content.includes(detectionId)
+    ) {
+      console.warn(
+        `[spam-protection] Refused to delete an unverified alert message ${messageId}.`,
+      );
+      return false;
+    }
+    ignoreSnipeDeletion(alertMessage.id);
+    await alertMessage.delete();
+    spamAlertMessages.delete(detectionId);
+    return true;
+  } catch (error) {
+    if (error?.code === 10008) {
+      spamAlertMessages.delete(detectionId);
+      return true;
+    }
+    console.error("Failed to delete resolved spam detection alert:", error);
+    return false;
+  }
+}
+
+async function handleSpamActionComponent(interaction) {
+  const component = parseSpamActionCustomId(interaction.customId);
+  if (!component) {
+    await replySpamComponentError(interaction, "操作ボタンが正しくありません。");
+    return;
+  }
+  const {
+    stage,
+    action,
+    detectionId,
+    alertChannelId: encodedAlertChannelId,
+    alertMessageId: encodedAlertMessageId,
+  } = component;
+
+  let detection;
+  try {
+    detection = await getSpamDetectionForComponent(interaction, detectionId);
+  } catch (error) {
+    console.error("Failed to load spam detection:", error);
+    await replySpamComponentError(interaction, "検知記録を確認できませんでした。");
+    return;
+  }
+  if (!detection) {
+    await replySpamComponentError(
+      interaction,
+      "この検知操作は期限切れ、または別サーバーのものです。",
+    );
+    return;
+  }
+
+  const config = moderationActionConfig[action];
+  const actorCanManageAction = canManageSpamAction({
+    isOwner: interaction.user.id === interaction.guild.ownerId,
+    isAdministrator: Boolean(
+      interaction.memberPermissions?.has(PermissionFlagsBits.Administrator),
+    ),
+    hasRequiredPermission: Boolean(
+      interaction.memberPermissions?.has(config.actorPermission),
+    ),
+  });
+  if (!actorCanManageAction) {
+    await replySpamComponentError(
+      interaction,
+      "サーバー所有者・Administrator・対応するモデレーション権限を持つメンバーだけが操作できます。",
+    );
+    return;
+  }
+
+  if (stage === "cancel") {
+    await interaction.update({
+      content: "操作をキャンセルしました。",
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  if (stage === "confirm") {
+    const label = action === "ban" ? "BAN" : "Kick";
+    const alertChannelId = interaction.channelId;
+    const alertMessageId = interaction.message.id;
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          createSpamActionCustomId({
+            stage: "execute",
+            action,
+            detectionId,
+            alertChannelId,
+            alertMessageId,
+          }),
+        )
+        .setLabel(`${label}を実行`)
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(
+          createSpamActionCustomId({
+            stage: "cancel",
+            action,
+            detectionId,
+            alertChannelId,
+            alertMessageId,
+          }),
+        )
+        .setLabel("キャンセル")
+        .setStyle(ButtonStyle.Secondary),
+    );
+    await interaction.reply({
+      content:
+        `⚠️ **${formatGuildName(detection.targetName ?? detection.targetId)}** ` +
+        `（\`${detection.targetId}\`）を${label}しますか？`,
+      components: [row],
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const lockKey = `${detectionId}:${action}`;
+  if (spamActionLocks.has(lockKey)) {
+    await replySpamComponentError(interaction, "この操作は現在実行中です。");
+    return;
+  }
+  spamActionLocks.add(lockKey);
+  try {
+    let targetMember;
+    try {
+      targetMember = await interaction.guild.members.fetch(detection.targetId);
+    } catch {
+      await replySpamComponentError(
+        interaction,
+        "対象メンバーをサーバー内で確認できません。",
+      );
+      return;
+    }
+    const context = createComponentModerationContext(interaction, {
+      user: targetMember.user,
+      reason: `自動スパム検知 ${detectionId} へのモデレーター対応`,
+      confirm: true,
+    });
+    const succeeded = await handleMemberModerationCommand(context, action);
+    if (succeeded) {
+      await deleteSpamDetectionAlert({
+        interaction,
+        detectionId,
+        alertChannelId:
+          encodedAlertChannelId ??
+          spamAlertMessages.get(detectionId)?.channelId ??
+          interaction.channelId,
+        alertMessageId:
+          encodedAlertMessageId ??
+          spamAlertMessages.get(detectionId)?.messageId ??
+          interaction.message.id,
+      });
+    }
+  } finally {
+    spamActionLocks.delete(lockKey);
+  }
+}
+
+async function requireModerationPermission(interaction, action) {
+  const config = moderationActionConfig[action];
+  if (!config || !interaction.inGuild() || !interaction.guild) {
+    await replyModerationError(interaction, "このコマンドはサーバー内でのみ実行できます。");
+    return null;
+  }
+  if (isGuildBlocked(interaction.guildId)) {
+    await replyModerationError(interaction, "このサーバーではBot機能が停止されています。");
+    return null;
+  }
+  const actorIsPrivileged =
+    interaction.user.id === interaction.guild.ownerId ||
+    interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+  if (
+    !actorIsPrivileged &&
+    !interaction.memberPermissions?.has(config.actorPermission)
+  ) {
+    await replyModerationError(interaction, "この操作に必要なDiscord権限がありません。");
+    return null;
+  }
+  const botMember =
+    interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
+  const botPermissions =
+    action === "clear" && interaction.channel?.permissionsFor
+      ? interaction.channel.permissionsFor(botMember)
+      : botMember.permissions;
+  const requiredBotPermission = config.botPermission;
+  if (!botPermissions?.has(requiredBotPermission)) {
+    await replyModerationError(
+      interaction,
+      "Botの権限が不足しています。Botロールと対象チャンネルの権限を確認してください。",
+    );
+    return null;
+  }
+  return { config, botMember };
+}
+
+async function startModerationAudit(interaction, {
+  action,
+  targetId = null,
+  targetName = null,
+  channelId = null,
+  reason,
+  requestedCount = null,
+}) {
+  const id = randomUUID();
+  await sql`
+    INSERT INTO "bot_moderation_audit" (
+      "id", "guildId", "guildName", "action", "actorId", "actorName",
+      "targetId", "targetName", "channelId", "reason", "requestedCount", "status"
+    )
+    VALUES (
+      ${id}, ${interaction.guildId}, ${interaction.guild.name}, ${action},
+      ${interaction.user.id}, ${getInteractionMemberName(interaction)},
+      ${targetId}, ${targetName}, ${channelId}, ${reason}, ${requestedCount}, 'pending'
+    )
+  `;
+  console.info("[moderation-audit]", JSON.stringify({
+    id,
+    guildId: interaction.guildId,
+    action,
+    actorId: interaction.user.id,
+    targetId,
+    channelId,
+    requestedCount,
+    status: "pending",
+  }));
+  return id;
+}
+
+async function finishModerationAudit(id, {
+  status,
+  affectedCount = null,
+  error = null,
+}) {
+  const errorCode = error ? String(error?.code ?? "DISCORD_API_ERROR").slice(0, 100) : null;
+  const errorMessage = error ? safeErrorText(error).slice(0, 500) : null;
+  await sql`
+    UPDATE "bot_moderation_audit"
+    SET
+      "status" = ${status},
+      "affectedCount" = ${affectedCount},
+      "errorCode" = ${errorCode},
+      "errorMessage" = ${errorMessage},
+      "completedAt" = now()
+    WHERE "id" = ${id}
+  `;
+  console.info("[moderation-audit]", JSON.stringify({
+    id,
+    status,
+    affectedCount,
+    errorCode,
+  }));
+}
+
+function moderationAuditReason(reason, interaction, auditId) {
+  return `${reason} | By ${interaction.user.username} (${interaction.user.id}) | Audit ${auditId}`.slice(0, 512);
+}
+
+async function handleMemberModerationCommand(interaction, action) {
+  const access = await requireModerationPermission(interaction, action);
+  if (!access) return;
+  if (
+    (action === "ban" || action === "kick") &&
+    interaction.options.getBoolean("confirm", true) !== true
+  ) {
+    await replyModerationError(interaction, "末尾に `--confirm` を付けた場合のみ実行できます。");
+    return;
+  }
+
+  let reason;
+  let timeoutMinutes = null;
+  try {
+    reason = normalizeModerationReason(interaction.options.getString("reason", true));
+    if (action === "timeout") {
+      timeoutMinutes = validateTimeoutMinutes(
+        interaction.options.getInteger("minutes", true),
+      );
+    }
+  } catch (error) {
+    await replyModerationError(interaction, error.message);
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const targetUser = interaction.options.getUser("user", true);
+  let actorMember;
+  let targetMember;
+  try {
+    [actorMember, targetMember] = await Promise.all([
+      interaction.guild.members.fetch(interaction.user.id),
+      interaction.guild.members.fetch(targetUser.id),
+    ]);
+  } catch {
+    await replyModerationError(interaction, "対象メンバーをサーバー内で確認できません。");
+    return;
+  }
+
+  const capability = access.config.capability;
+  const targetError = getModerationTargetError({
+    actorId: interaction.user.id,
+    botId: client.user.id,
+    guildOwnerId: interaction.guild.ownerId,
+    targetId: targetUser.id,
+    actorRolePosition: actorMember.roles.highest.position,
+    botRolePosition: access.botMember.roles.highest.position,
+    targetRolePosition: targetMember.roles.highest.position,
+    targetIsAdministrator: targetMember.permissions.has(PermissionFlagsBits.Administrator),
+    actionAvailable: Boolean(targetMember[capability]),
+  });
+  if (targetError) {
+    await replyModerationError(interaction, targetError);
+    return;
+  }
+
+  const remainingSeconds = getModerationCooldownSeconds(interaction, action);
+  if (remainingSeconds > 0) {
+    await replyModerationError(
+      interaction,
+      `連続実行を防ぐため、${remainingSeconds}秒後にもう一度お試しください。`,
+    );
+    return;
+  }
+
+  const targetName = (
+    targetMember.displayName ??
+    targetUser.globalName ??
+    targetUser.username
+  ).slice(0, 100);
+  let auditId;
+  try {
+    auditId = await startModerationAudit(interaction, {
+      action,
+      targetId: targetUser.id,
+      targetName,
+      reason,
+    });
+  } catch (error) {
+    console.error("Failed to start moderation audit:", error);
+    await replyModerationError(
+      interaction,
+      "監査ログを開始できなかったため、安全のため操作を中止しました。",
+    );
+    return;
+  }
+
+  try {
+    const auditReason = moderationAuditReason(reason, interaction, auditId);
+    if (action === "ban") {
+      await interaction.guild.members.ban(targetUser.id, {
+        deleteMessageSeconds: 0,
+        reason: auditReason,
+      });
+    } else if (action === "kick") {
+      await targetMember.kick(auditReason);
+    } else if (action === "timeout") {
+      await targetMember.timeout(timeoutMinutes * 60 * 1000, auditReason);
+    } else {
+      await targetMember.timeout(null, auditReason);
+    }
+    await finishModerationAudit(auditId, { status: "success", affectedCount: 1 });
+  } catch (error) {
+    console.error(`Moderation ${action} failed:`, error);
+    await finishModerationAudit(auditId, { status: "failed", error }).catch(
+      (auditError) => console.error("Failed to finish moderation audit:", auditError),
+    );
+    await replyModerationError(
+      interaction,
+      "Discord上の操作に失敗しました。ロール階層とBot権限を確認してください。",
+    );
+    return;
+  }
+
+  const actionText = formatModerationActionResult(action, timeoutMinutes);
+  try {
+    await interaction.editReply({
+      content:
+        `✅ **${targetName}** を${actionText}。\n` +
+        `理由: ${reason}\n-# 監査ID: ${auditId}`,
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    // The Discord action and audit already succeeded. A response delivery
+    // failure must not rewrite the completed audit as a failed moderation.
+    console.error(`Moderation ${action} result reply failed:`, error);
+  }
+  return true;
+}
+
+async function handleUnbanCommand(interaction) {
+  const access = await requireModerationPermission(interaction, "unban");
+  if (!access) return;
+  const targetId = interaction.options.getString("user_id", true).trim();
+  let reason;
+  try {
+    if (!validateDiscordId(targetId)) throw new Error("有効なDiscord IDを入力してください。");
+    reason = normalizeModerationReason(interaction.options.getString("reason", true));
+  } catch (error) {
+    await replyModerationError(interaction, error.message);
+    return;
+  }
+  const remainingSeconds = getModerationCooldownSeconds(interaction, "unban");
+  if (remainingSeconds > 0) {
+    await replyModerationError(
+      interaction,
+      `連続実行を防ぐため、${remainingSeconds}秒後にもう一度お試しください。`,
+    );
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let ban;
+  try {
+    ban = await interaction.guild.bans.fetch(targetId);
+  } catch {
+    await replyModerationError(interaction, "指定したユーザーはBAN一覧で確認できません。");
+    return;
+  }
+  let auditId;
+  try {
+    auditId = await startModerationAudit(interaction, {
+      action: "unban",
+      targetId,
+      targetName: (ban.user.globalName ?? ban.user.username).slice(0, 100),
+      reason,
+    });
+  } catch (error) {
+    console.error("Failed to start moderation audit:", error);
+    await replyModerationError(
+      interaction,
+      "監査ログを開始できなかったため、安全のため操作を中止しました。",
+    );
+    return;
+  }
+  try {
+    await interaction.guild.bans.remove(
+      targetId,
+      moderationAuditReason(reason, interaction, auditId),
+    );
+    await finishModerationAudit(auditId, { status: "success", affectedCount: 1 });
+    await interaction.editReply({
+      content: `✅ **${ban.user.globalName ?? ban.user.username}** のBANを解除しました。\n理由: ${reason}\n-# 監査ID: ${auditId}`,
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    console.error("Moderation unban failed:", error);
+    await finishModerationAudit(auditId, { status: "failed", error }).catch(
+      (auditError) => console.error("Failed to finish moderation audit:", auditError),
+    );
+    await replyModerationError(interaction, "BAN解除に失敗しました。Bot権限を確認してください。");
+  }
+}
+
+async function handleBanlistCommand(interaction) {
+  const access = await requireModerationPermission(interaction, "banlist");
+  if (!access) return;
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const bans = await interaction.guild.bans.fetch({ limit: 100 });
+    const entries = [...bans.values()];
+    const pageSize = 10;
+    const totalPages = Math.max(1, Math.ceil(entries.length / pageSize));
+    const page = Math.min(
+      interaction.options.getInteger("page") ?? 1,
+      totalPages,
+    );
+    const visible = entries.slice((page - 1) * pageSize, page * pageSize);
+    const description = visible.length
+      ? visible
+          .map(
+            (ban, index) =>
+              `${(page - 1) * pageSize + index + 1}. ${formatGuildName(ban.user.globalName ?? ban.user.username)} (\`${ban.user.id}\`)`,
+          )
+          .join("\n")
+      : "BANされているユーザーはいません。";
+    const embed = new EmbedBuilder()
+      .setColor(0xed4245)
+      .setTitle("BANユーザー一覧")
+      .setDescription(description)
+      .setFooter({
+        text: `${entries.length}件 · ${page}/${totalPages}ページ · 最大100件を表示`,
+      });
+    await interaction.editReply({ embeds: [embed] });
+  } catch (error) {
+    console.error("Ban list command failed:", error);
+    await replyModerationError(interaction, "BAN一覧を取得できませんでした。");
+  }
+}
+
+async function handleClearCommand(interaction) {
+  const access = await requireModerationPermission(interaction, "clear");
+  if (!access) return;
+  if (interaction.options.getBoolean("confirm", true) !== true) {
+    await replyModerationError(interaction, "末尾に `--confirm` を付けた場合のみ実行できます。");
+    return;
+  }
+  const amount = interaction.options.getInteger("amount", true);
+  let reason;
+  try {
+    reason = normalizeModerationReason(interaction.options.getString("reason", true));
+  } catch (error) {
+    await replyModerationError(interaction, error.message);
+    return;
+  }
+  if (
+    !interaction.channel?.isTextBased?.() ||
+    !interaction.channel.messages?.fetch ||
+    !interaction.channel.bulkDelete
+  ) {
+    await replyModerationError(interaction, "このチャンネルではメッセージ削除を実行できません。");
+    return;
+  }
+  const remainingSeconds = getModerationCooldownSeconds(interaction, "clear");
+  if (remainingSeconds > 0) {
+    await replyModerationError(
+      interaction,
+      `連続実行を防ぐため、${remainingSeconds}秒後にもう一度お試しください。`,
+    );
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let auditId;
+  try {
+    auditId = await startModerationAudit(interaction, {
+      action: "clear",
+      channelId: interaction.channelId,
+      reason,
+      requestedCount: amount,
+    });
+  } catch (error) {
+    console.error("Failed to start moderation audit:", error);
+    await replyModerationError(
+      interaction,
+      "監査ログを開始できなかったため、安全のため操作を中止しました。",
+    );
+    return;
+  }
+  try {
+    const recentMessages = await interaction.channel.messages.fetch({ limit: 100 });
+    const minimumTimestamp = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    const targetIds = [...recentMessages.values()]
+      .filter(
+        (message) =>
+          message.id !== interaction.sourceMessageId &&
+          !message.pinned &&
+          message.createdTimestamp > minimumTimestamp,
+      )
+      .slice(0, amount)
+      .map((message) => message.id);
+    const deleted = targetIds.length
+      ? await interaction.channel.bulkDelete(targetIds, true)
+      : new Map();
+    await finishModerationAudit(auditId, {
+      status: "success",
+      affectedCount: deleted.size,
+    });
+    await interaction.editReply({
+      content:
+        `✅ ${deleted.size.toLocaleString("ja-JP")}件のメッセージを削除しました。` +
+        (deleted.size < amount
+          ? ` ${amount - deleted.size}件はピン留め・14日超過・取得範囲外のため保護されました。`
+          : "") +
+        `\n理由: ${reason}\n-# 監査ID: ${auditId}`,
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    console.error("Moderation clear failed:", error);
+    await finishModerationAudit(auditId, { status: "failed", error }).catch(
+      (auditError) => console.error("Failed to finish moderation audit:", auditError),
+    );
+    await replyModerationError(
+      interaction,
+      "メッセージ削除に失敗しました。チャンネル権限を確認してください。",
+    );
+  }
+}
+
 async function updateMemberCount(guild) {
   if (isGuildBlocked(guild.id)) return;
   await sql`
@@ -1142,9 +3837,10 @@ async function updateMemberCount(guild) {
 // treats the Bot as unavailable when this record is no longer refreshed.
 async function recordBotHeartbeat() {
   if (!client.isReady()) return;
+  const guildCount = getAvailableBotGuilds().length;
   await sql`
     INSERT INTO "bot_heartbeat" ("id", "lastSeenAt", "startedAt", "guildCount", "stoppedAt")
-    VALUES (${botHeartbeatId}, now(), ${botStartedAt}, ${client.guilds.cache.size}, NULL)
+    VALUES (${botHeartbeatId}, now(), ${botStartedAt}, ${guildCount}, NULL)
     ON CONFLICT ("id") DO UPDATE SET
       "lastSeenAt" = now(),
       "startedAt" = EXCLUDED."startedAt",
@@ -1193,6 +3889,126 @@ async function syncChannelAccess(guild) {
         WHERE current."channelId" = access."channelId"
       )
   `;
+}
+
+function analyticsRoleIds(member) {
+  if (!member?.roles?.cache) return [];
+  return [...member.roles.cache.keys()].filter((roleId) => roleId !== member.guild.id);
+}
+
+async function recordGuildMemberEvent(member, eventType, source = "gateway") {
+  if (isGuildBlocked(member.guild.id)) return;
+  const occurredAt = eventType === "join" && member.joinedAt ? member.joinedAt : new Date();
+  const roleIds = JSON.stringify(analyticsRoleIds(member));
+  if (source === "discord_sync") {
+    await sql`
+      INSERT INTO "guild_member_event" ("guildId", "userId", "eventType", "isBot", "roleIds", "source", "occurredAt")
+      SELECT ${member.guild.id}, ${member.id}, ${eventType}, ${member.user.bot}, ${roleIds}::jsonb, ${source}, ${occurredAt}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM "guild_member_event"
+        WHERE "guildId" = ${member.guild.id} AND "userId" = ${member.id} AND "eventType" = ${eventType}
+      )
+    `;
+    return;
+  }
+  await sql`
+    INSERT INTO "guild_member_event" ("guildId", "userId", "eventType", "isBot", "roleIds", "source", "occurredAt")
+    VALUES (${member.guild.id}, ${member.id}, ${eventType}, ${member.user.bot}, ${roleIds}::jsonb, ${source}, ${occurredAt})
+  `;
+}
+
+async function syncAnalyticsInventory(guild, { fetchMembers = false } = {}) {
+  if (isGuildBlocked(guild.id)) return;
+  if (fetchMembers) {
+    try {
+      await guild.members.fetch();
+    } catch (error) {
+      console.warn(`Member inventory fetch skipped for ${guild.id}:`, error.message);
+    }
+  }
+  const [channels, roles] = await Promise.all([guild.channels.fetch(), guild.roles.fetch()]);
+  const channelRows = [...channels.values()].filter(Boolean).map((channel) => ({
+    channelId: channel.id,
+    channelName: "name" in channel ? channel.name : "Deleted Channel",
+    channelType: String(channel.type),
+  }));
+  const roleRows = [...roles.values()].filter(Boolean).map((role) => ({
+    roleId: role.id,
+    roleName: role.name,
+    memberCount: role.members?.size ?? 0,
+    isManaged: role.managed,
+    isBotRole: Boolean(role.tags?.botId),
+    isEveryone: role.id === guild.id,
+    color: role.color,
+    position: role.position,
+  }));
+  await sql`
+    INSERT INTO "guild_channel_registry" ("guildId", "channelId", "channelName", "channelType", "deletedAt", "updatedAt")
+    SELECT ${guild.id}, row."channelId", row."channelName", row."channelType", NULL, now()
+    FROM jsonb_to_recordset(${JSON.stringify(channelRows)}::jsonb)
+      AS row("channelId" text, "channelName" text, "channelType" text)
+    ON CONFLICT ("guildId", "channelId") DO UPDATE SET
+      "channelName" = EXCLUDED."channelName", "channelType" = EXCLUDED."channelType", "deletedAt" = NULL, "updatedAt" = now()
+  `;
+  await sql`
+    UPDATE "guild_channel_registry" registry SET "deletedAt" = COALESCE(registry."deletedAt", now()), "updatedAt" = now()
+    WHERE registry."guildId" = ${guild.id}
+      AND NOT (registry."channelId" = ANY(${channelRows.map((row) => row.channelId)}::text[]))
+  `;
+  await sql`
+    INSERT INTO "guild_role_registry" ("guildId", "roleId", "roleName", "memberCount", "isManaged", "isBotRole", "isEveryone", "color", "position", "deletedAt", "updatedAt")
+    SELECT ${guild.id}, row."roleId", row."roleName", row."memberCount", row."isManaged", row."isBotRole", row."isEveryone", row."color", row."position", NULL, now()
+    FROM jsonb_to_recordset(${JSON.stringify(roleRows)}::jsonb)
+      AS row("roleId" text, "roleName" text, "memberCount" integer, "isManaged" boolean, "isBotRole" boolean, "isEveryone" boolean, "color" integer, "position" integer)
+    ON CONFLICT ("guildId", "roleId") DO UPDATE SET
+      "roleName" = EXCLUDED."roleName", "memberCount" = EXCLUDED."memberCount", "isManaged" = EXCLUDED."isManaged",
+      "isBotRole" = EXCLUDED."isBotRole", "isEveryone" = EXCLUDED."isEveryone", "color" = EXCLUDED."color",
+      "position" = EXCLUDED."position", "deletedAt" = NULL, "updatedAt" = now()
+  `;
+  await sql`
+    UPDATE "guild_role_registry" registry SET "deletedAt" = COALESCE(registry."deletedAt", now()), "updatedAt" = now()
+    WHERE registry."guildId" = ${guild.id}
+      AND NOT (registry."roleId" = ANY(${roleRows.map((row) => row.roleId)}::text[]))
+  `;
+  if (fetchMembers) {
+    for (const member of guild.members.cache.values()) {
+      await recordGuildMemberEvent(member, "join", "discord_sync");
+    }
+  }
+}
+
+async function updateVoiceAnalytics(oldState, newState) {
+  const guild = newState.guild;
+  const member = newState.member ?? oldState.member;
+  if (!member || member.user.bot || isGuildBlocked(guild.id)) return;
+  if (oldState.channelId) {
+    await sql`
+      UPDATE "voice_session" SET "endedAt" = now()
+      WHERE "guildId" = ${guild.id} AND "userId" = ${member.id} AND "endedAt" IS NULL
+    `;
+  }
+  if (newState.channelId) {
+    await sql`
+      INSERT INTO "voice_session" ("guildId", "userId", "channelId", "userIsBot", "userRoleIds", "startedAt")
+      VALUES (${guild.id}, ${member.id}, ${newState.channelId}, false, ${JSON.stringify(analyticsRoleIds(member))}::jsonb, now())
+      ON CONFLICT ("guildId", "userId") WHERE "endedAt" IS NULL DO NOTHING
+    `;
+  }
+}
+
+async function syncCurrentVoiceSessions(guild) {
+  await sql`
+    UPDATE "voice_session" SET "endedAt" = now()
+    WHERE "guildId" = ${guild.id} AND "endedAt" IS NULL
+  `;
+  for (const state of guild.voiceStates.cache.values()) {
+    if (!state.channelId || state.member?.user.bot !== false) continue;
+    await sql`
+      INSERT INTO "voice_session" ("guildId", "userId", "channelId", "userIsBot", "userRoleIds", "startedAt")
+      VALUES (${guild.id}, ${state.member.id}, ${state.channelId}, false, ${JSON.stringify(analyticsRoleIds(state.member))}::jsonb, now())
+      ON CONFLICT ("guildId", "userId") WHERE "endedAt" IS NULL DO NOTHING
+    `;
+  }
 }
 
 // Alerts live in the database rather than in Discord DMs. Every authorized
@@ -1329,10 +4145,11 @@ async function storeMessage(message) {
     return;
   const channelName =
     "name" in message.channel ? message.channel.name : "不明なチャンネル";
+  const roleIds = JSON.stringify(analyticsRoleIds(message.member));
   await sql`
-    INSERT INTO "discord_message" ("id", "guildId", "channelName", "authorId", "authorName", "content", "createdAt", "updatedAt")
-    VALUES (${message.id}, ${message.guild.id}, ${channelName}, ${message.author.id}, ${message.member?.displayName ?? message.author.username}, ${message.content}, ${message.createdAt}, now())
-    ON CONFLICT ("id") DO UPDATE SET "content" = EXCLUDED."content", "updatedAt" = now()
+    INSERT INTO "discord_message" ("id", "guildId", "channelId", "channelName", "authorId", "authorName", "authorIsBot", "authorRoleIds", "content", "createdAt", "updatedAt")
+    VALUES (${message.id}, ${message.guild.id}, ${message.channel.id}, ${channelName}, ${message.author.id}, ${message.member?.displayName ?? message.author.username}, ${message.author.bot}, ${roleIds}::jsonb, ${message.content}, ${message.createdAt}, now())
+    ON CONFLICT ("id") DO UPDATE SET "channelId" = EXCLUDED."channelId", "channelName" = EXCLUDED."channelName", "authorName" = EXCLUDED."authorName", "authorIsBot" = EXCLUDED."authorIsBot", "authorRoleIds" = EXCLUDED."authorRoleIds", "content" = EXCLUDED."content", "updatedAt" = now()
   `;
 }
 
@@ -1468,6 +4285,17 @@ async function pollHistoryImportJobs() {
   if (job) await processHistoryImportJob(job);
 }
 
+let guildResetRequestPolling = false;
+async function pollGuildResetRequests() {
+  if (!guildResetConfig.enabled || guildResetRequestPolling) return;
+  guildResetRequestPolling = true;
+  try {
+    await guildResetService.processDashboardRequest();
+  } finally {
+    guildResetRequestPolling = false;
+  }
+}
+
 function hasHumanVoiceActivity(guild) {
   return [...guild.voiceStates.cache.values()].some(
     (state) => state.channelId && state.member?.user.bot !== true,
@@ -1494,11 +4322,12 @@ async function syncServerVoiceSession(guild) {
 }
 
 client.once("clientReady", async () => {
-  client.user.setActivity("NuviloView", { type: ActivityType.Playing });
+  updateBotPresence();
   console.log(`NuviloView:OEM bot logged in as ${client.user.tag}`);
   try {
-    await recordBotHeartbeat();
     await loadBlockedGuilds();
+    updateBotPresence();
+    await recordBotHeartbeat();
     await registerCommands();
     // Remove legacy per-guild registrations left by earlier releases. The
     // global core commands remain available without appearing twice.
@@ -1511,6 +4340,9 @@ client.once("clientReady", async () => {
       client.guilds.cache.map((guild) => leaveBlockedGuild(guild, "startup")),
     );
     await Promise.allSettled(client.guilds.cache.map(syncGuildRegistry));
+    await Promise.allSettled(
+      client.guilds.cache.map((guild) => syncAnalyticsInventory(guild, { fetchMembers: true })),
+    );
     await Promise.all(client.guilds.cache.map(updateMemberCount));
     await Promise.allSettled(
       client.guilds.cache.map(restoreTodayActiveMembers),
@@ -1518,8 +4350,10 @@ client.once("clientReady", async () => {
     await Promise.allSettled(client.guilds.cache.map(syncChannelAccess));
     await Promise.allSettled(client.guilds.cache.map(checkGuildAlerts));
     await Promise.allSettled(client.guilds.cache.map(syncServerVoiceSession));
+    await Promise.allSettled(client.guilds.cache.map(syncCurrentVoiceSessions));
     await purgeExpiredMessages();
     void pollHistoryImportJobs();
+    void pollGuildResetRequests();
   } catch (error) {
     console.error("Initial member sync failed:", error);
   }
@@ -1527,6 +4361,7 @@ client.once("clientReady", async () => {
 
 client.on("guildCreate", (guild) =>
   void (async () => {
+    updateBotPresence();
     await syncGuildRegistry(guild);
     if (await leaveBlockedGuild(guild, "re-invite")) return;
     await Promise.allSettled([
@@ -1534,12 +4369,15 @@ client.on("guildCreate", (guild) =>
       updateMemberCount(guild),
       restoreTodayActiveMembers(guild),
       syncChannelAccess(guild),
+      syncAnalyticsInventory(guild, { fetchMembers: true }),
       syncServerVoiceSession(guild),
+      syncCurrentVoiceSessions(guild),
     ]);
   })(),
 );
 
 client.on("guildDelete", (guild) => {
+  updateBotPresence();
   void markGuildDisconnected(guild.id).catch((error) =>
     console.error("Failed to mark removed guild as disconnected:", error),
   );
@@ -1547,6 +4385,16 @@ client.on("guildDelete", (guild) => {
 
 client.on("interactionCreate", async (interaction) => {
   if (interaction.isAutocomplete()) {
+    if (interaction.commandName === "translate") {
+      await interaction
+        .respond(
+          getTranslationAutocompleteChoices(
+            String(interaction.options.getFocused()),
+          ),
+        )
+        .catch(() => {});
+      return;
+    }
     if (interaction.commandName !== "scopeserver") return;
     if (!canUseBotServers(interaction)) {
       await interaction.respond([]).catch(() => {});
@@ -1562,6 +4410,30 @@ client.on("interactionCreate", async (interaction) => {
     interaction.customId.startsWith("nvscope:")
   ) {
     await handleScopeServerComponent(interaction);
+    return;
+  }
+
+  if (
+    interaction.isButton() &&
+    interaction.customId.startsWith("zxgame:")
+  ) {
+    await handleDiceRollComponent(interaction);
+    return;
+  }
+
+  if (
+    interaction.isButton() &&
+    interaction.customId.startsWith("nvspam:")
+  ) {
+    await handleSpamActionComponent(interaction);
+    return;
+  }
+
+  if (
+    interaction.isButton() &&
+    interaction.customId.startsWith("nvsnipe:")
+  ) {
+    await handleSnipeComponent(interaction);
     return;
   }
 
@@ -1594,17 +4466,11 @@ client.on("interactionCreate", async (interaction) => {
       );
       return;
     }
-    const supportedLanguages = new Set(
-      availableLanguages.map((language) => language.code),
+    const requestId = createTranslationRequest(
+      interaction.user.id,
+      content,
+      createTranslationLanguageMetadata(availableLanguages),
     );
-    const languageNames = new Map(
-      availableLanguages.map((language) => [language.code, language.name]),
-    );
-    const requestId = createTranslationRequest(interaction.user.id, content, {
-      supportedLanguages,
-      languageNames,
-      availableLanguages,
-    });
     await interaction.editReply({
       content:
         `翻訳先を選択してください。結果はあなたにだけ表示され、メッセージ本文・翻訳結果は保存されません。\n-# LibreTranslate v${libreTranslateVersion} · ローカル処理`,
@@ -1651,13 +4517,11 @@ client.on("interactionCreate", async (interaction) => {
         userId: interaction.user.id,
       });
       translationRequests.delete(requestId);
-      const embed = new EmbedBuilder()
-        .setColor(0x56b6ff)
-        .setTitle(`${request.supportedLanguages.languageNames.get(targetLanguage) ?? getLanguageLabel(targetLanguage)} に翻訳`)
-        .setDescription(translated.text.slice(0, 4_000))
-        .setFooter({
-          text: `検出言語: ${translated.detectedLanguage ?? "自動"} · 今月の残り処理枠: ${translated.remainingCharacters.toLocaleString("ja-JP")}文字`,
-        });
+      const embed = createTranslationResultEmbed({
+        translated,
+        targetLanguage,
+        languageNames: request.supportedLanguages.languageNames,
+      });
       await interaction.editReply({ embeds: [embed], components: [] });
     } catch (error) {
       console.error("Message translation failed:", error.message);
@@ -1702,13 +4566,11 @@ client.on("interactionCreate", async (interaction) => {
         userId: interaction.user.id,
       });
       translationRequests.delete(requestId);
-      const embed = new EmbedBuilder()
-        .setColor(0x56b6ff)
-        .setTitle(`${request.supportedLanguages.languageNames.get(targetLanguage) ?? targetLanguage} に翻訳`)
-        .setDescription(translated.text.slice(0, 4_000))
-        .setFooter({
-          text: `検出言語: ${translated.detectedLanguage ?? "自動"} · 今月の残り処理枠: ${translated.remainingCharacters.toLocaleString("ja-JP")}文字`,
-        });
+      const embed = createTranslationResultEmbed({
+        translated,
+        targetLanguage,
+        languageNames: request.supportedLanguages.languageNames,
+      });
       await interaction.editReply({ embeds: [embed] });
     } catch (error) {
       console.error("Message translation failed:", error.message);
@@ -1722,6 +4584,56 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === "translate") {
+    try {
+      await handleTranslateSlashCommand(interaction);
+    } catch (error) {
+      console.error("/translate command failed:", error);
+      const errorPayload = {
+        content:
+          "翻訳コマンドの処理中にエラーが発生しました。少し待ってから再実行してください。",
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply(errorPayload).catch(() => {});
+      } else {
+        await interaction.reply(errorPayload).catch(() => {});
+      }
+    }
+    return;
+  }
+  if (interaction.commandName === "zx") {
+    try {
+      await handleZxSlashCommand(interaction);
+    } catch (error) {
+      console.error("/zx command failed:", error);
+      const errorPayload = {
+        content:
+          "❌ 娯楽コマンドの処理中にエラーが発生しました。少し待ってから再実行してください。",
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(errorPayload).catch(() => {});
+      } else {
+        await interaction.reply(errorPayload).catch(() => {});
+      }
+    }
+    return;
+  }
+  if (interaction.commandName === "dev-reset-plan") {
+    await handleDevResetPlanCommand(interaction);
+    return;
+  }
+  if (interaction.commandName === "dev-reset-code") {
+    await handleDevResetCodeCommand(interaction);
+    return;
+  }
+  if (interaction.commandName === "dev-reset-confirm") {
+    await handleDevResetConfirmCommand(interaction);
+    return;
+  }
   if (interaction.commandName === "cmup") {
     if (
       !developerGuildId ||
@@ -2210,22 +5122,56 @@ client.on("interactionCreate", async (interaction) => {
     const embed = new EmbedBuilder()
       .setColor(0x7877ff)
       .setTitle("NuviloChan Bot — Privacy")
-      .setDescription("NuviloChan Botはサーバー分析のために必要なデータだけを記録します。")
+      .setDescription(
+        "NuviloView:OEMとNuviloChan Botにおける主なデータ処理の要約です。詳細版と削除等の窓口は下記リンクから確認できます。",
+      )
       .addFields(
         {
-          name: "記録する内容",
-          value: "メンバー数、メッセージ数、リアクション、参加・退出、発言者数、サーバー単位の通話時間、チャンネル権限状態",
+          name: "分析・サーバー情報",
+          value:
+            "サーバーのID・名称・アイコン・所有者ID・メンバー数、投稿数、リアクション数、参加・退出、日別の発言者ID、チャンネル情報とBotの権限状態を記録します。",
         },
         {
-          name: "メッセージ本文",
-          value: `検索機能のため、Botが閲覧できるチャンネルの本文を最大${messageRetentionDays}日間保存します。削除イベントを受信した本文は記録からも削除します。`,
+          name: "通話情報",
+          value:
+            "通話時間の集計に、参加者のDiscord ID、チャンネルID、参加・退出時刻を記録します。音声、映像、画面共有の内容は取得・保存しません。",
         },
         {
-          name: "保存しないもの",
-          value: "音声通話の内容は取得・保存しません。",
+          name: "メッセージと履歴取込",
+          value:
+            `検索機能のため、Botが閲覧できるチャンネルの本文、メッセージ・投稿者ID、表示名、チャンネル名、投稿日時を最大${messageRetentionDays}日間保存します。` +
+            "削除イベントを受信した本文は検索用DBから削除します。添付ファイル本体、埋め込み・スタンプの内容は保存しません。",
         },
-        { name: "詳細", value: `${dashboardUrl}privacy` },
-      );
+        {
+          name: "一時処理",
+          value:
+            "zx?snipeはチャンネルごとに直近10件の削除本文・投稿者・削除者等をBotメモリで最大3日保持し、結果は実行チャンネルを閲覧できるメンバーに表示します。" +
+            "翻訳本文・結果は最大5分の一時処理のみでDB保存せず、月間文字数合計だけを記録します。スパム判定は送信時刻と件数を短時間だけ比較し、判定用に本文を追加保存しません。",
+        },
+        {
+          name: "認証・設定・操作ログ",
+          value:
+            "Discord ID、表示名、アイコン、管理可能サーバー、OAuthトークン、セッション、テーマ・目標・通知等の設定を機能提供に使用します。" +
+            "モデレーションは実行者・対象・理由・件数・成否を監査ログへ記録します。運営者向け管理機能では構成情報、操作履歴、必要なバックアップを保存する場合があります。",
+        },
+        {
+          name: "取得・利用しないもの",
+          value:
+            "Discord OAuthでメール権限を要求せず、Discord登録メールは取得しません。DM本文、通話音声・映像・画面共有、添付ファイル本体は保存しません。" +
+            "Discord APIデータやメッセージ本文を広告ターゲティング、データ販売、AIモデル学習に使用しません。",
+        },
+        {
+          name: "閲覧範囲・削除",
+          value:
+            "ダッシュボードと検索は対象サーバーの所有者または管理権限者に限定します。翻訳結果は実行者だけに表示します。" +
+            "Bot退出後は新規収集を停止します。既存データの開示・訂正・利用停止・削除はサポートから申請できます。",
+        },
+        {
+          name: "詳細・お問い合わせ",
+          value: `${dashboardUrl}privacy\n${dashboardUrl}support`,
+        },
+      )
+      .setFooter({ text: "最終更新: 2026年7月29日" });
     await interaction.reply({ embeds: [embed] });
     return;
   }
@@ -2359,6 +5305,24 @@ client.on("interactionCreate", async (interaction) => {
         inline: false,
       },
       {
+        name: "🌐　**/translate**",
+        value:
+          "━━━━━━━━━━━━━━━━━━\n入力したテキストを翻訳します。翻訳先を省略すると言語一覧から選べます。結果は実行者だけに表示され、入力本文と翻訳結果は保存しません。",
+        inline: false,
+      },
+      {
+        name: "🛡️　**セキュリティ・モデレーション**",
+        value:
+          "━━━━━━━━━━━━━━━━━━\nセキュリティ機能は独立した `r?` コマンドです。`r?help` で一覧と使い方、`r?perm_check`で実行者とBotの権限を確認できます。\n5秒以内に同一メンバーが8件送信するとスパムを検知し、通常メンバーを一時タイムアウトします。検知通知からTO解除・Kick・BANを選択できます。",
+        inline: false,
+      },
+      {
+        name: "🎮　**娯楽コマンド**",
+        value:
+          "━━━━━━━━━━━━━━━━━━\n`zx?`を入力するとDiscordの候補欄から`/zx`を選べます。`zx?dice`・`zx?snipe`と`/zx`は全メンバーが利用できます。",
+        inline: false,
+      },
+      {
         name: "🟧　**/commandupdate**",
         value:
           "━━━━━━━━━━━━━━━━━━\nこのサーバーのBotコマンドを即時更新します。更新直後に新機能を使いたいときに実行してください。",
@@ -2367,7 +5331,7 @@ client.on("interactionCreate", async (interaction) => {
       {
         name: "🔒　利用できる人",
         value:
-          "`/help` と `/privacy` は全員利用できます。その他はサーバー管理権限を持つメンバーのみ実行できます。",
+          "`/help`、`/privacy`、`/translate`、`zx?dice`・`zx?snipe`・`/zx`は全員利用できます。分析機能はサーバー管理者、セキュリティ機能は各操作に対応するDiscord権限を持つメンバーのみ実行できます。",
         inline: false,
       },
       {
@@ -2383,6 +5347,51 @@ client.on("interactionCreate", async (interaction) => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild || isGuildBlocked(message.guild.id)) return;
+
+  const securityInvocation = parseSecurityCommand(message.content);
+  if (securityInvocation) {
+    try {
+      await handlePrefixSecurityCommand(message, securityInvocation);
+    } catch (error) {
+      console.error("Prefix security command failed:", error);
+      await message.channel
+        .send({
+          content: "❌ コマンド処理中にエラーが発生しました。少し待ってから再実行してください。",
+          allowedMentions: { parse: [] },
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+
+  const entertainmentInvocation = parseEntertainmentCommand(message.content);
+  if (entertainmentInvocation) {
+    try {
+      await handlePrefixEntertainmentCommand(message, entertainmentInvocation);
+    } catch (error) {
+      console.error("Prefix entertainment command failed:", error);
+      await message.channel
+        .send({
+          content:
+            "❌ 娯楽コマンドの処理中にエラーが発生しました。少し待ってから再実行してください。",
+          allowedMentions: { parse: [] },
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+
+  if (spamProtectionEnabled) {
+    const spamDetection = spamTracker.record(
+      `${message.guild.id}:${message.author.id}`,
+      message.createdTimestamp,
+    );
+    if (spamDetection.detected) {
+      void handleSpamDetection(message, spamDetection).catch((error) =>
+        console.error("Spam detection handling failed:", error),
+      );
+    }
+  }
 
   try {
     await sql`
@@ -2421,11 +5430,147 @@ client.on("messageUpdate", async (_before, after) => {
   }
 });
 
-client.on("messageDelete", async (message) => {
+async function resolveMessageDeleteExecutor(
+  message,
+  authorId,
+  auditLogType = AuditLogEvent.MessageDelete,
+) {
+  if (!message.guild || (auditLogType === AuditLogEvent.MessageDelete && !authorId)) {
+    return null;
+  }
+  const botMember =
+    message.guild.members.me ?? (await message.guild.members.fetchMe());
+  if (!botMember.permissions.has(PermissionFlagsBits.ViewAuditLog)) return null;
+
+  await delay(750);
   try {
+    const auditLogs = await message.guild.fetchAuditLogs({
+      type: auditLogType,
+      limit: 6,
+    });
+    const cutoff = Date.now() - 7_500;
+    const entry = auditLogs.entries.find(
+      (candidate) =>
+        candidate.createdTimestamp >= cutoff &&
+        (auditLogType === AuditLogEvent.MessageBulkDelete ||
+          candidate.target?.id === authorId) &&
+        candidate.extra?.channel?.id === message.channelId,
+    );
+    if (!entry?.executor) return null;
+    return {
+      id: entry.executor.id,
+      name:
+        entry.executor.globalName ??
+        entry.executor.username ??
+        "不明なユーザー",
+    };
+  } catch (error) {
+    console.warn("Could not resolve message deleter from Discord audit log:", safeErrorText(error));
+    return null;
+  }
+}
+
+async function rememberDeletedMessageForSnipe(
+  message,
+  storedMessage,
+  auditLogType = AuditLogEvent.MessageDelete,
+  resolvedDeleter = undefined,
+) {
+  const isSnipeResult = message.components?.some((row) =>
+    row.components?.some((component) =>
+      component.customId?.startsWith("nvsnipe:"),
+    ),
+  );
+  if (
+    !message.guild ||
+    ignoredSnipeDeleteIds.delete(message.id) ||
+    snipeResultSessions.delete(message.id) ||
+    isSnipeResult
+  ) {
+    return;
+  }
+  const deletedAt = Date.now();
+  const authorId = message.author?.id ?? storedMessage?.authorId ?? null;
+  const authorName =
+    message.member?.displayName ??
+    message.author?.globalName ??
+    message.author?.username ??
+    storedMessage?.authorName ??
+    "不明なユーザー";
+  const content = message.content?.trim() || storedMessage?.content || "";
+  const deleter =
+    resolvedDeleter === undefined
+      ? await resolveMessageDeleteExecutor(message, authorId, auditLogType)
+      : resolvedDeleter;
+  const key = getSnipeChannelKey(message.guild.id, message.channelId);
+  const record = {
+    messageId: message.id,
+    authorId,
+    authorName,
+    content,
+    deletedById: deleter?.id ?? null,
+    deletedByName: deleter?.name ?? null,
+    deletedAt,
+  };
+  const history = [
+    record,
+    ...getLiveDeletedMessageSnipes(key).filter(
+      (candidate) => candidate.messageId !== message.id,
+    ),
+  ]
+    .sort((left, right) => right.deletedAt - left.deletedAt)
+    .slice(0, SNIPE_HISTORY_LIMIT);
+  deletedMessageSnipes.set(key, history);
+  scheduleSnipeHistoryCleanup(key);
+}
+
+async function processDeletedMessageForSnipe(
+  message,
+  auditLogType = AuditLogEvent.MessageDelete,
+  resolvedDeleter = undefined,
+) {
+  let storedMessage = null;
+  try {
+    const rows = await sql`
+      SELECT "authorId", "authorName", "content"
+      FROM "discord_message"
+      WHERE "id" = ${message.id}
+      LIMIT 1
+    `;
+    storedMessage = rows[0] ?? null;
     await sql`DELETE FROM "discord_message" WHERE "id" = ${message.id}`;
   } catch (error) {
     console.error("Failed to remove a deleted Discord message:", error);
+  }
+  await rememberDeletedMessageForSnipe(
+    message,
+    storedMessage,
+    auditLogType,
+    resolvedDeleter,
+  ).catch((error) =>
+    console.error("Failed to retain a transient Snipe record:", error),
+  );
+}
+
+client.on("messageDelete", async (message) => {
+  await processDeletedMessageForSnipe(message);
+});
+
+client.on("messageDeleteBulk", async (messages) => {
+  const deletedMessages = [...messages.values()];
+  const bulkDeleter = deletedMessages[0]
+    ? await resolveMessageDeleteExecutor(
+        deletedMessages[0],
+        null,
+        AuditLogEvent.MessageBulkDelete,
+      )
+    : null;
+  for (const message of deletedMessages) {
+    await processDeletedMessageForSnipe(
+      message,
+      AuditLogEvent.MessageBulkDelete,
+      bulkDeleter,
+    );
   }
 });
 
@@ -2437,7 +5582,10 @@ client.on("messageReactionAdd", async (reaction, user) => {
   )
     return;
   try {
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
     const guild = reaction.message.guild;
+    const reactor = guild.members.cache.get(user.id) ?? await guild.members.fetch(user.id).catch(() => null);
     await sql`
       INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "reactionCount", "date")
       VALUES (${guild.id}, ${guild.memberCount}, 0, 1, CURRENT_DATE)
@@ -2447,6 +5595,10 @@ client.on("messageReactionAdd", async (reaction, user) => {
         "memberCount" = EXCLUDED."memberCount",
         "updatedAt" = now()
     `;
+    await sql`
+      INSERT INTO "discord_reaction_event" ("guildId", "channelId", "messageId", "reactorId", "recipientId", "reactorIsBot", "reactorRoleIds", "occurredAt")
+      VALUES (${guild.id}, ${reaction.message.channelId ?? null}, ${reaction.message.id}, ${user.id}, ${reaction.message.author?.id ?? null}, ${user.bot}, ${JSON.stringify(analyticsRoleIds(reactor))}::jsonb, now())
+    `;
   } catch (error) {
     console.error("Failed to count a Discord reaction:", error);
   }
@@ -2455,6 +5607,9 @@ client.on("messageReactionAdd", async (reaction, user) => {
 client.on("voiceStateUpdate", (oldState, newState) => {
   if (oldState.channelId === newState.channelId) return;
   if (isGuildBlocked(newState.guild.id)) return;
+  void updateVoiceAnalytics(oldState, newState).catch((error) =>
+    console.error("Failed to sync member voice analytics:", error),
+  );
   void syncServerVoiceSession(newState.guild).catch((error) =>
     console.error("Failed to sync server voice activity:", error),
   );
@@ -2472,6 +5627,8 @@ client.on(
         type: "member_joined",
         actorName: member.displayName,
       }),
+      recordGuildMemberEvent(member, "join"),
+      syncAnalyticsInventory(member.guild),
     ])
     );
   },
@@ -2488,6 +5645,8 @@ client.on(
         type: "member_left",
         actorName: member.user.username,
       }),
+      recordGuildMemberEvent(member, "leave"),
+      syncAnalyticsInventory(member.guild),
       syncServerVoiceSession(member.guild),
     ])
     );
@@ -2496,6 +5655,24 @@ client.on(
 client.on("error", (error) => {
   console.error("Discord client error:", error);
   void reportOperationalAlert("Discord client error", error);
+});
+
+for (const eventName of ["channelCreate", "channelDelete", "channelUpdate", "roleCreate", "roleDelete", "roleUpdate"]) {
+  client.on(eventName, (...args) => {
+    const subject = args.at(-1) ?? args[0];
+    const guild = subject?.guild;
+    if (!guild || isGuildBlocked(guild.id)) return;
+    void syncAnalyticsInventory(guild).catch((error) =>
+      console.error(`Failed to refresh analytics inventory after ${eventName}:`, error),
+    );
+  });
+}
+
+client.on("guildMemberUpdate", (_before, after) => {
+  if (isGuildBlocked(after.guild.id)) return;
+  void syncAnalyticsInventory(after.guild).catch((error) =>
+    console.error("Failed to refresh role analytics after member update:", error),
+  );
 });
 
 process.on("unhandledRejection", (error) => {
@@ -2509,6 +5686,7 @@ setInterval(
       client.guilds.cache.map(async (guild) => {
         await updateMemberCount(guild);
         await syncChannelAccess(guild);
+        await syncAnalyticsInventory(guild);
         await syncGuildRegistry(guild);
         await checkGuildAlerts(guild);
       }),
@@ -2545,6 +5723,12 @@ setInterval(() => {
 }, 30 * 1000);
 
 setInterval(() => {
+  void pollGuildResetRequests().catch((error) =>
+    console.error("Failed to poll Guild reset requests:", error),
+  );
+}, 3 * 1000);
+
+setInterval(() => {
   const now = Date.now();
   for (const [id, request] of translationRequests) {
     if (request.expiresAt < now) translationRequests.delete(id);
@@ -2572,4 +5756,4 @@ async function shutdown(signal) {
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 process.once("SIGINT", () => void shutdown("SIGINT"));
 
-await client.login(process.env.DISCORD_BOT_TOKEN);
+await client.login(process.env.NUVILOVIEW_BOT_TOKEN);

@@ -219,7 +219,7 @@ function DesktopDashboardPreview() {
         <div className="flex h-9 items-center gap-1.5 border-b border-white/10 px-4"><span className="h-2.5 w-2.5 rounded-full bg-rose-400/80" /><span className="h-2.5 w-2.5 rounded-full bg-amber-300/80" /><span className="h-2.5 w-2.5 rounded-full bg-emerald-400/80" /><span className="ml-3 text-[10px] text-white/35">nuviloview-oem.vercel.app/dashboard</span></div>
         <div className="grid min-h-[440px] grid-cols-[150px_1fr]">
           <div className="border-r border-white/10 bg-white/[0.025] p-3">
-            <div className="flex items-center gap-2 text-[11px] font-black"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary">☕</span>NuviloView:<span className="-ml-2 text-primary">OEM</span></div>
+            <div className="flex items-center gap-2 text-[11px] font-black"><img src="/icon.svg" alt="" width="28" height="28" className="h-7 w-7 shrink-0 rounded-lg" />NuviloView:<span className="-ml-2 text-primary">OEM</span></div>
             <div className="mt-7 rounded-lg border border-white/10 bg-white/[0.04] p-2"><p className="truncate text-[10px] font-bold">🌙 Lunaria Lounge</p><p className="mt-1 text-[8px] text-white/40">2,846 メンバー</p></div>
             <div className="mt-6 space-y-1 text-[9px] text-white/45"><p className="rounded-md bg-primary/15 px-2 py-2 font-bold text-white">▦ ダッシュボード</p><p className="px-2 py-2">✦ 成長インサイト</p><p className="px-2 py-2">⚙ 設定</p></div>
           </div>

@@ -31,3 +31,31 @@ To learn more, take a look at the following resources:
 - [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
 - [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 - [v0 Documentation](https://v0.app/docs) - learn about v0 and how to use it.
+
+## Server backups
+
+`scripts/run-backup-forever.ps1` creates one verified server backup each day
+and stores the same set on both `F:\NuviloView-Backups` and
+`G:\NuviloView-Backups`. Backup sets are retained for 90 days.
+
+Each set contains:
+
+- a custom-format Neon/PostgreSQL dump;
+- server source, configuration, tools, and runtime scripts;
+- `.env.local` for disaster recovery;
+- SHA-256 checksums and restore instructions.
+
+Run a manual backup:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\backup-server.ps1
+```
+
+Verify a saved set without restoring it:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\verify-server-backup.ps1 -BackupPath "F:\NuviloView-Backups\<BACKUP_ID>"
+```
+
+Because `.env.local` contains credentials, protect both backup HDDs with
+BitLocker and restrict physical access.

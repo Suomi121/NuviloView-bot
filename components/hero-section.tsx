@@ -4,7 +4,7 @@ import { LoginButton } from '@/components/login-button'
 export function HeroSection() {
   const clientId = process.env.DISCORD_CLIENT_ID
   const botInviteUrl = clientId
-    ? `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=66560&integration_type=0&scope=bot`
+    ? `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=1099511721094&integration_type=0&scope=bot%20applications.commands`
     : null
 
   return (
@@ -67,7 +67,7 @@ export function HeroSection() {
                 <p className="text-sm font-bold text-foreground">分析を始めるにはBotを追加</p>
                 <span className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary">STEP 2</span>
               </div>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">メッセージ・メンバー・リアクション・通話時間を自動集計します。</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">活動を自動集計し、権限を持つ運営者向けの安全なモデレーション機能も追加します。</p>
             </div>
             {botInviteUrl ? (
               <a

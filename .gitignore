@@ -7,7 +7,9 @@ __v0_jsx-dev-runtime.ts
 .vercel/
 
 # Environment variables
-.env*.local
+.env
+.env.*
+!.env.example
 
 # Common ignores
 node_modules
@@ -16,6 +18,13 @@ package-lock.json
 *.tsbuildinfo
 .DS_Store
 .vercel
-logs/
-backups/
-tools/
+/logs/
+/backups/
+/data/
+/tools/
+Android/logs/
+Android/runtime/
+
+# Local runtime and temporary safety files
+*.log
+*.intent-test-backup

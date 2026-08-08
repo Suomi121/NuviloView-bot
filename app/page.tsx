@@ -6,8 +6,18 @@ import { SiteFooter } from '@/components/site-footer'
 import { DashboardShowcaseSection } from '@/components/dashboard-showcase-section'
 import { AnalysisExamplesSection } from '@/components/analysis-examples-section'
 import { auth } from '@/lib/auth'
+import type { Metadata } from 'next'
 import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
+
+export const metadata: Metadata = {
+  title: 'NuviloView:OEM — コミュニティを、次のステージへ。',
+  description:
+    'Discordサーバーのメンバー、会話量、リアクション、通話時間を見える化する分析ダッシュボード。',
+  alternates: {
+    canonical: '/',
+  },
+}
 
 export default async function Page({
   searchParams,

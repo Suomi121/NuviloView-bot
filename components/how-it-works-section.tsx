@@ -11,7 +11,7 @@ const steps = [
     icon: Bot,
     number: "02",
     title: "Botを追加",
-    body: "分析したいサーバーへNuviloChan Botを追加。管理者権限は必要ありません。",
+    body: "分析したいサーバーへNuviloChan Botを追加。Administratorではなく、分析とモデレーションに必要な個別権限だけを使用します。",
   },
   {
     icon: ChartNoAxesCombined,
@@ -24,7 +24,7 @@ const steps = [
 export function HowItWorksSection() {
   const clientId = process.env.DISCORD_CLIENT_ID;
   const botInviteUrl = clientId
-    ? `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=66560&integration_type=0&scope=bot`
+    ? `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=1099511721094&integration_type=0&scope=bot%20applications.commands`
     : null;
 
   return (
@@ -65,7 +65,7 @@ export function HowItWorksSection() {
           <div className="flex gap-3">
             <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
             <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
-              管理者権限は不要です。音声内容は保存せず、検索用に保存するメッセージ本文は原則最大90日間です。
+              Administrator権限は不要です。モデレーションは実行者とBotの個別権限・ロール階層を毎回確認し、操作を監査ログへ保存します。
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-3">

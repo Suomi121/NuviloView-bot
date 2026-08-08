@@ -34,6 +34,8 @@ import { useSession } from "@/lib/auth-client";
 import { useRouter } from "next/navigation";
 import { useLocale } from "@/components/locale-provider";
 import { defaultGuildTheme, guildThemeStyle, type GuildTheme } from "@/lib/guild-theme";
+import { buildDashboardPrintReportHtml } from "@/lib/dashboard-report-utils.mjs";
+import { CommunityAnalyticsDashboard, type CommunityAnalyticsView } from "@/components/community-analytics-dashboard";
 
 type Guild = { id: string; name: string; icon: string | null };
 type RecentActivity = {
@@ -204,7 +206,7 @@ export default function DashboardPage() {
   const [overviewMetric, setOverviewMetric] = useState<
     "members" | "active" | "inactive" | "activeMessages" | "messages" | "reactions" | "voice"
   >("members");
-  const [activeView, setActiveView] = useState<"overview" | "analytics" | "members" | "messages" | "insights">("overview");
+  const [activeView, setActiveView] = useState<"overview" | "analytics" | "members" | "messages" | CommunityAnalyticsView>("overview");
   const [guildTheme, setGuildTheme] = useState<GuildTheme>(defaultGuildTheme);
   const [channelInsights, setChannelInsights] = useState<ChannelInsight[]>([]);
   const [goals, setGoals] = useState<GrowthGoal[]>([]);
@@ -737,10 +739,26 @@ export default function DashboardPage() {
     if (reportFormat === "pdf") {
       const reportWindow = window.open("", "_blank", "noopener,noreferrer");
       if (!reportWindow) return;
-      reportWindow.document.write(
-        `<!doctype html><html><head><title>${filename}</title><style>body{font-family:Arial,sans-serif;padding:32px;color:#171717}h1{margin:0 0 8px}table{width:100%;border-collapse:collapse;margin-top:20px}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f4f4f5}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px}.card{border:1px solid #ddd;border-radius:10px;padding:12px}.label{font-size:12px;color:#666}.value{font-size:22px;font-weight:700;margin-top:4px}</style></head><body><h1>NuviloView:OEM Report</h1><p>${report.guild} · ${report.period}</p><div class="grid"><div class="card"><div class="label">${en ? "Members" : "メンバー数"}</div><div class="value">${memberCount}</div></div><div class="card"><div class="label">${en ? "Messages" : "メッセージ数"}</div><div class="value">${messageCount}</div></div><div class="card"><div class="label">${en ? "Total voice time" : "合計通話時間"}</div><div class="value">${formatDuration(voiceTotalSeconds, locale)}</div></div></div><table><thead><tr><th>${en ? "Date" : "日付"}</th><th>${en ? "Messages" : "メッセージ"}</th><th>${en ? "Members" : "メンバー"}</th></tr></thead><tbody>${report.dailyTrend.map((row) => `<tr><td>${row.date}</td><td>${row.messages}</td><td>${row.members}</td></tr>`).join("")}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`,
-      );
+      const memberLabel = en ? "Members" : "メンバー数";
+      const messageLabel = en ? "Messages" : "メッセージ数";
+      reportWindow.document.write(buildDashboardPrintReportHtml({
+        documentTitle: filename,
+        guildName: report.guild,
+        periodLabel: report.period,
+        memberLabel,
+        messageLabel,
+        voiceLabel: en ? "Total voice time" : "合計通話時間",
+        memberCount,
+        messageCount,
+        voiceDuration: formatDuration(voiceTotalSeconds, locale),
+        dateLabel: en ? "Date" : "日付",
+        rows: report.dailyTrend,
+      }));
       reportWindow.document.close();
+      reportWindow.setTimeout(() => {
+        reportWindow.focus();
+        reportWindow.print();
+      }, 100);
       setReportOpen(false);
       return;
     }
@@ -882,6 +900,16 @@ export default function DashboardPage() {
             label={en ? "Dashboard" : "ダッシュボード"}
             onClick={() => setActiveView("overview")}
           />
+        </nav>
+        <p className="mb-2 mt-7 px-3 text-[10px] font-bold tracking-[0.14em] text-muted-foreground">
+          ANALYTICS
+        </p>
+        <nav className="space-y-1">
+          <NavItem active={activeView === "retention"} icon={<Users />} label={en ? "Retention" : "定着率"} onClick={() => setActiveView("retention")} />
+          <NavItem active={activeView === "health"} icon={<Activity />} label={en ? "Health v2 Preview" : "Health v2 プレビュー"} onClick={() => setActiveView("health")} />
+          <NavItem active={activeView === "diagnostics"} icon={<LineChart />} label={en ? "Diagnostics" : "変化の要因"} onClick={() => setActiveView("diagnostics")} />
+          <NavItem active={activeView === "channels"} icon={<Hash />} label={en ? "Channels" : "チャンネル"} onClick={() => setActiveView("channels")} />
+          <NavItem active={activeView === "roles"} icon={<ShieldCheck />} label={en ? "Roles" : "ロール"} onClick={() => setActiveView("roles")} />
         </nav>
         <p className="mb-2 mt-7 px-3 text-[10px] font-bold tracking-[0.14em] text-muted-foreground">
           MANAGE
@@ -1531,7 +1559,9 @@ export default function DashboardPage() {
               </section>
             </div>
           )}
-          {activeView !== "overview" && <DashboardDetailView view={activeView} en={en} periodLabel={periodLabel} memberCount={memberCount} activeMemberCount={activeMemberCount} messageCount={messageCount} totalMessageCount={totalMessageCount} reactionRate={reactionRate} voiceTotalSeconds={voiceTotalSeconds} locale={locale} labels={labels} chartPoints={chartPoints} memberPoints={memberPoints} activities={activities} channelInsights={channelInsights} insight={insight} insightCards={insightCards} />}
+          {activeView !== "overview" && (["retention", "health", "diagnostics", "channels", "roles", "insights"] as string[]).includes(activeView)
+            ? <CommunityAnalyticsDashboard view={activeView as CommunityAnalyticsView} guildId={guildId} days={days} timeZone={timeZone} locale={locale} />
+            : activeView !== "overview" && <DashboardDetailView view={activeView as "analytics" | "members" | "messages"} en={en} periodLabel={periodLabel} memberCount={memberCount} activeMemberCount={activeMemberCount} messageCount={messageCount} totalMessageCount={totalMessageCount} reactionRate={reactionRate} voiceTotalSeconds={voiceTotalSeconds} locale={locale} labels={labels} chartPoints={chartPoints} memberPoints={memberPoints} activities={activities} channelInsights={channelInsights} insight={insight} insightCards={insightCards} />}
           {activeView === "overview" && <>
           <div className="mb-3 flex items-end justify-between gap-4">
             <div>
@@ -1830,10 +1860,10 @@ export default function DashboardPage() {
               <div className="flex items-start justify-between">
                 <div>
                   <h2 className="font-bold">
-                    {en ? "Server health" : "サーバーヘルス"}
+                    {en ? "Live activity pulse" : "リアルタイム活動パルス"}
                   </h2>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {en ? "Current community status" : "現在のコミュニティ状態"}
+                    {en ? "A quick live signal; the Health v2 Preview is shown below" : "当日の簡易シグナルです。Health v2 Previewは下部に表示します"}
                   </p>
                 </div>
                 <StatusBadge tone={health.status === "良好" || health.status === "Good" ? "success" : health.status === "注意" || health.status === "Caution" ? "warning" : health.status === "要確認" || health.status === "Needs attention" ? "danger" : "neutral"}>{health.status}</StatusBadge>
@@ -2009,6 +2039,7 @@ export default function DashboardPage() {
               timeZone={timeZone}
             />
           </div>
+          <CommunityAnalyticsDashboard view="overview" guildId={guildId} days={days} timeZone={timeZone} locale={locale} />
           </div>
           </>}
         </section>

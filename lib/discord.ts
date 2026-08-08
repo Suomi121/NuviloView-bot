@@ -31,6 +31,8 @@ type ManagedGuildCacheRow = {
 }
 
 const MANAGE_GUILD = BigInt('32')
+const discordClientId = process.env.NUVILOVIEW_CLIENT_ID ?? process.env.DISCORD_CLIENT_ID
+const discordClientSecret = process.env.NUVILOVIEW_CLIENT_SECRET ?? process.env.DISCORD_CLIENT_SECRET
 const MANAGED_GUILD_CACHE_TTL_MS = 60_000
 const MANAGED_GUILD_CACHE_STALE_MAX_MS = 15 * 60_000
 const globalGuildCache = globalThis as typeof globalThis & {
@@ -75,9 +77,9 @@ async function writeManagedGuildCache(userId: string, guilds: ManagedGuild[]) {
 }
 
 async function refreshDiscordAccessToken(account: DiscordAccount) {
-  if (!account.refreshToken || !process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) return null
+  if (!account.refreshToken || !discordClientId || !discordClientSecret) return null
 
-  const credentials = Buffer.from(`${process.env.DISCORD_CLIENT_ID}:${process.env.DISCORD_CLIENT_SECRET}`).toString('base64')
+  const credentials = Buffer.from(`${discordClientId}:${discordClientSecret}`).toString('base64')
   const response = await fetch('https://discord.com/api/v10/oauth2/token', {
     method: 'POST',
     headers: {

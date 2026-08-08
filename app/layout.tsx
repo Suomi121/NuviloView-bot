@@ -19,10 +19,15 @@ const notoJP = Noto_Sans_JP({
 })
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://nuviloview-oem.vercel.app'),
   title: 'NuviloView:OEM — コミュニティを、次のステージへ。',
   description:
     'サーバーのデータ分析と、独自のブランド化（OEM）を同時に実現するダッシュボード。高度なサーバー分析、OEM専用ダッシュボード、簡単OAuth2連携。',
   generator: 'v0.app',
+  robots: {
+    index: true,
+    follow: true,
+  },
   verification: {
     google: '40Eez6fPMhjcj4fYirxbArbyuJSQmC7R_fm7bmFHT_U',
   },

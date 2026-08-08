@@ -12,11 +12,35 @@ services:
         value: 24.14.1
       - key: DATABASE_URL
         sync: false
-      - key: DISCORD_BOT_TOKEN
+      - key: NUVILOVIEW_BOT_TOKEN
         sync: false
-      - key: DISCORD_CLIENT_ID
+      - key: NUVILOVIEW_CLIENT_ID
         sync: false
       - key: DISCORD_DEV_GUILD_ID
         sync: false
       - key: MESSAGE_RETENTION_DAYS
         value: "90"
+      - key: GUILD_RESET_ENABLED
+        value: "false"
+      - key: GUILD_RESET_DEVELOPER_IDS
+        sync: false
+      - key: GUILD_RESET_CONFIRMATION_SECRET
+        sync: false
+      - key: GUILD_RESET_MAX_CHANNEL_DELETES
+        value: "50"
+      - key: GUILD_RESET_MAX_ROLE_DELETES
+        value: "25"
+      - key: GUILD_RESET_MAX_TOTAL_OPERATIONS
+        value: "75"
+      - key: GUILD_RESET_GUILD_COOLDOWN_HOURS
+        value: "24"
+      - key: GUILD_RESET_DEVELOPER_COOLDOWN_MINUTES
+        value: "60"
+      - key: GUILD_RESET_PLAN_EXPIRES_MINUTES
+        value: "10"
+      - key: GUILD_RESET_CODE_EXPIRES_MINUTES
+        value: "5"
+      - key: GUILD_RESET_BACKUP_DIR
+        value: "./data/backups/guild-reset"
+      - key: GUILD_RESET_GLOBAL_CONCURRENCY
+        value: "1"

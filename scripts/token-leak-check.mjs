@@ -13,7 +13,7 @@ async function scan(directory) {
     const file = join(directory, entry)
     const info = await stat(file)
     if (info.isDirectory()) await scan(file)
-    else if (info.size <= 1_000_000 && /\.(?:[cm]?[jt]sx?|json|md|ya?ml|ps1|txt)$/i.test(entry)) {
+    else if (info.size <= 1_000_000 && /\.(?:[cm]?[jt]sx?|json|md|ya?ml|ps1|sh|txt)$/i.test(entry)) {
       const text = await readFile(file, 'utf8').catch(() => '')
       if (tokenPattern.test(text)) findings.push(relative(root, file))
       tokenPattern.lastIndex = 0

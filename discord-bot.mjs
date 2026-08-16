@@ -80,6 +80,13 @@ import {
   preferredTranslationLanguages,
   resolveAvailableTranslationLanguage,
 } from "./lib/translation-command.mjs";
+import {
+  REACTION_ROLE_LIMIT,
+  getDiscordReactionEmojiKey,
+  isReactionRoleMessageId,
+  normalizeReactionRoleIds,
+  parseReactionRoleEmoji,
+} from "./lib/reaction-role-utils.mjs";
 
 if (!process.env.DATABASE_URL || !process.env.NUVILOVIEW_BOT_TOKEN) {
   throw new Error(
@@ -181,6 +188,7 @@ const spamTracker = createSpamTracker({
 });
 const spamActionLocks = new Set();
 const spamAlertMessages = new Map();
+const reactionRoleRules = new Map();
 const deletedMessageSnipes = new Map();
 const snipeHistoryCleanupTimers = new Map();
 const ignoredSnipeDeleteIds = new Set();
@@ -284,6 +292,61 @@ const zxCommand = new SlashCommandBuilder()
     subcommand
       .setName("snipe")
       .setDescription("このチャンネルで削除されたメッセージを表示します"),
+  )
+  .toJSON();
+const setRollCommand = new SlashCommandBuilder()
+  .setName("setroll")
+  .setDescription("管理者用: リアクションで受け取れるロールを設定します")
+  .setDMPermission(false)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addSubcommand((subcommand) => {
+    subcommand
+      .setName("add")
+      .setDescription("メッセージと絵文字へ最大10個のロールを設定します")
+      .addChannelOption((option) =>
+        option
+          .setName("channel")
+          .setDescription("対象メッセージがあるチャンネル")
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+          .setRequired(true),
+      )
+      .addStringOption((option) =>
+        option.setName("message_id").setDescription("対象メッセージのID").setRequired(true).setMinLength(16).setMaxLength(22),
+      )
+      .addStringOption((option) =>
+        option.setName("emoji").setDescription("付与に使用するUnicode絵文字またはカスタム絵文字").setRequired(true).setMinLength(1).setMaxLength(128),
+      )
+      .addRoleOption((option) =>
+        option.setName("role_1").setDescription("付与するロール1").setRequired(true),
+      );
+    for (let index = 2; index <= REACTION_ROLE_LIMIT; index += 1) {
+      subcommand.addRoleOption((option) =>
+        option.setName(`role_${index}`).setDescription(`付与するロール${index}`),
+      );
+    }
+    return subcommand;
+  })
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("remove")
+      .setDescription("登録済みのリアクションロール設定を削除します")
+      .addChannelOption((option) =>
+        option.setName("channel").setDescription("対象メッセージがあるチャンネル").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true),
+      )
+      .addStringOption((option) =>
+        option.setName("message_id").setDescription("対象メッセージのID").setRequired(true).setMinLength(16).setMaxLength(22),
+      )
+      .addStringOption((option) =>
+        option.setName("emoji").setDescription("削除する設定の絵文字").setRequired(true).setMinLength(1).setMaxLength(128),
+      ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("list")
+      .setDescription("このサーバーのリアクションロール設定を表示します")
+      .addChannelOption((option) =>
+        option.setName("channel").setDescription("このチャンネルの設定だけ表示します").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+      ),
   )
   .toJSON();
 const translateMessageCommand = new ContextMenuCommandBuilder()
@@ -478,6 +541,7 @@ const extendedCommands = [
   dashboardCommand,
   privacyCommand,
   translateMessageCommand,
+  setRollCommand,
 ];
 const developerCommands = [
   commandUpdateCommand,
@@ -1558,7 +1622,9 @@ async function purgeGuildData(guildId) {
     sql`DELETE FROM "bot_channel_access" WHERE "guildId" = ${guildId}`,
     sql`DELETE FROM "history_import_job" WHERE "guildId" = ${guildId}`,
     sql`DELETE FROM "user_notification" WHERE "guildId" = ${guildId}`,
+    sql`DELETE FROM "reaction_role_rule" WHERE "guildId" = ${guildId}`,
   ]);
+  clearGuildReactionRoleRules(guildId);
 }
 
 async function leaveBlockedGuild(guild, source) {
@@ -1720,6 +1786,228 @@ async function getWeekActivity(guildId) {
         }
       : null,
   };
+}
+
+const reactionRoleDeniedPermissions = [
+  [PermissionFlagsBits.Administrator, "管理者"],
+  [PermissionFlagsBits.ManageGuild, "サーバー管理"],
+  [PermissionFlagsBits.ManageRoles, "ロール管理"],
+  [PermissionFlagsBits.ManageChannels, "チャンネル管理"],
+  [PermissionFlagsBits.ManageWebhooks, "ウェブフック管理"],
+  [PermissionFlagsBits.BanMembers, "メンバーをBAN"],
+  [PermissionFlagsBits.KickMembers, "メンバーをキック"],
+  [PermissionFlagsBits.ModerateMembers, "メンバーをタイムアウト"],
+  [PermissionFlagsBits.ManageMessages, "メッセージ管理"],
+  [PermissionFlagsBits.MentionEveryone, "全員へのメンション"],
+];
+
+function reactionRoleRuleKey(guildId, messageId, emojiKey) {
+  return `${guildId}:${messageId}:${emojiKey}`;
+}
+
+function clearGuildReactionRoleRules(guildId) {
+  const prefix = `${guildId}:`;
+  for (const key of reactionRoleRules.keys()) {
+    if (key.startsWith(prefix)) reactionRoleRules.delete(key);
+  }
+}
+
+async function loadReactionRoleRules(guildId = null) {
+  const rows = guildId
+    ? await sql`
+        SELECT "id", "guildId", "channelId", "messageId", "emojiKey", "emojiDisplay", "roleIds"
+        FROM "reaction_role_rule"
+        WHERE "guildId" = ${guildId}
+      `
+    : await sql`
+        SELECT "id", "guildId", "channelId", "messageId", "emojiKey", "emojiDisplay", "roleIds"
+        FROM "reaction_role_rule"
+      `;
+  if (guildId) clearGuildReactionRoleRules(guildId);
+  else reactionRoleRules.clear();
+  for (const row of rows) {
+    const roleIds = normalizeReactionRoleIds(row.roleIds);
+    if (roleIds.length === 0) continue;
+    reactionRoleRules.set(reactionRoleRuleKey(row.guildId, row.messageId, row.emojiKey), {
+      id: Number(row.id),
+      guildId: row.guildId,
+      channelId: row.channelId,
+      messageId: row.messageId,
+      emojiKey: row.emojiKey,
+      emojiDisplay: row.emojiDisplay,
+      roleIds,
+    });
+  }
+}
+
+function getReactionRoleSafetyError(role, guild, botMember) {
+  if (!role || role.guild.id !== guild.id) return "別サーバーのロールは指定できません。";
+  if (role.id === guild.id) return "@everyoneは指定できません。";
+  if (role.managed) return `${role.name}はBot・連携サービスが管理するロールです。`;
+  if (role.position >= botMember.roles.highest.position || !role.editable) {
+    return `${role.name}はBotと同じか上位にあるため操作できません。`;
+  }
+  const dangerous = reactionRoleDeniedPermissions.find(([permission]) =>
+    role.permissions.has(permission),
+  );
+  return dangerous ? `${role.name}には「${dangerous[1]}」権限があるため登録できません。` : null;
+}
+
+async function requireReactionRoleAdministrator(interaction) {
+  if (interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    return true;
+  }
+  await interaction.reply({
+    content: "このコマンドはサーバーの管理者だけが実行できます。",
+    flags: MessageFlags.Ephemeral,
+  });
+  return false;
+}
+
+async function handleSetRollCommand(interaction) {
+  if (!(await requireReactionRoleAdministrator(interaction))) return;
+  const guild = interaction.guild;
+  const subcommand = interaction.options.getSubcommand(true);
+  const selectedChannel = interaction.options.getChannel("channel");
+
+  if (subcommand === "list") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const rows = selectedChannel
+      ? await sql`
+          SELECT "channelId", "messageId", "emojiDisplay", "roleIds", "updatedAt"
+          FROM "reaction_role_rule"
+          WHERE "guildId" = ${guild.id} AND "channelId" = ${selectedChannel.id}
+          ORDER BY "updatedAt" DESC LIMIT 50
+        `
+      : await sql`
+          SELECT "channelId", "messageId", "emojiDisplay", "roleIds", "updatedAt"
+          FROM "reaction_role_rule"
+          WHERE "guildId" = ${guild.id}
+          ORDER BY "updatedAt" DESC LIMIT 50
+        `;
+    if (rows.length === 0) {
+      await interaction.editReply("リアクションロール設定はまだありません。");
+      return;
+    }
+    const lines = rows.slice(0, 25).map((row, index) => {
+      const roles = normalizeReactionRoleIds(row.roleIds).map((roleId) => `<@&${roleId}>`).join(" ") || "有効なロールなし";
+      const link = `https://discord.com/channels/${guild.id}/${row.channelId}/${row.messageId}`;
+      return `${index + 1}. ${row.emojiDisplay} <#${row.channelId}> [メッセージ](${link})\n   ${roles}`;
+    });
+    await interaction.editReply({
+      content: `**リアクションロール設定 — ${rows.length}件**\n${lines.join("\n").slice(0, 1_850)}`,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const messageId = interaction.options.getString("message_id", true).trim();
+  const parsedEmoji = parseReactionRoleEmoji(interaction.options.getString("emoji", true));
+  if (!isReactionRoleMessageId(messageId) || !parsedEmoji) {
+    await interaction.reply({
+      content: "メッセージIDまたは絵文字の形式が正しくありません。絵文字は1個だけ指定してください。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (!selectedChannel || selectedChannel.guildId !== guild.id || !selectedChannel.isTextBased() || !("messages" in selectedChannel)) {
+    await interaction.reply({ content: "このサーバーのテキストチャンネルを指定してください。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (subcommand === "remove") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const rows = await sql`
+      DELETE FROM "reaction_role_rule"
+      WHERE "guildId" = ${guild.id} AND "channelId" = ${selectedChannel.id}
+        AND "messageId" = ${messageId} AND "emojiKey" = ${parsedEmoji.key}
+      RETURNING "id"
+    `;
+    reactionRoleRules.delete(reactionRoleRuleKey(guild.id, messageId, parsedEmoji.key));
+    await interaction.editReply(rows.length
+      ? `✅ ${parsedEmoji.display} のリアクションロール設定を削除しました。すでに付与済みのロールは変更しません。`
+      : "一致するリアクションロール設定はありません。");
+    return;
+  }
+
+  const roles = [];
+  for (let index = 1; index <= REACTION_ROLE_LIMIT; index += 1) {
+    const role = interaction.options.getRole(`role_${index}`);
+    if (role && !roles.some((candidate) => candidate.id === role.id)) roles.push(role);
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const botMember = guild.members.me ?? await guild.members.fetchMe();
+  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    await interaction.editReply("Botに「ロールの管理」権限がないため設定できません。");
+    return;
+  }
+  const channelPermissions = selectedChannel.permissionsFor(botMember);
+  if (!channelPermissions?.has(PermissionFlagsBits.ViewChannel)
+    || !channelPermissions.has(PermissionFlagsBits.ReadMessageHistory)
+    || !channelPermissions.has(PermissionFlagsBits.AddReactions)) {
+    await interaction.editReply("Botに対象チャンネルの閲覧・メッセージ履歴・リアクション追加権限が必要です。");
+    return;
+  }
+  const safetyErrors = roles.map((role) => getReactionRoleSafetyError(role, guild, botMember)).filter(Boolean);
+  if (safetyErrors.length) {
+    await interaction.editReply(`このロールは安全に付与できません。\n${safetyErrors.map((error) => `• ${error}`).join("\n")}`);
+    return;
+  }
+
+  try {
+    const targetMessage = await selectedChannel.messages.fetch(messageId);
+    await targetMessage.react(parsedEmoji.reactionValue);
+  } catch (error) {
+    console.error("Reaction role target validation failed:", error);
+    await interaction.editReply("対象メッセージを取得できないか、その絵文字を追加できません。メッセージID・絵文字・Bot権限を確認してください。");
+    return;
+  }
+
+  const roleIds = roles.map((role) => role.id);
+  const rows = await sql`
+    INSERT INTO "reaction_role_rule" ("guildId", "channelId", "messageId", "emojiKey", "emojiDisplay", "roleIds", "createdBy")
+    VALUES (${guild.id}, ${selectedChannel.id}, ${messageId}, ${parsedEmoji.key}, ${parsedEmoji.display}, ${JSON.stringify(roleIds)}::jsonb, ${interaction.user.id})
+    ON CONFLICT ("guildId", "messageId", "emojiKey") DO UPDATE SET
+      "channelId" = EXCLUDED."channelId", "emojiDisplay" = EXCLUDED."emojiDisplay",
+      "roleIds" = EXCLUDED."roleIds", "createdBy" = EXCLUDED."createdBy", "updatedAt" = now()
+    RETURNING "id"
+  `;
+  reactionRoleRules.set(reactionRoleRuleKey(guild.id, messageId, parsedEmoji.key), {
+    id: Number(rows[0].id), guildId: guild.id, channelId: selectedChannel.id,
+    messageId, emojiKey: parsedEmoji.key, emojiDisplay: parsedEmoji.display, roleIds,
+  });
+  const link = `https://discord.com/channels/${guild.id}/${selectedChannel.id}/${messageId}`;
+  await interaction.editReply({
+    content: `✅ [対象メッセージ](${link}) の ${parsedEmoji.display} に設定しました。\n`
+      + `付与するロール: ${roleIds.map((roleId) => `<@&${roleId}>`).join(" ")}\n`
+      + "リアクションを外すと、設定されたロールも外れます。",
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function applyReactionRoleChange(reaction, user, adding) {
+  if (user.bot || !reaction.message.guild || isGuildBlocked(reaction.message.guild.id)) return;
+  if (reaction.partial) await reaction.fetch();
+  if (reaction.message.partial) await reaction.message.fetch();
+  const emojiKey = getDiscordReactionEmojiKey(reaction.emoji);
+  if (!emojiKey) return;
+  const guild = reaction.message.guild;
+  const rule = reactionRoleRules.get(reactionRoleRuleKey(guild.id, reaction.message.id, emojiKey));
+  if (!rule || rule.channelId !== reaction.message.channelId) return;
+  const member = guild.members.cache.get(user.id) ?? await guild.members.fetch(user.id).catch(() => null);
+  if (!member) return;
+  const botMember = guild.members.me ?? await guild.members.fetchMe();
+  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) return;
+  const roles = rule.roleIds
+    .map((roleId) => guild.roles.cache.get(roleId))
+    .filter((role) => role && !getReactionRoleSafetyError(role, guild, botMember));
+  const changedRoleIds = roles
+    .filter((role) => adding ? !member.roles.cache.has(role.id) : member.roles.cache.has(role.id))
+    .map((role) => role.id);
+  if (changedRoleIds.length === 0) return;
+  const reason = `NuviloView reaction role · message ${rule.messageId}`;
+  if (adding) await member.roles.add(changedRoleIds, reason);
+  else await member.roles.remove(changedRoleIds, reason);
 }
 
 async function requireGuildManager(interaction) {
@@ -4326,6 +4614,7 @@ client.once("clientReady", async () => {
   console.log(`NuviloView:OEM bot logged in as ${client.user.tag}`);
   try {
     await loadBlockedGuilds();
+    await loadReactionRoleRules();
     updateBotPresence();
     await recordBotHeartbeat();
     await registerCommands();
@@ -4372,12 +4661,14 @@ client.on("guildCreate", (guild) =>
       syncAnalyticsInventory(guild, { fetchMembers: true }),
       syncServerVoiceSession(guild),
       syncCurrentVoiceSessions(guild),
+      loadReactionRoleRules(guild.id),
     ]);
   })(),
 );
 
 client.on("guildDelete", (guild) => {
   updateBotPresence();
+  clearGuildReactionRoleRules(guild.id);
   void markGuildDisconnected(guild.id).catch((error) =>
     console.error("Failed to mark removed guild as disconnected:", error),
   );
@@ -5260,6 +5551,25 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
+  if (interaction.commandName === "setroll") {
+    try {
+      await handleSetRollCommand(interaction);
+    } catch (error) {
+      console.error("/setroll command failed:", error);
+      const payload = {
+        content: "リアクションロール設定の処理に失敗しました。Bot権限と入力内容を確認してください。",
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply(payload).catch(() => {});
+      } else {
+        await interaction.reply(payload).catch(() => {});
+      }
+    }
+    return;
+  }
+
   if (interaction.commandName !== "help") return;
   const embed = new EmbedBuilder()
     .setColor(0x7877ff)
@@ -5308,6 +5618,12 @@ client.on("interactionCreate", async (interaction) => {
         name: "🌐　**/translate**",
         value:
           "━━━━━━━━━━━━━━━━━━\n入力したテキストを翻訳します。翻訳先を省略すると言語一覧から選べます。結果は実行者だけに表示され、入力本文と翻訳結果は保存しません。",
+        inline: false,
+      },
+      {
+        name: "🎭　**/setroll**",
+        value:
+          "━━━━━━━━━━━━━━━━━━\n管理者が、特定メッセージのリアクションで受け取れるロールを最大10個まで設定できます。`add`・`remove`・`list`に対応しています。",
         inline: false,
       },
       {
@@ -5581,6 +5897,9 @@ client.on("messageReactionAdd", async (reaction, user) => {
     isGuildBlocked(reaction.message.guild.id)
   )
     return;
+  await applyReactionRoleChange(reaction, user, true).catch((error) =>
+    console.error("Failed to apply a reaction role:", error),
+  );
   try {
     if (reaction.partial) await reaction.fetch();
     if (reaction.message.partial) await reaction.message.fetch();
@@ -5602,6 +5921,12 @@ client.on("messageReactionAdd", async (reaction, user) => {
   } catch (error) {
     console.error("Failed to count a Discord reaction:", error);
   }
+});
+
+client.on("messageReactionRemove", async (reaction, user) => {
+  await applyReactionRoleChange(reaction, user, false).catch((error) =>
+    console.error("Failed to remove a reaction role:", error),
+  );
 });
 
 client.on("voiceStateUpdate", (oldState, newState) => {

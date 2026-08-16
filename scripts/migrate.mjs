@@ -1,4 +1,5 @@
 import pg from "pg";
+import { readFile } from "node:fs/promises";
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set before running migrations.");
@@ -595,6 +596,11 @@ try {
       END IF;
     END $$
   `);
+  const reactionRoleMigration = await readFile(
+    new URL("./migrations/20260816-reaction-roles.sql", import.meta.url),
+    "utf8",
+  );
+  await pool.query(reactionRoleMigration);
   console.log("Database migration completed.");
 } finally {
   await pool.end();

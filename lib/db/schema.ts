@@ -405,6 +405,24 @@ export const botHeartbeat = pgTable("bot_heartbeat", {
   stoppedAt: timestamp("stoppedAt", { withTimezone: true }),
 });
 
+// Administrator-configured self-service roles. A single message/emoji mapping
+// may grant several bounded, non-privileged roles.
+export const reactionRoleRule = pgTable("reaction_role_rule", {
+  id: serial("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  channelId: text("channelId").notNull(),
+  messageId: text("messageId").notNull(),
+  emojiKey: text("emojiKey").notNull(),
+  emojiDisplay: text("emojiDisplay").notNull(),
+  roleIds: jsonb("roleIds").notNull().default([]),
+  createdBy: text("createdBy").notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("reaction_role_rule_target_unique").on(table.guildId, table.messageId, table.emojiKey),
+  index("reaction_role_rule_guild_channel_idx").on(table.guildId, table.channelId),
+]);
+
 // Notifications are scoped to the signed-in dashboard user. Deletion is soft so
 // an acknowledged Bot warning does not immediately reappear on the next refresh.
 export const userNotification = pgTable("user_notification", {

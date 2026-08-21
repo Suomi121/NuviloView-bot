@@ -26,7 +26,7 @@
     "migration:drift": "node --env-file=.env.local scripts/check-migration-state.mjs",
     "migration:drift:static": "node scripts/check-schema-drift.mjs",
     "syntax:check": "node scripts/check-module-syntax.mjs",
-    "dependency:audit": "npm audit --omit=dev --audit-level=critical",
+    "dependency:audit": "corepack pnpm audit --prod --audit-level critical",
     "retention:plan": "node --env-file=.env.local scripts/cleanup-retention.mjs",
     "retention:execute": "node --env-file=.env.local scripts/cleanup-retention.mjs --execute",
     "privacy:anonymize-discord-email": "node --env-file=.env.local scripts/anonymize-discord-emails.mjs",

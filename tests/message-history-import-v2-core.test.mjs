@@ -11,6 +11,8 @@ import {
   getMessageImportConfig,
   importRetryDelayMs,
   isImportStalled,
+  parseImportedDataDeletion,
+  parseMessageImportMutation,
   withBoundedImportRetry,
 } from "../lib/message-history-import.mjs";
 
@@ -69,4 +71,25 @@ test("progress uses real channel and message measurements without fake totals", 
 test("source labels and destructive confirmation are exact", () => {
   assert.deepEqual(MESSAGE_SOURCE, { existing: "existing", live: "live", history: "history_import" });
   assert.equal(IMPORTED_DATA_CONFIRMATION, "RESET IMPORTED DATA");
+});
+
+test("mutation input is action, Guild, Job, and Channel bound", () => {
+  const guildId = "123456789012345678";
+  const channelId = "223456789012345678";
+  assert.deepEqual(parseMessageImportMutation({ guildId, days: 30 }), {
+    ok: true,
+    value: { action: "start", guildId, days: 30, mode: "standard" },
+  });
+  assert.equal(parseMessageImportMutation({ action: "pause", guildId, jobId: 4 }).ok, true);
+  assert.equal(parseMessageImportMutation({ action: "retry-channel", guildId, jobId: 4, channelId }).ok, true);
+  assert.equal(parseMessageImportMutation({ action: "pause", guildId: channelId, jobId: 0 }).ok, false);
+  assert.equal(parseMessageImportMutation({ action: "retry-channel", guildId, jobId: 4, channelId: "other-guild" }).ok, false);
+  assert.equal(parseMessageImportMutation({ action: "unknown", guildId, jobId: 4 }).ok, false);
+});
+
+test("imported-data deletion requires the exact phrase and a Discord Guild ID", () => {
+  const guildId = "123456789012345678";
+  assert.equal(parseImportedDataDeletion({ guildId, confirmation: IMPORTED_DATA_CONFIRMATION }).ok, true);
+  assert.equal(parseImportedDataDeletion({ guildId, confirmation: "reset imported data" }).ok, false);
+  assert.equal(parseImportedDataDeletion({ guildId: "not-a-guild", confirmation: IMPORTED_DATA_CONFIRMATION }).ok, false);
 });

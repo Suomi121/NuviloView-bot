@@ -11,12 +11,27 @@ import {
   getMessageImportConfig,
   importRetryDelayMs,
   isImportStalled,
+  withBoundedImportRetry,
 } from "../lib/message-history-import.mjs";
 
 test("v2 is feature flagged off by default with bounded configuration", () => {
-  assert.deepEqual(getMessageImportConfig({}), { enabled: false, maxRetries: 5, stallSeconds: 120, batchSize: 100 });
+  assert.deepEqual(getMessageImportConfig({}), { enabled: false, maxRetries: 5, stallSeconds: 120, batchSize: 100, maxPagesPerChannel: 50_000 });
   assert.equal(getMessageImportConfig({ MESSAGE_HISTORY_IMPORT_MAX_RETRIES: "99", MESSAGE_HISTORY_IMPORT_STALL_SECONDS: "1" }).maxRetries, 8);
   assert.equal(getMessageImportConfig({ MESSAGE_HISTORY_IMPORT_MAX_RETRIES: "99", MESSAGE_HISTORY_IMPORT_STALL_SECONDS: "1" }).stallSeconds, 60);
+});
+
+test("bounded retry stops after the configured retry count", async () => {
+  let attempts = 0;
+  const waits = [];
+  await assert.rejects(() => withBoundedImportRetry(
+    async () => {
+      attempts += 1;
+      throw Object.assign(new Error("temporary"), { code: "ECONNRESET" });
+    },
+    { maxRetries: 2, sleep: async (milliseconds) => waits.push(milliseconds) },
+  ));
+  assert.equal(attempts, 3);
+  assert.deepEqual(waits, [1_000, 5_000]);
 });
 
 test("state machine permits safe batch-boundary controls and rejects terminal replay", () => {

@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS "history_import_channel_progress" (
   "insertedCount" integer NOT NULL DEFAULT 0,
   "duplicateCount" integer NOT NULL DEFAULT 0,
   "failedCount" integer NOT NULL DEFAULT 0,
+  "skipRequested" boolean NOT NULL DEFAULT false,
   "retryCount" integer NOT NULL DEFAULT 0,
   "retryAfterAt" timestamptz,
   "lastApiResponseAt" timestamptz,

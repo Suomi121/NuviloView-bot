@@ -609,6 +609,7 @@ export const historyImportChannelProgress = pgTable("history_import_channel_prog
   insertedCount: integer("insertedCount").notNull().default(0),
   duplicateCount: integer("duplicateCount").notNull().default(0),
   failedCount: integer("failedCount").notNull().default(0),
+  skipRequested: boolean("skipRequested").notNull().default(false),
   retryCount: integer("retryCount").notNull().default(0),
   retryAfterAt: timestamp("retryAfterAt", { withTimezone: true }),
   lastApiResponseAt: timestamp("lastApiResponseAt", { withTimezone: true }),

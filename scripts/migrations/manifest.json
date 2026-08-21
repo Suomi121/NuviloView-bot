@@ -107,7 +107,7 @@
     {
       "id": "20260821-message-history-import-v2",
       "file": "20260821-message-history-import-v2.sql",
-      "checksum": "870a9b75b64e9b13adbf7dbc4db91e598c623763c7dba27416de9a85c2e98509",
+      "checksum": "102f9d049b45b82ea93b438f522b072f43b1d1c6992edc39a715540d0a47ec86",
       "description": "Add durable Message History Import v2 jobs, checkpoints, audit metadata, and message provenance.",
       "risk": "medium",
       "reversible": false,

@@ -101,6 +101,14 @@ import {
   normalizeReactionRoleIds,
   parseReactionRoleEmoji,
 } from "./lib/reaction-role-utils.mjs";
+import {
+  MESSAGE_SOURCE,
+  getMessageImportConfig,
+} from "./lib/message-history-import.mjs";
+import {
+  createMessageHistoryImportRepository,
+  createMessageHistoryImportWorker,
+} from "./lib/message-history-import-worker.mjs";
 
 if (!process.env.DATABASE_URL || !process.env.NUVILOVIEW_BOT_TOKEN) {
   throw new Error(
@@ -119,6 +127,7 @@ const messageRetentionDays = Number.isInteger(
 )
   ? Math.min(Math.max(Number(process.env.MESSAGE_RETENTION_DAYS), 7), 365)
   : 90;
+const messageImportConfig = getMessageImportConfig(process.env);
 const libreTranslateUrl = (process.env.LIBRETRANSLATE_URL?.trim() || "http://127.0.0.1:5000").replace(/\/+$/, "");
 const libreTranslateVersion = process.env.LIBRETRANSLATE_VERSION?.trim() || "1.9.6";
 const translationMonthlyLimit = 600_000;
@@ -192,6 +201,17 @@ const commandSyncAttempts = new Map();
 const botServersAttempts = new Map();
 const guildCommandSyncAttempts = new Map();
 const blockedGuildIds = new Set();
+const messageHistoryImportRepository = createMessageHistoryImportRepository((text, parameters) =>
+  sql.query(text, parameters),
+);
+const messageHistoryImportWorker = createMessageHistoryImportWorker({
+  repository: messageHistoryImportRepository,
+  discordClient: client,
+  config: messageImportConfig,
+  identity: runtimeIdentity,
+  isGuildBlocked,
+  roleIdsForMessage: (message) => analyticsRoleIds(message.member),
+});
 // Keep the last successful DB snapshots in memory. Gateway events may ask for
 // the same inventory repeatedly, but unchanged JSON does not need to cross the
 // Neon connection or rewrite every row again.
@@ -4276,6 +4296,23 @@ async function storeMessage(message) {
   const channelName =
     "name" in message.channel ? message.channel.name : "不明なチャンネル";
   const roleIds = JSON.stringify(analyticsRoleIds(message.member));
+  if (messageImportConfig.enabled) {
+    await sql`
+      INSERT INTO "discord_message" ("id", "guildId", "channelId", "channelName", "authorId", "authorName", "authorIsBot", "authorRoleIds", "content", "source", "importJobId", "createdAt", "updatedAt")
+      VALUES (${message.id}, ${message.guild.id}, ${message.channel.id}, ${channelName}, ${message.author.id}, ${message.member?.displayName ?? message.author.username}, ${message.author.bot}, ${roleIds}::jsonb, ${message.content}, ${MESSAGE_SOURCE.live}, NULL, ${message.createdAt}, now())
+      ON CONFLICT ("id") DO UPDATE SET
+        "channelId" = EXCLUDED."channelId",
+        "channelName" = EXCLUDED."channelName",
+        "authorName" = EXCLUDED."authorName",
+        "authorIsBot" = EXCLUDED."authorIsBot",
+        "authorRoleIds" = EXCLUDED."authorRoleIds",
+        "content" = EXCLUDED."content",
+        "source" = ${MESSAGE_SOURCE.live},
+        "importJobId" = NULL,
+        "updatedAt" = now()
+    `;
+    return;
+  }
   await sql`
     INSERT INTO "discord_message" ("id", "guildId", "channelId", "channelName", "authorId", "authorName", "authorIsBot", "authorRoleIds", "content", "createdAt", "updatedAt")
     VALUES (${message.id}, ${message.guild.id}, ${message.channel.id}, ${channelName}, ${message.author.id}, ${message.member?.displayName ?? message.author.username}, ${message.author.bot}, ${roleIds}::jsonb, ${message.content}, ${message.createdAt}, now())
@@ -4293,7 +4330,7 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function updateHistoryImportJob(id, fields) {
+async function updateLegacyHistoryImportJob(id, fields) {
   await sql`
     UPDATE "history_import_job"
     SET "processedMessages" = ${fields.processedMessages}, "failedChannels" = ${fields.failedChannels}
@@ -4301,7 +4338,7 @@ async function updateHistoryImportJob(id, fields) {
   `;
 }
 
-async function claimHistoryImportJob() {
+async function claimLegacyHistoryImportJob() {
   const jobs = await sql`
     WITH candidate AS (
       SELECT "id"
@@ -4322,7 +4359,7 @@ async function claimHistoryImportJob() {
 
 // Discord only exposes historical messages per channel. Voice-state events are
 // deliberately not reconstructed here: they are accurate only from Bot uptime.
-async function processHistoryImportJob(job) {
+async function processLegacyHistoryImportJob(job) {
   let processedMessages = 0;
   let failedChannels = 0;
   try {
@@ -4368,7 +4405,7 @@ async function processHistoryImportJob(job) {
             }
           }
           before = messages.last()?.id;
-          await updateHistoryImportJob(job.id, {
+          await updateLegacyHistoryImportJob(job.id, {
             processedMessages,
             failedChannels,
           });
@@ -4381,7 +4418,7 @@ async function processHistoryImportJob(job) {
           `History import skipped channel ${channel?.id ?? "unknown"}:`,
           error.message,
         );
-        await updateHistoryImportJob(job.id, {
+        await updateLegacyHistoryImportJob(job.id, {
           processedMessages,
           failedChannels,
         });
@@ -4410,9 +4447,14 @@ async function processHistoryImportJob(job) {
   }
 }
 
+async function pollLegacyHistoryImportJobs() {
+  const job = await claimLegacyHistoryImportJob();
+  if (job) await processLegacyHistoryImportJob(job);
+}
+
 async function pollHistoryImportJobs() {
-  const job = await claimHistoryImportJob();
-  if (job) await processHistoryImportJob(job);
+  if (messageImportConfig.enabled) return messageHistoryImportWorker.poll();
+  return pollLegacyHistoryImportJobs();
 }
 
 let guildResetRequestPolling = false;

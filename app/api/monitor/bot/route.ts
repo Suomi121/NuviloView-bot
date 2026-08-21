@@ -9,7 +9,9 @@ const noStoreHeaders = { 'Cache-Control': 'no-store, max-age=0' }
 
 function hasValidToken(request: Request) {
   const expected = process.env.BOT_MONITOR_TOKEN
-  const supplied = new URL(request.url).searchParams.get('token')
+  const authorization = request.headers.get('authorization')?.trim() ?? ''
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? null
+  const supplied = bearer || new URL(request.url).searchParams.get('token')
   if (!expected || !supplied) return false
 
   const expectedBuffer = Buffer.from(expected)

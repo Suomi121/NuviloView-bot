@@ -1,0 +1,41 @@
+name: Production Monitor
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nuviloview-production-monitor
+  cancel-in-progress: true
+
+jobs:
+  bot-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      MONITOR_URL: https://nuviloview-oem.vercel.app/api/monitor/bot
+    steps:
+      - name: Check production Bot heartbeat
+        shell: bash
+        env:
+          MONITOR_TOKEN: ${{ secrets.NUVILOVIEW_BOT_MONITOR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MONITOR_TOKEN}" ]]; then
+            echo "::error::Production monitor token is not configured."
+            exit 1
+          fi
+          response_file="${RUNNER_TEMP}/nuviloview-monitor-response.json"
+          curl --fail --silent --show-error --max-time 20 \
+            --header "Authorization: Bearer ${MONITOR_TOKEN}" \
+            --output "${response_file}" \
+            "${MONITOR_URL}"
+          if ! jq -e '.status == "ok"' "${response_file}" >/dev/null; then
+            echo "::error::Production monitor reported an unhealthy response."
+            exit 1
+          fi
+          echo "Production monitor is healthy."

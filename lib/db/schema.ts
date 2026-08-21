@@ -9,6 +9,7 @@ import {
   uniqueIndex,
   index,
   jsonb,
+  bigint,
 } from "drizzle-orm/pg-core";
 
 // --- Better Auth required tables -------------------------------------------
@@ -405,6 +406,21 @@ export const botHeartbeat = pgTable("bot_heartbeat", {
   stoppedAt: timestamp("stoppedAt", { withTimezone: true }),
 });
 
+// Cross-host singleton ownership for the Discord Bot. A single conditional
+// PostgreSQL upsert changes owner and increments the fencing token atomically.
+export const serviceLease = pgTable("service_lease", {
+  serviceKey: text("serviceKey").primaryKey(),
+  ownerInstanceId: text("ownerInstanceId"),
+  hostId: text("hostId"),
+  fencingToken: bigint("fencingToken", { mode: "number" }).notNull().default(0),
+  leaseExpiresAt: timestamp("leaseExpiresAt", { withTimezone: true }).notNull(),
+  acquiredAt: timestamp("acquiredAt", { withTimezone: true }),
+  renewedAt: timestamp("renewedAt", { withTimezone: true }),
+  metadata: jsonb("metadata").notNull().default({}),
+}, (table) => [
+  index("service_lease_expiry_idx").on(table.leaseExpiresAt),
+]);
+
 // Administrator-configured self-service roles. A single message/emoji mapping
 // may grant several bounded, non-privileged roles.
 export const reactionRoleRule = pgTable("reaction_role_rule", {
@@ -421,6 +437,36 @@ export const reactionRoleRule = pgTable("reaction_role_rule", {
 }, (table) => [
   uniqueIndex("reaction_role_rule_target_unique").on(table.guildId, table.messageId, table.emojiKey),
   index("reaction_role_rule_guild_channel_idx").on(table.guildId, table.channelId),
+]);
+
+// Each process launch keeps a distinct row so operators can distinguish the
+// active owner from stale, contended, or previously stopped instances.
+export const serviceHeartbeat = pgTable("service_heartbeat", {
+  instanceId: text("instanceId").primaryKey(),
+  serviceKey: text("serviceKey")
+    .notNull()
+    .references(() => serviceLease.serviceKey, { onDelete: "restrict" }),
+  hostId: text("hostId").notNull(),
+  fencingToken: bigint("fencingToken", { mode: "number" }),
+  platform: text("platform").notNull(),
+  hostname: text("hostname").notNull(),
+  pid: integer("pid").notNull(),
+  startedAt: timestamp("startedAt", { withTimezone: true }).notNull(),
+  lastHeartbeatAt: timestamp("lastHeartbeatAt", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  status: text("status").notNull(),
+  leaseState: text("leaseState").notNull(),
+  appVersion: text("appVersion").notNull(),
+  runtimeVersion: text("runtimeVersion").notNull(),
+  commitSha: text("commitSha"),
+  guildCount: integer("guildCount").notNull().default(0),
+  metadata: jsonb("metadata").notNull().default({}),
+  stoppedAt: timestamp("stoppedAt", { withTimezone: true }),
+}, (table) => [
+  index("service_heartbeat_service_last_idx").on(table.serviceKey, table.lastHeartbeatAt),
+  index("service_heartbeat_host_last_idx").on(table.hostId, table.lastHeartbeatAt),
+  index("service_heartbeat_service_started_idx").on(table.serviceKey, table.startedAt),
 ]);
 
 // Notifications are scoped to the signed-in dashboard user. Deletion is soft so

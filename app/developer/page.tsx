@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Ban, CheckCircle2, Clock3, RefreshCcw, RefreshCw, Search, Server, ShieldAlert, ShieldCheck, Unlock } from 'lucide-react'
 import { SiteHeader } from '@/components/site-header'
+import { DeveloperRuntimePanel } from '@/components/developer-runtime-panel'
 
 type ManagedGuild = {
   guildId: string
@@ -49,10 +50,13 @@ export default function DeveloperPage() {
   const [saving, setSaving] = useState(false)
   const [forbidden, setForbidden] = useState(false)
 
-  const load = async (initial = false) => {
+  const load = async (initial = false, includeAudit = true) => {
     const startedAt = Date.now()
     try {
-      const response = await fetch('/api/developer/guilds', { cache: 'no-store' })
+      const response = await fetch(
+        includeAudit ? '/api/developer/guilds' : '/api/developer/guilds?includeAudit=false',
+        { cache: 'no-store' },
+      )
       if (response.status === 403) {
         setForbidden(true)
         return
@@ -60,8 +64,8 @@ export default function DeveloperPage() {
       if (!response.ok) throw new Error('load failed')
       const data = await response.json()
       setGuilds(Array.isArray(data.guilds) ? data.guilds : [])
-      setAudit(Array.isArray(data.audit) ? data.audit : [])
-      setAuditIntegrity(data.auditIntegrity ?? { valid: true, checked: 0 })
+      if (Array.isArray(data.audit)) setAudit(data.audit)
+      if (data.auditIntegrity) setAuditIntegrity(data.auditIntegrity)
       setBot(data.bot ?? { online: false, lastSeenAt: null })
       setForbidden(false)
     } catch {
@@ -77,7 +81,9 @@ export default function DeveloperPage() {
 
   useEffect(() => {
     void load(true)
-    const timer = window.setInterval(() => void load(), 30_000)
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load(false, false)
+    }, 60_000)
     return () => window.clearInterval(timer)
   }, [])
 
@@ -151,6 +157,8 @@ export default function DeveloperPage() {
         <StatusCard label="管理対象Guild" value={`${guilds.length}件`} detail="ブロック済みを含む" tone="neutral" />
         <StatusCard label="ブロック済み" value={`${guilds.filter((guild) => Boolean(guild.reason)).length}件`} detail="解除しても操作履歴は残ります" tone="bad" />
       </div>
+
+      <DeveloperRuntimePanel />
 
       {message && <p className="mt-5 rounded-xl border border-border bg-card px-4 py-3 text-sm">{message}</p>}
       <div className="mt-7 grid gap-7 lg:grid-cols-[1.55fr_.85fr]">

@@ -606,6 +606,11 @@ try {
     "utf8",
   );
   await pool.query(securityV1Migration);
+  const distributedRuntimeMigration = await readFile(
+    new URL("./migrations/20260816-distributed-runtime.sql", import.meta.url),
+    "utf8",
+  );
+  await pool.query(distributedRuntimeMigration);
   const reactionRoleMigration = await readFile(
     new URL("./migrations/20260816-reaction-roles.sql", import.meta.url),
     "utf8",

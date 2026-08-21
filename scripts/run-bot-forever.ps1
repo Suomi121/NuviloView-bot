@@ -23,6 +23,11 @@ $maxLogSizeBytes = 10MB
 $logRetentionDays = 14
 $stableRunSeconds = 300
 $maximumRestartDelaySeconds = 900
+$leaseContentionExitCode = 20
+$leaseLostExitCode = 21
+$leaseConfigurationExitCode = 22
+$leaseDatabaseExitCode = 23
+$leaseContentionDelaySeconds = 300
 
 $nodeCommand = Get-Command 'node.exe' -ErrorAction SilentlyContinue
 $nodePath = if (Test-Path -LiteralPath 'C:\Program Files\nodejs\node.exe') {
@@ -291,6 +296,30 @@ try {
       Write-RunnerLog "Discord session-start limit reached. Bot exited with code $botExitCode; retrying in $delaySeconds seconds."
       if (Wait-ForStopRequest -Seconds $delaySeconds) {
         Write-RunnerLog 'Local stop requested during the Discord session-limit wait.'
+        exit 0
+      }
+      continue
+    }
+
+    if ($botExitCode -eq $leaseContentionExitCode) {
+      Write-RunnerLog "Another host owns the distributed Bot lease. Retrying in $leaseContentionDelaySeconds seconds without contacting Discord."
+      if (Wait-ForStopRequest -Seconds $leaseContentionDelaySeconds) {
+        Write-RunnerLog 'Local stop requested during the distributed lease wait.'
+        exit 0
+      }
+      continue
+    }
+
+    if ($botExitCode -eq $leaseConfigurationExitCode) {
+      Write-RunnerLog 'Distributed singleton configuration is invalid. Automatic restart is stopped until configuration is corrected.'
+      exit $botExitCode
+    }
+
+    if ($botExitCode -eq $leaseLostExitCode -or $botExitCode -eq $leaseDatabaseExitCode) {
+      $leaseFailureDelaySeconds = 60
+      Write-RunnerLog "Distributed lease safety stopped the Bot with exit code $botExitCode. Retrying in $leaseFailureDelaySeconds seconds."
+      if (Wait-ForStopRequest -Seconds $leaseFailureDelaySeconds) {
+        Write-RunnerLog 'Local stop requested during the distributed lease recovery wait.'
         exit 0
       }
       continue

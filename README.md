@@ -1,5 +1,9 @@
 # NuviloView:OEM
 
+## Distributed Bot runtime
+
+Windows、Android / Termux、Render間の同時Discord接続を防ぐPostgreSQL Lease、hostId / instanceId付きheartbeat、Botとは独立した外部Monitorを利用できます。初回は無効で、additive migrationと全Hostの設定を揃えてから有効化します。構成・導入・障害時の挙動は[docs/distributed-runtime.md](docs/distributed-runtime.md)を参照してください。
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
 
 ## Built with v0

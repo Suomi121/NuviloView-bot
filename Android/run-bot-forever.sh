@@ -25,6 +25,12 @@ STABLE_RUN_SECONDS=300
 SESSION_LIMIT_FALLBACK_SECONDS=900
 MAXIMUM_SESSION_LIMIT_WAIT_SECONDS=86400
 RESTART_DELAYS=(5 15 30 60 120 300 600 900)
+LEASE_CONTENDED_EXIT_CODE=20
+LEASE_LOST_EXIT_CODE=21
+LEASE_CONFIGURATION_EXIT_CODE=22
+LEASE_DATABASE_EXIT_CODE=23
+LEASE_CONTENTION_DELAY_SECONDS=300
+LEASE_RECOVERY_DELAY_SECONDS=60
 
 MODE="forever"
 SHUTDOWN_REQUESTED=0
@@ -608,6 +614,23 @@ while (( SHUTDOWN_REQUESTED == 0 )); do
     delay_seconds="$(session_limit_delay)"
     write_runner_log "Discord Session Start Limit detected. Waiting $delay_seconds seconds before the next connection attempt."
     sleep_interruptibly "$delay_seconds"
+    continue
+  fi
+
+  if (( bot_exit_code == LEASE_CONTENDED_EXIT_CODE )); then
+    write_runner_log "Another host owns the distributed Bot lease. Waiting $LEASE_CONTENTION_DELAY_SECONDS seconds without contacting Discord."
+    sleep_interruptibly "$LEASE_CONTENTION_DELAY_SECONDS"
+    continue
+  fi
+
+  if (( bot_exit_code == LEASE_CONFIGURATION_EXIT_CODE )); then
+    write_runner_log "Distributed singleton configuration is invalid. Automatic restart is stopped until configuration is corrected."
+    exit "$bot_exit_code"
+  fi
+
+  if (( bot_exit_code == LEASE_LOST_EXIT_CODE || bot_exit_code == LEASE_DATABASE_EXIT_CODE )); then
+    write_runner_log "Distributed lease safety stopped the Bot with exit code $bot_exit_code. Waiting $LEASE_RECOVERY_DELAY_SECONDS seconds before retrying."
+    sleep_interruptibly "$LEASE_RECOVERY_DELAY_SECONDS"
     continue
   fi
 

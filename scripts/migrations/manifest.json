@@ -103,6 +103,23 @@
         { "kind": "column", "table": "security_incident", "name": "incidentType" },
         { "kind": "index", "name": "security_incident_guild_type_detected_idx" }
       ]
+    },
+    {
+      "id": "20260821-message-history-import-v2",
+      "file": "20260821-message-history-import-v2.sql",
+      "checksum": "870a9b75b64e9b13adbf7dbc4db91e598c623763c7dba27416de9a85c2e98509",
+      "description": "Add durable Message History Import v2 jobs, checkpoints, audit metadata, and message provenance.",
+      "risk": "medium",
+      "reversible": false,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        { "kind": "column", "table": "discord_message", "name": "source" },
+        { "kind": "column", "table": "history_import_job", "name": "lastProgressAt" },
+        { "kind": "table", "name": "history_import_channel_progress" },
+        { "kind": "table", "name": "message_import_audit_event" },
+        { "kind": "index", "name": "history_import_job_one_active_per_guild_v2_idx" }
+      ]
     }
   ]
 }

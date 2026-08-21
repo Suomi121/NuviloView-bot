@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   text,
@@ -186,11 +187,17 @@ export const discordMessage = pgTable("discord_message", {
   // applying a member's current roles retroactively to historical activity.
   authorRoleIds: jsonb("authorRoleIds").notNull().default([]),
   content: text("content").notNull(),
+  // Existing rows cannot be reliably classified retroactively. New gateway
+  // and v2 import writes explicitly use live or history_import.
+  source: text("source").notNull().default("existing"),
+  importJobId: integer("importJobId"),
   createdAt: timestamp("createdAt", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  index("discord_message_guild_source_created_idx").on(table.guildId, table.source, table.createdAt),
+]);
 
 // A session starts when a non-bot member joins a voice channel and ends when
 // they leave voice altogether. Moving between voice channels is continuous.
@@ -542,16 +549,96 @@ export const historyImportJob = pgTable("history_import_job", {
     .references(() => user.id, { onDelete: "cascade" }),
   days: integer("days").notNull(),
   mode: text("mode").notNull().default("standard"),
+  version: integer("version").notNull().default(1),
+  source: text("source").notNull().default("legacy"),
   status: text("status").notNull().default("queued"),
   processedMessages: integer("processedMessages").notNull().default(0),
   failedChannels: integer("failedChannels").notNull().default(0),
+  totalChannels: integer("totalChannels").notNull().default(0),
+  completedChannels: integer("completedChannels").notNull().default(0),
+  skippedChannels: integer("skippedChannels").notNull().default(0),
+  estimatedMessages: integer("estimatedMessages"),
+  fetchedMessages: integer("fetchedMessages").notNull().default(0),
+  insertedMessages: integer("insertedMessages").notNull().default(0),
+  duplicateMessages: integer("duplicateMessages").notNull().default(0),
+  failedMessages: integer("failedMessages").notNull().default(0),
+  currentChannelId: text("currentChannelId"),
+  cancelRequested: boolean("cancelRequested").notNull().default(false),
+  pauseRequested: boolean("pauseRequested").notNull().default(false),
+  safeErrorCode: text("safeErrorCode"),
+  safeErrorSummary: text("safeErrorSummary"),
+  retryState: text("retryState"),
+  retryAfterAt: timestamp("retryAfterAt", { withTimezone: true }),
+  lastApiResponseAt: timestamp("lastApiResponseAt", { withTimezone: true }),
+  lastDbWriteAt: timestamp("lastDbWriteAt", { withTimezone: true }),
+  lastProgressAt: timestamp("lastProgressAt", { withTimezone: true }),
+  lastWorkerHeartbeatAt: timestamp("lastWorkerHeartbeatAt", { withTimezone: true }),
+  workerHostId: text("workerHostId"),
+  workerInstanceId: text("workerInstanceId"),
   requestedAt: timestamp("requestedAt", { withTimezone: true })
     .notNull()
     .defaultNow(),
   startedAt: timestamp("startedAt", { withTimezone: true }),
+  pausedAt: timestamp("pausedAt", { withTimezone: true }),
+  cancelledAt: timestamp("cancelledAt", { withTimezone: true }),
+  failedAt: timestamp("failedAt", { withTimezone: true }),
   completedAt: timestamp("completedAt", { withTimezone: true }),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+  resetAt: timestamp("resetAt", { withTimezone: true }),
+  resetBy: text("resetBy"),
   error: text("error"),
-});
+}, (table) => [
+  index("history_import_job_guild_requested_idx").on(table.guildId, table.requestedAt),
+  index("history_import_job_status_progress_idx").on(table.status, table.lastProgressAt),
+  uniqueIndex("history_import_job_one_active_per_guild_v2_idx")
+    .on(table.guildId)
+    .where(sql`${table.status} in ('queued', 'preparing', 'running', 'pausing', 'paused', 'cancelling', 'stalled')`),
+]);
+
+export const historyImportChannelProgress = pgTable("history_import_channel_progress", {
+  id: serial("id").primaryKey(),
+  jobId: integer("jobId").notNull().references(() => historyImportJob.id, { onDelete: "cascade" }),
+  guildId: text("guildId").notNull(),
+  channelId: text("channelId").notNull(),
+  channelName: text("channelName").notNull(),
+  status: text("status").notNull().default("pending"),
+  skipReason: text("skipReason"),
+  nextBeforeMessageId: text("nextBeforeMessageId"),
+  oldestMessageId: text("oldestMessageId"),
+  fetchedCount: integer("fetchedCount").notNull().default(0),
+  insertedCount: integer("insertedCount").notNull().default(0),
+  duplicateCount: integer("duplicateCount").notNull().default(0),
+  failedCount: integer("failedCount").notNull().default(0),
+  retryCount: integer("retryCount").notNull().default(0),
+  retryAfterAt: timestamp("retryAfterAt", { withTimezone: true }),
+  lastApiResponseAt: timestamp("lastApiResponseAt", { withTimezone: true }),
+  lastDbWriteAt: timestamp("lastDbWriteAt", { withTimezone: true }),
+  lastProgressAt: timestamp("lastProgressAt", { withTimezone: true }),
+  startedAt: timestamp("startedAt", { withTimezone: true }),
+  completedAt: timestamp("completedAt", { withTimezone: true }),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+  safeErrorCode: text("safeErrorCode"),
+  safeErrorSummary: text("safeErrorSummary"),
+}, (table) => [
+  uniqueIndex("history_import_channel_job_channel_unique").on(table.jobId, table.channelId),
+  index("history_import_channel_job_status_idx").on(table.jobId, table.status, table.updatedAt),
+  index("history_import_channel_guild_channel_idx").on(table.guildId, table.channelId),
+]);
+
+export const messageImportAuditEvent = pgTable("message_import_audit_event", {
+  id: serial("id").primaryKey(),
+  jobId: integer("jobId"),
+  guildId: text("guildId").notNull(),
+  channelId: text("channelId"),
+  eventType: text("eventType").notNull(),
+  actorId: text("actorId"),
+  counts: jsonb("counts").notNull().default({}),
+  safeErrorCode: text("safeErrorCode"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("message_import_audit_guild_created_idx").on(table.guildId, table.createdAt),
+  index("message_import_audit_job_created_idx").on(table.jobId, table.createdAt),
+]);
 
 // Developer-only destructive reset controls. These tables are intentionally
 // isolated from analytics data so the feature can remain disabled without

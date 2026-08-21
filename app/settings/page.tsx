@@ -4,7 +4,6 @@ import {
   Check,
   ChevronLeft,
   Clock3,
-  Database,
   Globe2,
   LoaderCircle,
   LogOut,
@@ -14,6 +13,7 @@ import { useEffect, useState } from "react";
 import { useLocale, type Locale } from "@/components/locale-provider";
 import { signOut, useSession } from "@/lib/auth-client";
 import { ThemeCustomizer } from "@/components/theme-customizer";
+import { MessageHistoryImportPanel } from "@/components/message-history-import-panel";
 
 const timeZones = [
   ["Asia/Tokyo", "日本（東京）"],
@@ -34,15 +34,6 @@ const timeZones = [
 ] as const;
 
 type Guild = { id: string; name: string };
-type HistoryImportJob = {
-  id: number;
-  days: number;
-  mode: "standard" | "developer";
-  status: "queued" | "running" | "completed" | "failed";
-  processedMessages: number;
-  failedChannels: number;
-  error: string | null;
-};
 
 export default function SettingsPage() {
   const { locale, setLocale } = useLocale();
@@ -55,12 +46,6 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [guilds, setGuilds] = useState<Guild[]>([]);
-  const [historyGuildId, setHistoryGuildId] = useState("");
-  const [historyDays, setHistoryDays] = useState(30);
-  const [historyDeveloperMode, setHistoryDeveloperMode] = useState(false);
-  const [historyJob, setHistoryJob] = useState<HistoryImportJob | null>(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyMessage, setHistoryMessage] = useState("");
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState("");
 
@@ -92,7 +77,6 @@ export default function SettingsPage() {
         if (!active) return;
         const nextGuilds = Array.isArray(data.guilds) ? data.guilds : [];
         setGuilds(nextGuilds);
-        setHistoryGuildId((current) => current || nextGuilds[0]?.id || "");
         if (nextGuilds.length === 0 && attempt < 2) {
           retryTimer = window.setTimeout(
             () => void loadGuilds(attempt + 1),
@@ -107,7 +91,7 @@ export default function SettingsPage() {
             800 * (attempt + 1),
           );
         } else {
-          setHistoryMessage("サーバー一覧を取得できませんでした。");
+          // The import panel will remain disabled while the Guild list is unavailable.
         }
       }
     };
@@ -117,53 +101,6 @@ export default function SettingsPage() {
       if (retryTimer) window.clearTimeout(retryTimer);
     };
   }, [session?.user?.id]);
-
-  useEffect(() => {
-    if (!historyGuildId) {
-      setHistoryJob(null);
-      return;
-    }
-    let active = true;
-    const load = async () => {
-      const response = await fetch(
-        `/api/history-import?guildId=${encodeURIComponent(historyGuildId)}`,
-      );
-      const data = await response.json().catch(() => ({}));
-      if (active && response.ok) setHistoryJob(data.job ?? null);
-    };
-    void load();
-    const timer = window.setInterval(() => {
-      if (
-        document.visibilityState === "visible" &&
-        (historyJob?.status === "queued" || historyJob?.status === "running")
-      )
-        void load();
-    }, 3_000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [historyGuildId, historyJob?.status]);
-
-  const startHistoryImport = async () => {
-    if (!historyGuildId) return;
-    setHistoryLoading(true);
-    setHistoryMessage("");
-    const response = await fetch("/api/history-import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        guildId: historyGuildId,
-        days: historyDays,
-        mode: historyDeveloperMode ? "developer" : "standard",
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (response.ok) setHistoryJob(data.job);
-    else
-      setHistoryMessage(data.error ?? "履歴インポートを開始できませんでした。");
-    setHistoryLoading(false);
-  };
 
   const save = async () => {
     setSaving(true);
@@ -201,25 +138,6 @@ export default function SettingsPage() {
 
   const en = locale === "en";
   const preferencesChanged = timeZone !== savedTimeZone || language !== savedLanguage;
-  const importActive =
-    historyJob?.status === "queued" || historyJob?.status === "running";
-  const historyStatus =
-    historyJob?.status === "queued"
-      ? en
-        ? "Waiting for the bot to start."
-        : "Botの処理待ちです。"
-      : historyJob?.status === "running"
-        ? en
-          ? `${historyJob.processedMessages.toLocaleString()} messages processed…`
-          : `${historyJob.processedMessages.toLocaleString()}件を確認中…`
-        : historyJob?.status === "completed"
-          ? en
-            ? `${historyJob.processedMessages.toLocaleString()} messages imported.`
-            : `${historyJob.processedMessages.toLocaleString()}件を検索用に取り込みました。`
-          : historyJob?.status === "failed"
-            ? (historyJob.error ??
-              (en ? "Import failed." : "インポートに失敗しました。"))
-            : "";
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -301,105 +219,7 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
-          <div className="mt-4 rounded-xl border border-border bg-background/40 p-4">
-            <div className="flex gap-3">
-              <Database className="mt-0.5 h-5 w-5 text-primary" />
-              <div className="min-w-0 flex-1">
-                <h2 className="text-sm font-bold">
-                  {en ? "Message history import" : "過去メッセージの取り込み"}
-                </h2>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  {en
-                    ? "Imports messages into server search. Member and voice history are not reconstructed."
-                    : "過去メッセージをサーバー内検索に追加します。メンバー推移・通話時間は推測して追加しません。"}
-                </p>
-                <select
-                  disabled={!guilds.length || importActive}
-                  value={historyGuildId}
-                  onChange={(event) => setHistoryGuildId(event.target.value)}
-                  className="mt-4 h-11 w-full rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-primary"
-                >
-                  {guilds.length ? (
-                    guilds.map((guild) => (
-                      <option key={guild.id} value={guild.id}>
-                        {guild.name}
-                      </option>
-                    ))
-                  ) : (
-                    <option>
-                      {en
-                        ? "No manageable servers"
-                        : "管理できるサーバーがありません"}
-                    </option>
-                  )}
-                </select>
-                <div className="mt-2 flex gap-2">
-                  {[7, 30, 90, 0].map((days) => (
-                    <button
-                      key={days}
-                      disabled={importActive}
-                      onClick={() => setHistoryDays(days)}
-                      className={`rounded-lg border px-3 py-2 text-xs font-bold ${historyDays === days ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"} disabled:opacity-60`}
-                    >
-                      {days === 0 ? (en ? "All time" : "全期間") : (en ? `${days} days` : `過去${days}日`)}
-                    </button>
-                  ))}
-                </div>
-                <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-card/50 p-3 text-left">
-                  <input
-                    type="checkbox"
-                    checked={historyDeveloperMode}
-                    disabled={importActive}
-                    onChange={(event) =>
-                      setHistoryDeveloperMode(event.target.checked)
-                    }
-                    className="mt-0.5 h-4 w-4 accent-primary"
-                  />
-                  <span>
-                    <span className="block text-sm font-bold">
-                      {en ? "Developer mode" : "開発者モード"}
-                    </span>
-                    <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                      {en
-                        ? "Use up to 3 parallel channel reads on this Bot host. Discord rate limits are still respected automatically."
-                        : "最大3チャンネルを並行取得します。Discordの制限時は自動で待機します。"}
-                    </span>
-                  </span>
-                </label>
-                <button
-                  disabled={
-                    !historyGuildId ||
-                    importActive ||
-                    historyLoading
-                  }
-                  onClick={() => void startHistoryImport()}
-                  className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-60"
-                >
-                  {historyLoading || importActive ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Database className="h-4 w-4" />
-                  )}
-                  {importActive
-                    ? en
-                      ? "Importing…"
-                      : "取り込み中…"
-                    : en
-                      ? "Start import"
-                      : "取り込みを開始"}
-                </button>
-                <p
-                  className={`mt-3 text-xs ${historyJob?.status === "failed" || historyMessage ? "text-destructive" : "text-muted-foreground"}`}
-                >
-                  {historyMessage ||
-                    historyStatus ||
-                    (historyDays === 0
-                      ? (en ? "All available message history will be imported. Large servers can take a long time." : "Botが閲覧できる全期間のメッセージが対象です。大規模サーバーでは完了まで時間がかかります。")
-                      : (en ? "Only messages in channels the bot can read are included." : "Botが閲覧できるチャンネルのメッセージだけが対象です。"))}
-                </p>
-              </div>
-            </div>
-          </div>
+          <MessageHistoryImportPanel guilds={guilds} locale={locale} />
           <ThemeCustomizer guilds={guilds} />
           {session?.user && (
             <div className="mt-4 rounded-xl border border-destructive/35 bg-destructive/[0.04] p-4">

@@ -606,6 +606,11 @@ try {
     "utf8",
   );
   await pool.query(securityV1Migration);
+  const reactionRoleMigration = await readFile(
+    new URL("./migrations/20260816-reaction-roles.sql", import.meta.url),
+    "utf8",
+  );
+  await pool.query(reactionRoleMigration);
   console.log("Database migration completed.");
 } finally {
   await pool.end();

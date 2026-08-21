@@ -11,13 +11,13 @@ This log records production release operations without secret values. Timestamps
 | First PR CI attempt | GitHub Actions run 32477683552 | 2026-08-21 20:32 | 2026-08-21 20:33 | FAILED | Linux checkout exposed two migration checksums that depended on Windows CRLF. Failure was isolated before merge or production mutation. | Failed only at migration manifest validation |
 | Cross-platform migration checksum remediation | Migration validation and runner | 2026-08-21 20:33 | 2026-08-21 20:35 | SUCCESS | SQL checksum input is normalized to LF so Windows and Linux validate the same immutable content. | Local and Linux CI migration validation passed |
 | Second PR CI attempt | GitHub Actions run 32477859865 | 2026-08-21 20:35 | 2026-08-21 20:36 | FAILED | The tracked pnpm lockfile was correct, but the audit script still invoked npm audit, which requires an ignored npm lockfile. No production mutation occurred. | All preceding CI steps passed; failure isolated to audit command |
-| pnpm audit remediation | CI dependency audit | 2026-08-21 20:36 | 2026-08-21 20:38 | SUCCESS | The audit command now uses the committed pnpm lockfile and nanoid is pinned to its patched 3.x release. | Local pnpm production audit reports no known vulnerabilities; PR rerun pending |
+| pnpm audit remediation | CI dependency audit | 2026-08-21 20:36 | 2026-08-21 20:38 | SUCCESS | The audit command now uses the committed pnpm lockfile and nanoid is pinned to its patched 3.x release. | Local audit and GitHub Actions run 32478092815 passed with no known production dependency vulnerabilities |
 
 ## Production operations
 
 | Operation | Target | Started at | Completed at | Result | Safe summary | Verification |
 |---|---|---:|---:|---|---|---|
-| GitHub PR and merge | `feat/release-readiness-20260821` to `main` | 2026-08-21 20:31 | pending | START | PR #2 was opened by normal push. Force push and direct main push are not required. | Pending successful CI and head SHA review |
+| GitHub PR and merge | `feat/release-readiness-20260821` to `main` | 2026-08-21 20:31 | pending | START | PR #2 was opened by normal push. Force push and direct main push are not required. Merge is deferred until the additive DB migration is verified so an automatic Web deploy cannot precede its schema. | CI run 32478092815 passed; merge pending post-migration head review |
 | Production migration | Neon PostgreSQL | pending | pending | START | Only checksum-verified additive migrations are candidates. No DROP or TRUNCATE is required. | Pending schema/index/application checks |
 | Production Web deploy | Vercel `nuviloview-oem` | pending | pending | START | Backward-compatible deploy with destructive feature flags kept off until their own gates pass. | Pending HTTP/API health checks |
 | Distributed singleton | Windows and Android/Termux | pending | pending | START | Blocked until Android can receive and verify its fixed host ID and singleton environment safely. | One-owner and fencing verification required |

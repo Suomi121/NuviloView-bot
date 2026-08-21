@@ -20,9 +20,10 @@ const adopted = argumentSet("--adopt-present=");
 const migrationDirectory = new URL("./migrations/", import.meta.url);
 const manifest = JSON.parse(await readFile(new URL("manifest.json", migrationDirectory), "utf8"));
 const migrations = [];
+const normalizeSqlForChecksum = (sql) => sql.replace(/\r\n?/g, "\n");
 for (const item of manifest.migrations) {
   const sql = await readFile(new URL(item.file, migrationDirectory), "utf8");
-  const checksum = createHash("sha256").update(sql).digest("hex");
+  const checksum = createHash("sha256").update(normalizeSqlForChecksum(sql)).digest("hex");
   if (checksum !== item.checksum) throw new Error(`Migration checksum mismatch: ${item.id}`);
   migrations.push({ ...item, sql });
 }

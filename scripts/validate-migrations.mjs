@@ -8,6 +8,7 @@ const seenIds = new Set();
 const seenFiles = new Set();
 const allowedRisks = new Set(["low", "medium", "high"]);
 const dangerousUpSql = /\b(?:TRUNCATE|DELETE\s+FROM|DROP\s+(?:TABLE|COLUMN|INDEX|CONSTRAINT))\b/i;
+const normalizeSqlForChecksum = (sql) => sql.replace(/\r\n?/g, "\n");
 
 for (const migration of manifest.migrations ?? []) {
   if (!/^\d{8}-[a-z0-9-]+$/.test(migration.id ?? "")) errors.push(`Invalid migration id: ${migration.id ?? "missing"}`);
@@ -27,7 +28,7 @@ for (const migration of manifest.migrations ?? []) {
     errors.push(`${migration.id}: migration file is missing`);
     continue;
   }
-  const checksum = createHash("sha256").update(sql).digest("hex");
+  const checksum = createHash("sha256").update(normalizeSqlForChecksum(sql)).digest("hex");
   if (checksum !== migration.checksum) errors.push(`${migration.id}: checksum mismatch`);
   if (dangerousUpSql.test(sql) && migration.manualApprovalRequired !== true) {
     errors.push(`${migration.id}: destructive SQL requires manualApprovalRequired=true`);

@@ -15,6 +15,7 @@ test("migration runner defaults to plan and uses a journal plus lock", () => {
   assert.match(runner, /--adopt-present=/);
   assert.match(runner, /Partially present migrations require manual remediation/);
   assert.match(runner, /Existing structures must be explicitly adopted/);
+  assert.match(runner, /replace\(\/\\r\\n\?\/g, "\\n"\)/);
 });
 
 test("high-risk and retention migrations require explicit approval", () => {

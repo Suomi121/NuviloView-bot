@@ -107,7 +107,7 @@ Developer ConsoleにはCurrent Owner、instance、fencing token、heartbeat age�
 
 ## Safe rollout
 
-1. Botを1台だけ稼働させた状態で`pnpm db:migrate`
+1. Botを1台だけ稼働させた状態で`npm run db:migrate:plan`を確認し、既存未追跡構造はレビュー後に`--adopt-present=<migration-id>`、未適用の承認対象は`--approve=<migration-id>`を明示してから`npm run db:migrate -- ...`
 2. VercelへWeb/APIを反映
 3. 外部Monitorをread-onlyで確認
 4. 現在の1 Hostへ固有`NUVILOVIEW_HOST_ID`を設定しsingletonを有効化

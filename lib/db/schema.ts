@@ -10,6 +10,7 @@ import {
   index,
   jsonb,
   bigint,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 // --- Better Auth required tables -------------------------------------------
@@ -467,6 +468,27 @@ export const serviceHeartbeat = pgTable("service_heartbeat", {
   index("service_heartbeat_service_last_idx").on(table.serviceKey, table.lastHeartbeatAt),
   index("service_heartbeat_host_last_idx").on(table.hostId, table.lastHeartbeatAt),
   index("service_heartbeat_service_started_idx").on(table.serviceKey, table.startedAt),
+]);
+
+// Append-only journal used by the reviewed migration runner. It stores only
+// migration metadata and checksums, never credentials or application data.
+export const schemaMigration = pgTable("schema_migration", {
+  id: text("id").primaryKey(),
+  checksum: text("checksum").notNull(),
+  description: text("description").notNull(),
+  risk: text("risk").notNull(),
+  appliedAt: timestamp("appliedAt", { withTimezone: true }).notNull().defaultNow(),
+  appliedBy: text("appliedBy").notNull(),
+});
+
+// Persistent backing for the distributed API rate limiter.
+export const apiRateLimit = pgTable("api_rate_limit", {
+  key: text("key").notNull(),
+  bucketStart: timestamp("bucketStart", { withTimezone: true }).notNull(),
+  count: integer("count").notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.key, table.bucketStart] }),
+  index("api_rate_limit_bucket_start_idx").on(table.bucketStart),
 ]);
 
 // Notifications are scoped to the signed-in dashboard user. Deletion is soft so

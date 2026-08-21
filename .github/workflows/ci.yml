@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuviloview_ci
+      BETTER_AUTH_SECRET: ci-only-placeholder-not-a-production-secret
+      BETTER_AUTH_URL: http://127.0.0.1:3000
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+      GUILD_RESET_ENABLED: "false"
+      SECURITY_AUTO_CONTAINMENT_ENABLED: "false"
+      DISTRIBUTED_SINGLETON_ENABLED: "false"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate migration manifest
+        run: npm run migration:validate
+
+      - name: Check static schema drift
+        run: npm run migration:drift:static
+
+      - name: Scan repository for token leaks
+        run: npm run security:tokens
+
+      - name: Check JavaScript module syntax
+        run: npm run syntax:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
+      - name: Check critical production dependency advisories
+        run: npm run dependency:audit
+
+      - name: Build
+        run: npm run build

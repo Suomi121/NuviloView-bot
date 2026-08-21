@@ -1,6 +1,10 @@
 import pg from "pg";
 import { readFile } from "node:fs/promises";
 
+if (!process.argv.includes("--execute-bootstrap")) {
+  throw new Error("Legacy schema bootstrap is disabled by default. Use the reviewed db:bootstrap command only for an empty database.");
+}
+
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set before running migrations.");
 }

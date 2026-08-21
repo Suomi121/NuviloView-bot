@@ -1,4 +1,5 @@
 import pg from "pg";
+import { readFile } from "node:fs/promises";
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set before running migrations.");
@@ -595,6 +596,16 @@ try {
       END IF;
     END $$
   `);
+  const nukeProtectionMigration = await readFile(
+    new URL("./migrations/20260814-nuke-protection-v1.sql", import.meta.url),
+    "utf8",
+  );
+  await pool.query(nukeProtectionMigration);
+  const securityV1Migration = await readFile(
+    new URL("./migrations/20260821-security-v1.sql", import.meta.url),
+    "utf8",
+  );
+  await pool.query(securityV1Migration);
   console.log("Database migration completed.");
 } finally {
   await pool.end();

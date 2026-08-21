@@ -17,7 +17,7 @@ export default function PrivacyPage() {
       <section className="mx-auto max-w-3xl px-6 pb-24 pt-32">
         <p className="text-sm font-bold tracking-widest text-primary">PRIVACY POLICY</p>
         <h1 className="mt-4 text-4xl font-extrabold tracking-tight">プライバシーポリシー</h1>
-        <p className="mt-3 text-sm text-muted-foreground">最終更新日：2026年7月29日</p>
+        <p className="mt-3 text-sm text-muted-foreground">最終更新日：2026年8月14日</p>
         <div className="mt-10 space-y-8 text-sm leading-7 text-muted-foreground">
           <PolicySection title="1. 運営者と適用範囲">
             <p>NuviloView:OEM運営者（以下「運営者」）は、本サービスで取り扱う情報を本ポリシーに従って管理します。本ポリシーはNuviloView:OEM、NuviloChan Bot、サポートフォームおよび関連機能に適用されます。本サービスはDiscord公式の提供・提携サービスではありません。</p>
@@ -32,6 +32,7 @@ export default function PrivacyPage() {
               <li><strong className="text-foreground">Snipe用の一時情報：</strong>直近に削除された最大10件のメッセージ本文、投稿者、削除日時、およびDiscord監査ログで確認できた削除実行者を、対象チャンネルごとにBotメモリ上で最大3日間保持</li>
               <li><strong className="text-foreground">設定・運営情報：</strong>言語、タイムゾーン、サーバー別テーマ、成長目標、通知、履歴取込の依頼者・範囲・進捗、管理操作ログ、およびモデレーションの実行者・対象・理由・件数・成否</li>
               <li><strong className="text-foreground">運営者向け管理情報：</strong>機能の有効・無効、保護対象や許可対象のID、実行計画・確認・結果・エラー等の操作履歴、および必要な場合に作成するサーバー構成のバックアップ（チャンネル、ロール、権限、主要設定等）</li>
+              <li><strong className="text-foreground">Nuke Protection情報：</strong>DiscordユーザーID、サーバーID、監査ログエントリID、管理操作の種類、対象ID、発生日時、危険度、インシデント状態、許可対象ID、および復元プレビュー用のチャンネル・ロール・権限構成スナップショット。Webhook Token、Bot Token、Credential、メッセージ本文はこの機能のためには保存しません</li>
               <li><strong className="text-foreground">技術・問い合わせ情報：</strong>IPアドレス、ユーザーエージェント、アクセス・エラーログ、レート制限用にハッシュ化した識別子・時刻・回数、お名前、返信先メールアドレスおよびお問い合わせ内容</li>
             </ul>
             <p className="mt-3">Discord OAuthではメールアドレスの権限を要求せず、Discordに登録されたメールアドレスは取得・保存しません。認証基盤の内部互換性のため、DiscordユーザーIDから生成した送信不能な識別子（<code className="rounded bg-secondary px-1 py-0.5 text-xs text-foreground">@users.invalid</code>）を保存します。サポートフォームで利用者が自ら入力した返信先メールアドレスは、お問い合わせ対応のためにのみ使用します。</p>
@@ -43,6 +44,7 @@ export default function PrivacyPage() {
               <li>ダッシュボードの分析、ライブ更新、レポート出力、目標・テーマ設定</li>
               <li>サーバー内検索、翻訳、通知、Bot接続・権限不足の案内</li>
               <li>権限を持つサーバー運営者による個別BAN、Kick、Timeout、BAN解除、メッセージ整理、自動スパム検知およびその監査</li>
+              <li>短時間に発生した破壊的なサーバー管理操作の検知、危険度評価、通知、証拠保全、管理者による手動封じ込め、および構造復元プレビュー</li>
               <li>サービスの安全管理、品質維持および安定した運用</li>
               <li>お問い合わせへの回答、重要なお知らせおよびサービス改善</li>
               <li>利用状況の把握および広告配信。ただしメッセージ本文を広告目的で販売・提供しません</li>
@@ -58,6 +60,7 @@ export default function PrivacyPage() {
             <p>検索用に保存するメッセージ本文は原則として最大90日間保存し、保存期間を過ぎたデータは順次削除します。履歴取り込みで取得した本文にも同じ保存期間を適用します。Botが削除イベントを受信したメッセージは保存データから削除しますが、zx?snipeで直近最大10件の削除を確認するため、削除本文と関連情報をBotメモリ上に最大3日間だけ保持します。この一時情報はNeonDBへ追加保存しません。認証情報、設定、統計、監査ログおよび問い合わせ情報は、機能提供、法令対応、不正利用防止または紛争対応に必要な期間保存します。</p>
             <p className="mt-3">スパム判定用の送信時刻・件数は短時間だけBotメモリで処理し、判定用として本文を追加保存しません。Web APIのレート制限記録はIPアドレスまたはユーザーIDから生成したハッシュを用い、古い記録を7日経過後に順次削除します。ログインセッションの有効期間は原則7日間です。期限切れまたは利用目的を終えた一時情報は順次無効化・削除します。</p>
             <p className="mt-3">運営者向け管理機能の設定、監査ログおよび構成バックアップは、安全な運用、復元、法令対応または紛争対応に必要な期間保存し、目的を終えたものは削除します。確認コードは平文保存せずハッシュ化し、有効期限後は実行に使用できません。</p>
+            <p className="mt-3">Nuke Protectionの解決済みインシデントと証拠は原則90日間保存します。構造スナップショットはGuildごとに原則最新7件かつ30日以内を保持し、処理済み操作リクエストは原則30日後に削除します。未解決のインシデントおよびSecurity監査記録は、対応と説明責任に必要な期間保持する場合があります。</p>
             <p className="mt-3">Botをサーバーから退出させると新規収集は停止しますが、既存データは直ちには自動削除されません。削除を希望する場合はサポートページからご連絡ください。本人またはサーバー管理権限の確認後、対応可能な範囲で削除します。</p>
           </PolicySection>
           <PolicySection title="6. 翻訳機能">

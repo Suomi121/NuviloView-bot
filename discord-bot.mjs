@@ -31,6 +31,7 @@ import { isAbsolute } from "node:path";
 import { escapeScopeText, formatScopeMessage, plainComponentText } from "./lib/scopeserver-utils.mjs";
 import { createGuildResetService } from "./lib/guild-reset-service.mjs";
 import { getGuildResetConfig, isResetDeveloper, parseIdList } from "./lib/guild-reset-utils.mjs";
+import { createNukeProtectionService } from "./lib/nuke-protection-service.mjs";
 import {
   formatModerationActionResult,
   getModerationTargetError,
@@ -147,6 +148,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.MessageContent,
   ],
@@ -169,6 +171,11 @@ const scopeServerAttempts = new Map();
 const guildCommandSyncAttempts = new Map();
 const blockedGuildIds = new Set();
 const guildResetConfig = getGuildResetConfig();
+const nukeProtectionService = createNukeProtectionService({
+  client,
+  sql,
+  environment: process.env,
+});
 let lastPresenceGuildCount = null;
 const translationAttempts = new Map();
 const translationRequests = new Map();
@@ -4353,9 +4360,12 @@ client.once("clientReady", async () => {
     await Promise.allSettled(client.guilds.cache.map(checkGuildAlerts));
     await Promise.allSettled(client.guilds.cache.map(syncServerVoiceSession));
     await Promise.allSettled(client.guilds.cache.map(syncCurrentVoiceSessions));
+    await Promise.allSettled(client.guilds.cache.map((guild) => nukeProtectionService.diagnoseGuild(guild)));
+    await Promise.allSettled(client.guilds.cache.map((guild) => nukeProtectionService.ensureDailySnapshot(guild)));
     await purgeExpiredMessages();
     void pollHistoryImportJobs();
     void pollGuildResetRequests();
+    void nukeProtectionService.pollActionRequests();
   } catch (error) {
     console.error("Initial member sync failed:", error);
   }
@@ -4374,12 +4384,15 @@ client.on("guildCreate", (guild) =>
       syncAnalyticsInventory(guild, { fetchMembers: true }),
       syncServerVoiceSession(guild),
       syncCurrentVoiceSessions(guild),
+      nukeProtectionService.diagnoseGuild(guild),
+      nukeProtectionService.ensureDailySnapshot(guild),
     ]);
   })(),
 );
 
 client.on("guildDelete", (guild) => {
   updateBotPresence();
+  nukeProtectionService.clearGuild(guild.id);
   void markGuildDisconnected(guild.id).catch((error) =>
     console.error("Failed to mark removed guild as disconnected:", error),
   );
@@ -5348,7 +5361,12 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.guild || isGuildBlocked(message.guild.id)) return;
+  if (!message.guild || isGuildBlocked(message.guild.id)) return;
+
+  if (message.author.bot) {
+    await nukeProtectionService.handleBotMessage(message);
+    return;
+  }
 
   const securityInvocation = parseSecurityCommand(message.content);
   if (securityInvocation) {
@@ -5659,6 +5677,16 @@ client.on("error", (error) => {
   void reportOperationalAlert("Discord client error", error);
 });
 
+client.on("guildAuditLogEntryCreate", (entry, guild) => {
+  if (isGuildBlocked(guild.id)) return;
+  void nukeProtectionService.handleAuditLogEntry(entry, guild);
+});
+
+client.on("webhookUpdate", (channel) => {
+  if (!channel?.guild || isGuildBlocked(channel.guild.id)) return;
+  void nukeProtectionService.handleWebhookUpdate(channel);
+});
+
 for (const eventName of ["channelCreate", "channelDelete", "channelUpdate", "roleCreate", "roleDelete", "roleUpdate"]) {
   client.on(eventName, (...args) => {
     const subject = args.at(-1) ?? args[0];
@@ -5691,6 +5719,7 @@ setInterval(
         await syncAnalyticsInventory(guild);
         await syncGuildRegistry(guild);
         await checkGuildAlerts(guild);
+        await nukeProtectionService.diagnoseGuild(guild);
       }),
     );
   },
@@ -5729,6 +5758,22 @@ setInterval(() => {
     console.error("Failed to poll Guild reset requests:", error),
   );
 }, 3 * 1000);
+
+setInterval(() => {
+  void nukeProtectionService.pollActionRequests();
+}, 5 * 1000);
+
+setInterval(() => {
+  void Promise.allSettled(
+    client.guilds.cache.map((guild) => nukeProtectionService.ensureDailySnapshot(guild)),
+  );
+}, 60 * 60 * 1000);
+
+setInterval(() => {
+  void nukeProtectionService.purgeExpiredSecurityData().catch((error) =>
+    console.error("Failed to purge expired Nuke Protection data:", error),
+  );
+}, 12 * 60 * 60 * 1000);
 
 setInterval(() => {
   const now = Date.now();

@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 const steps = [
   { icon: ShieldCheck, title: '1. Discordでログイン', text: '管理権限を持つDiscordアカウントでログインします。ダッシュボードには、あなたが管理できるサーバーだけが表示されます。' },
   { icon: Bot, title: '2. Botをサーバーへ追加', text: 'トップページの「Botを追加」から、分析したいサーバーを選択します。導入できるのは、Botを追加する権限を持つ人だけです。' },
-  { icon: Database, title: '3. データを確認', text: 'NuviloChan Botがサーバー内のイベントを集計します。ダッシュボードを開いている間は15秒ごとに自動更新され、導入直後の最初の記録もそのまま反映されます。' },
+  { icon: Database, title: '3. データを確認', text: 'NuviloChan Botがサーバー内のイベントを集計します。ダッシュボードを開いている間は60秒ごとに集計表示が更新され、導入直後の最初の記録もそのまま反映されます。' },
 ]
 
 const faqs = [
@@ -24,9 +24,9 @@ const faqs = [
   ['何のデータを保存しますか？', 'メンバー数、参加・退出、メッセージ数、リアクション数、発言者数、サーバー単位の通話時間を分析に使用します。メッセージ検索のため、メッセージ本文・送信者・送信日時も最大90日間保存します。'],
   ['メッセージ本文は誰でも検索できますか？', 'いいえ。検索できるのは、そのサーバーを管理できる利用者だけです。検索機能にはDiscordのMessage Content Intentを使用します。'],
   ['チャンネル権限の警告が出たら？', 'Botに「チャンネルを見る」と「メッセージ履歴を読む」の権限がないチャンネルがあります。そのチャンネルを分析対象にする場合は、Botロールまたはチャンネルごとの権限を見直してください。'],
-  ['Botコマンドは何ができますか？', '/help で分析コマンドの一覧、/tactive で今日の活動、/week で直近7日間の要約、/suc で初期設定と権限、/permissions で読み取れないチャンネル、/dashboard で分析画面へのリンクを確認できます。セキュリティ機能は独立した r? コマンドとして、r?ban、r?unban、r?kick、r?timeout、r?untimeout、r?banlist、r?clear、r?ping、r?perm_check を利用できます。r?perm_checkでは、実行者とBotの権限を照合し、利用可能なセキュリティ機能を機能別に確認できます。娯楽機能のzx?help、zx?dice、zx?snipeは全メンバーが利用でき、Discordの候補欄に表示される/zxからもhelp、dice、snipeを選べます。zx?snipeは自分だけでなく、同じチャンネルで他メンバーや管理者が削除した投稿も最大3日・直近10件までカードと前後ボタンで表示し、削除者を確認できます。結果は実行者または管理者だけが削除できます。'],
+  ['Botコマンドは何ができますか？', '/help で分析コマンドの一覧、/tactive で今日の活動、/week で直近7日間の要約、/suc で初期設定と権限、/permissions で読み取れないチャンネル、/dashboard で分析画面へのリンクを確認できます。セキュリティ機能は独立した r? コマンドとして、r?ban、r?unban、r?kick、r?timeout、r?untimeout、r?banlist、r?clear、r?ping、r?perm_check を利用できます。r?perm_checkでは、実行者とBotの権限を照合し、利用可能なセキュリティ機能を機能別に確認できます。娯楽機能のzx?help、zx?dice、zx?snipeは全メンバーが利用でき、Discordの候補欄に表示される/zxからもhelp、dice、snipeを選べます。zx?snipeは自分だけでなく、同じチャンネルで他メンバーや管理者が削除した投稿も最大90日（約3か月）・999,999件までカードと前後ボタンで表示し、削除者を確認できます。上限を超えた場合は古い履歴から切り捨てます。結果は実行者または管理者だけが削除できます。'],
   ['ダイスはどう使いますか？', 'zx?dice 10d、または/zx diceのdice欄に10dと入力するとロールリンクが表示されます。Discord標準対応のD4・D6・D8・D10・D12・D20は、リンクを押したユーザー本人の投稿として結果と再ロールボタンが生成され、過去の結果を上書きしません。Discord標準の対象外となる個数・面数はBotが従来形式で処理します。Bot形式では1回1〜50個、2〜1000面まで指定できます。'],
-  ['自動スパム検知はどう動きますか？', '同一メンバーが5秒以内に8件のメッセージを送信すると検知し、通常メンバーを既定5分間タイムアウトします。Bot、サーバー所有者、管理・モデレーション権限を持つメンバーは自動処分しません。サーバー所有者、Administrator、または対応権限を持つ運営者は、検知通知からタイムアウトを解除できます。KickとBANは各権限と二段階確認が必要です。'],
+  ['自動スパム検知はどう動きますか？', '同一ユーザーまたはBotが5秒以内に3件のメッセージを送信すると検知し、既定5分間のタイムアウトを試行します。サーバー所有者と人間の管理・モデレーション権限保有者は自動処分しません。Administrator権限を持つ対象やDiscordの権限・ロール階層で操作できない対象は検知と監査のみ行います。サーバー所有者、Administrator、または対応権限を持つ運営者は、検知通知からタイムアウト解除・Kick・BANを選択できます。KickとBANには各権限と二段階確認が必要です。'],
   ['メッセージを翻訳できますか？', 'はい。/translate text:<本文> language:<翻訳先> で入力したテキストを翻訳できます。languageを省略すると国旗付きの言語一覧が表示されます。メッセージを右クリックして「アプリ」から「NuviloChan 翻訳」を選ぶ方法も引き続き利用できます。翻訳はBot用PC上のLibreTranslateで処理し、入力本文と翻訳結果は保存しません。月間60万文字の処理枠を超えると翌月まで停止します。'],
   ['Botを外すとどうなりますか？', '以後の新しいデータ収集は止まります。保存済みデータの削除をご希望の場合は、サーバー名を添えてサポートへお問い合わせください。'],
 ]
@@ -72,7 +72,7 @@ export default function DocsPage() {
             <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />検索機能のため、メッセージ本文・送信者・送信日時を最大90日間保存</li>
             <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />モデレーションの実行者・対象・理由・件数・結果を監査ログとして保存</li>
             <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />スパム判定はユーザー別の送信時刻と件数を短時間だけメモリ上で比較し、判定用に本文を追加保存しない</li>
-            <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />zx?snipe用の直近10件の削除本文・投稿者・削除者は最大3日間Botメモリに保持し、NeonDBへ追加保存しない</li>
+            <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />zx?snipe用の最大999,999件の削除本文・投稿者・削除者は最大90日間（約3か月）Botメモリに保持し、上限超過時は古い履歴から切り捨て、NeonDBへ追加保存しない</li>
           </ul>
           <p className="mt-4 text-xs leading-relaxed text-muted-foreground">詳しい取り扱いは<a className="text-primary underline" href="/privacy">プライバシーポリシー</a>をご確認ください。</p>
         </section>

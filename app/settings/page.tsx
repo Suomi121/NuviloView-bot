@@ -133,7 +133,10 @@ export default function SettingsPage() {
     };
     void load();
     const timer = window.setInterval(() => {
-      if (historyJob?.status === "queued" || historyJob?.status === "running")
+      if (
+        document.visibilityState === "visible" &&
+        (historyJob?.status === "queued" || historyJob?.status === "running")
+      )
         void load();
     }, 3_000);
     return () => {

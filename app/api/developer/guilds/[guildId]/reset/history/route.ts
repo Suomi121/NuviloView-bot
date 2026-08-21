@@ -10,6 +10,7 @@ export async function GET(
 ) {
   try {
     const { guildId } = await params
+    const includeItems = new URL(request.url).searchParams.get('includeItems') !== 'false'
     const context = await getResetApiContext(request, guildId, {
       requireGuildEnabled: false,
       rateScope: 'developer-guild-reset-history',
@@ -19,7 +20,12 @@ export async function GET(
     const [settings, plans, executions, requests] = await Promise.all([
       pool.query(
         `
-          SELECT *
+          SELECT
+            "guildId", "enabled", "protectedChannelIds", "protectedRoleIds",
+            "resetLogChannelId", "backupChannelId", "allowedAdminIds",
+            "maxChannelDeletes", "maxRoleDeletes", "maxTotalOperations",
+            "guildCooldownHours", "developerCooldownMinutes", "defaultMode",
+            "createdAt", "updatedAt"
           FROM "guild_reset_settings"
           WHERE "guildId" = $1
           LIMIT 1
@@ -42,7 +48,7 @@ export async function GET(
         `
           SELECT
             "id", "planId", "developerId", "developerName", "mode", "dryRun",
-            "reason", "source", "status", "backupPath", "requestedCount",
+            "reason", "source", "status", "requestedCount",
             "successCount", "failedCount", "skippedCount", "operationStarted",
             "beforeSummary", "afterSummary", "errorSummary",
             "startedAt", "finishedAt", "createdAt"
@@ -66,7 +72,7 @@ export async function GET(
         [guildId],
       ),
     ])
-    const executionIds = executions.rows.map((row) => row.id)
+    const executionIds = includeItems ? executions.rows.map((row) => row.id) : []
     const items = executionIds.length
       ? await pool.query(
           `
@@ -85,10 +91,12 @@ export async function GET(
         guild: { guildId, ...context.registry },
         settings: settings.rows[0] ?? null,
         plans: plans.rows,
-        executions: executions.rows.map((execution) => ({
-          ...execution,
-          items: items.rows.filter((item) => item.executionId === execution.id),
-        })),
+        executions: includeItems
+          ? executions.rows.map((execution) => ({
+              ...execution,
+              items: items.rows.filter((item) => item.executionId === execution.id),
+            }))
+          : executions.rows,
         requests: requests.rows,
       },
       { headers: { 'Cache-Control': 'no-store, private' } },

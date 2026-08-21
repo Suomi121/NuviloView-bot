@@ -22,7 +22,7 @@ const steps = [
 ];
 
 export function HowItWorksSection() {
-  const clientId = process.env.DISCORD_CLIENT_ID;
+  const clientId = process.env.NUVILOVIEW_CLIENT_ID ?? process.env.DISCORD_CLIENT_ID;
   const botInviteUrl = clientId
     ? `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=1099511721094&integration_type=0&scope=bot%20applications.commands`
     : null;

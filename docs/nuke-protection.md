@@ -170,7 +170,7 @@ Browser-supplied Guild IDs are never trusted.
 
 This is intentionally independent from developer status. A NuviloView
 developer cannot contain an actor in an unrelated Guild. The retired
-ScopeServer feature is not reintroduced.
+No unrestricted cross-server inspection feature is introduced.
 
 ## Status and modes
 

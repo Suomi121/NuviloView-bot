@@ -37,6 +37,10 @@ export function resetApiError(error: unknown) {
     const status =
       error.code === 'DEVELOPER_FORBIDDEN' || error.code === 'GUILD_CONTROL_FORBIDDEN'
         ? 403
+        : error.code === 'GUILD_NOT_FOUND' || error.code === 'PLAN_NOT_FOUND'
+          ? 404
+          : error.code === 'RATE_LIMIT'
+            ? 429
         : error.code === 'FEATURE_DISABLED'
           ? 503
           : error.code === 'LOCKED'

@@ -667,11 +667,13 @@ export default function DashboardPage() {
       }
     };
     // A guild change recreates this effect, so fetch that guild immediately.
-    // Subsequent live refreshes keep the existing 15-second interval.
+    // Aggregates are relatively expensive and do not need sub-minute polling.
+    // Gateway events still reach the Bot immediately; the dashboard refreshes
+    // the consolidated view once per minute while this tab is visible.
     void load("initial");
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void load("auto");
-    }, 15_000);
+    }, 60_000);
     return () => {
       active = false;
       window.clearInterval(timer);
@@ -1371,8 +1373,8 @@ export default function DashboardPage() {
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {en
-                  ? "Updates automatically every 15 seconds while this page is open."
-                  : "この画面を開いている間は15秒ごとに自動更新します。"}
+                  ? "Updates automatically every 60 seconds while this page is open."
+                  : "この画面を開いている間は60秒ごとに自動更新します。"}
                 {lastLiveRefreshAt && (
                   <span>
                     {en ? " Last refresh: " : " 最終更新: "}

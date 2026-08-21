@@ -19,7 +19,7 @@ export async function GET(
     const result = await pool.query(
       `
         SELECT
-          "id", "executionId", "planId", "guildId", "fileName", "filePath",
+          "id", "executionId", "planId", "guildId", "fileName",
           "fileSize", "checksum", "schemaVersion", "createdAt"
         FROM "guild_reset_backup"
         WHERE "guildId" = $1

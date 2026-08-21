@@ -139,7 +139,80 @@ function HealthView({ data, en }: { data: AnalyticsData; en: boolean }) {
   const health = data.health;
   const healthAvailable = health.isAvailable !== false && health.score !== null;
   const categories = Object.entries(health.categories) as Array<[string, number | null]>;
-  return <><PageHeading eyebrow="HEALTH V2 · PREVIEW" title={en ? "Server Health Score v2" : "サーバーヘルススコア v2"} description={en ? "Preview / Shadow scoring based on available observations. It is not the official Health release." : "観測データを使ったPreview / Shadow計算です。正式版Healthではありません。"} /><div className="flex gap-3 rounded-xl border border-primary/25 bg-primary/10 p-4 text-xs text-muted-foreground"><Sparkles className="h-4 w-4 shrink-0 text-primary" /><p>{en ? "Shadow mode records candidate values separately and does not replace the existing live activity signal, alerts, or operational decisions." : "Shadowモードでは候補値を別扱いで記録します。既存のリアルタイム活動パルス、通知、運用判定には影響しません。"}</p></div><div className="grid gap-5 xl:grid-cols-[.7fr_1.3fr]"><SectionCard title={en ? "Candidate score" : "候補スコア"}>{healthAvailable ? <><div className="flex items-end gap-3"><span className="text-7xl font-black">{health.score}</span><span className="pb-2 text-muted-foreground">/ 100</span></div><div className="mt-4 flex flex-wrap gap-2"><span className="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">PREVIEW</span><StatusPill value={health.status} en={en} /><span className="rounded-full bg-secondary px-3 py-1 text-xs font-bold">{en ? `Confidence: ${health.confidence}` : `信頼度: ${confidenceLabel(health.confidence, false)}`}</span></div></> : <><p className="text-3xl font-black">{en ? "Insufficient Data" : "データ不足"}</p><p className="mt-2 text-sm text-amber-400">{availabilityReasonText(health, en)}</p><div className="mt-4 flex flex-wrap gap-2"><span className="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">PREVIEW</span><span className="rounded-full bg-secondary px-3 py-1 text-xs font-bold">{en ? `Confidence: ${health.confidence}` : `信頼度: ${confidenceLabel(health.confidence, false)}`}</span>{health.provisionalScore != null && <span className="rounded-full bg-secondary px-3 py-1 text-xs text-muted-foreground">{en ? `Provisional: ${health.provisionalScore}` : `暫定値: ${health.provisionalScore}`}</span>}</div></>}<p className="mt-4 text-sm text-muted-foreground">{health.change === null ? (en ? "Previous candidate score unavailable" : "前期間の候補スコアはデータ不足") : `${health.change >= 0 ? "+" : ""}${health.change} ${en ? "candidate points vs previous period" : "候補ポイント（前期間比）"}`}</p></SectionCard><SectionCard title={en ? "Category scores" : "カテゴリ別スコア"} description={en ? "Missing categories are excluded and weights are re-normalized." : "欠測カテゴリは0点にせず、利用可能な重みだけで再正規化します。"}><div className="space-y-4">{categories.map(([key, value]) => <div key={key}><div className="mb-1.5 flex justify-between text-sm"><span className="font-semibold">{categoryLabel(key, en)}</span><b>{value === null ? (en ? "No data" : "データなし") : Math.round(value)}</b></div><div className="h-2 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-primary" style={{ width: `${value ?? 0}%` }} /></div></div>)}</div></SectionCard></div><SectionCard title={en ? "Shadow score history" : "Shadowスコア履歴"} description={en ? "Preview candidates are stored in metadata; the official score column remains empty until a stable release." : "Preview候補値はメタデータへ保存し、正式リリースまではDBの正式score列を空のまま維持します。"}><MiniBars rows={health.history.map((item: any) => ({ label: item.date, value: item.score }))} en={en} /></SectionCard><SectionCard title={en ? "Preview calculation" : "Preview計算内容"}><p className="text-sm leading-7 text-muted-foreground">{en ? "Engagement 25% (active rate, daily messages per active member, reaction rate); Activity Retention 25% (day 7/day 30 activity windows); Distribution 20% (top 10% concentration with at least 10 authors); Voice 15% (participation and daily time per voice user); Growth 15% (30-day-normalized net growth and early departures). A candidate score requires at least 3 categories, Confidence 40+, and 7 observed days." : "Engagement 25%（アクティブ率・1人1日あたり投稿・リアクション率）、Activity Retention 25%（7日後・30日後の活動）、Distribution 20%（投稿者10人以上での上位10%集中度）、Voice 15%（参加率・VC利用者1人1日あたり時間）、Growth 15%（30日換算純増・早期離脱）です。候補値の通常表示には3カテゴリ以上・Confidence 40以上・観測7日以上が必要です。"}</p></SectionCard></>;
+  return <><PageHeading eyebrow="HEALTH V2 · PREVIEW" title={en ? "Server Health Score v2" : "サーバーヘルススコア v2"} description={en ? "Preview / Shadow scoring based on available observations. It is not the official Health release." : "観測データを使ったPreview / Shadow計算です。正式版Healthではありません。"} /><div className="flex gap-3 rounded-xl border border-primary/25 bg-primary/10 p-4 text-xs text-muted-foreground"><Sparkles className="h-4 w-4 shrink-0 text-primary" /><p>{en ? "Shadow mode records candidate values separately and does not replace the existing live activity signal, alerts, or operational decisions." : "Shadowモードでは候補値を別扱いで記録します。既存のリアルタイム活動パルス、通知、運用判定には影響しません。"}</p></div><div className="grid gap-5 xl:grid-cols-[.7fr_1.3fr]"><SectionCard title={en ? "Candidate score" : "候補スコア"}>{healthAvailable ? <><div className="flex items-end gap-3"><span className="text-7xl font-black">{health.score}</span><span className="pb-2 text-muted-foreground">/ 100</span></div><div className="mt-4 flex flex-wrap gap-2"><span className="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">PREVIEW</span><StatusPill value={health.status} en={en} /><span className="rounded-full bg-secondary px-3 py-1 text-xs font-bold">{en ? `Confidence: ${health.confidence}` : `信頼度: ${confidenceLabel(health.confidence, false)}`}</span></div></> : <><p className="text-3xl font-black">{en ? "Insufficient Data" : "データ不足"}</p><p className="mt-2 text-sm text-amber-400">{availabilityReasonText(health, en)}</p><div className="mt-4 flex flex-wrap gap-2"><span className="rounded-full bg-primary/15 px-3 py-1 text-xs font-bold text-primary">PREVIEW</span><span className="rounded-full bg-secondary px-3 py-1 text-xs font-bold">{en ? `Confidence: ${health.confidence}` : `信頼度: ${confidenceLabel(health.confidence, false)}`}</span>{health.provisionalScore != null && <span className="rounded-full bg-secondary px-3 py-1 text-xs text-muted-foreground">{en ? `Provisional: ${health.provisionalScore}` : `暫定値: ${health.provisionalScore}`}</span>}</div></>}<p className="mt-4 text-sm text-muted-foreground">{health.change === null ? (en ? "Previous candidate score unavailable" : "前期間の候補スコアはデータ不足") : `${health.change >= 0 ? "+" : ""}${health.change} ${en ? "candidate points vs previous period" : "候補ポイント（前期間比）"}`}</p></SectionCard><SectionCard title={en ? "Category scores" : "カテゴリ別スコア"} description={en ? "Missing categories are excluded and weights are re-normalized." : "欠測カテゴリは0点にせず、利用可能な重みだけで再正規化します。"}><div className="space-y-4">{categories.map(([key, value]) => <div key={key}><div className="mb-1.5 flex justify-between text-sm"><span className="font-semibold">{categoryLabel(key, en)}</span><b>{value === null ? (en ? "No data" : "データなし") : Math.round(value)}</b></div><div className="h-2 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-primary" style={{ width: `${value ?? 0}%` }} /></div></div>)}</div></SectionCard></div><HealthDataQualityPanel health={health} en={en} /><SectionCard title={en ? "Shadow score history" : "Shadowスコア履歴"} description={en ? "Preview candidates are stored in metadata; the official score column remains empty until a stable release." : "Preview候補値はメタデータへ保存し、正式リリースまではDBの正式score列を空のまま維持します。"}><MiniBars rows={health.history.map((item: any) => ({ label: item.date, value: item.score }))} en={en} /></SectionCard><SectionCard title={en ? "Preview calculation" : "Preview計算内容"}><p className="text-sm leading-7 text-muted-foreground">{en ? "Engagement 25% (active rate, daily messages per active member, reaction rate); Activity Retention 25% (day 7/day 30 activity windows); Distribution 20% (top 10% concentration with at least 10 authors); Voice 15% (participation and daily time per voice user); Growth 15% (30-day-normalized net growth and early departures). A candidate score requires at least 3 categories, Confidence 40+, and 7 observed days." : "Engagement 25%（アクティブ率・1人1日あたり投稿・リアクション率）、Activity Retention 25%（7日後・30日後の活動）、Distribution 20%（投稿者10人以上での上位10%集中度）、Voice 15%（参加率・VC利用者1人1日あたり時間）、Growth 15%（30日換算純増・早期離脱）です。候補値の通常表示には3カテゴリ以上・Confidence 40以上・観測7日以上が必要です。"}</p></SectionCard></>;
+}
+
+function HealthDataQualityPanel({ health, en }: { health: any; en: boolean }) {
+  const quality = health.dataQuality;
+  if (!quality) return null;
+  const rows = [
+    ...Object.entries(quality.categories ?? {}),
+    ["reaction", quality.components?.reaction],
+  ].filter((entry) => entry[1]) as Array<[string, any]>;
+  const retentionEvidence = quality.evidence?.retentionSources ?? {};
+  const excludedRetention = Number(retentionEvidence.discordSync ?? 0) + Number(retentionEvidence.historicalImport ?? 0) + Number(retentionEvidence.unknown ?? 0);
+  const invalidVoice = Number(quality.evidence?.voice?.invalidSessions ?? 0);
+  return <SectionCard title={en ? "Data quality gate" : "データ品質ゲート"} description={en ? "Every category shows its source confidence and observation maturity. Missing or immature data is not converted to zero." : "カテゴリごとにデータ源の信頼度と観測成熟度を表示します。欠測・未成熟データを0点には変換しません。"}>
+    <div className={`mb-4 rounded-xl border px-4 py-3 text-xs ${quality.passes ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200" : "border-amber-400/25 bg-amber-400/10 text-amber-200"}`}>
+      <b>{quality.passes ? (en ? "Gate passed" : "品質ゲート通過") : (en ? "Provisional only" : "暫定値のみ")}</b>
+      {!quality.passes && <p className="mt-1 opacity-80">{(quality.blockingReasons ?? []).map((reason: string) => qualityReasonText(reason, en)).join(" · ")}</p>}
+    </div>
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {rows.map(([key, item]) => <div key={key} className="min-w-0 rounded-xl border border-border bg-secondary/30 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2"><b className="text-sm">{key === "reaction" ? (en ? "Reaction input" : "リアクション入力") : categoryLabel(key, en)}</b><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${qualityStateTone(item.qualityState)}`}>{qualityStateLabel(item.qualityState, en)}</span></div>
+        <p className="mt-3 text-xs text-muted-foreground">{en ? `Score ${item.score == null ? "—" : Math.round(item.score)} · Confidence ${item.confidence}` : `スコア ${item.score == null ? "—" : Math.round(item.score)}・信頼度 ${confidenceLabel(item.confidence, false)}`}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{en ? `${Math.round(item.observationDays ?? 0)} observed days` : `観測 ${Math.round(item.observationDays ?? 0)}日`}</p>
+        <p className="mt-2 break-words text-[11px] leading-relaxed text-muted-foreground">{qualityReasonText(item.reason, en)}</p>
+      </div>)}
+    </div>
+    <div className="mt-4 grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-3"><p>{en ? `Unverified retention events excluded: ${excludedRetention}` : `Retention除外イベント: ${excludedRetention}件`}</p><p>{en ? `Invalid Voice sessions excluded: ${invalidVoice}` : `Voice異常除外: ${invalidVoice}件`}</p><p>{en ? `Reaction observation: ${Number(quality.evidence?.reaction?.observationDays ?? 0)} days` : `Reaction観測: ${Number(quality.evidence?.reaction?.observationDays ?? 0)}日`}</p></div>
+  </SectionCard>;
+}
+
+function qualityStateTone(value: string) {
+  if (value === "Available") return "bg-emerald-400/15 text-emerald-300";
+  if (value === "LowConfidence") return "bg-amber-400/15 text-amber-300";
+  if (value === "Immature") return "bg-sky-400/15 text-sky-300";
+  return "bg-secondary text-muted-foreground";
+}
+
+function qualityStateLabel(value: string, en: boolean) {
+  if (en) return value || "Unavailable";
+  return ({ Available: "利用可能", LowConfidence: "低信頼", Immature: "観測未成熟", Unavailable: "利用不可" } as Record<string, string>)[value] ?? "利用不可";
+}
+
+function qualityReasonText(value: string, en: boolean) {
+  if (en) return String(value || "not_available").replaceAll("_", " ");
+  const labels: Record<string, string> = {
+    message_activity_observed: "投稿活動を観測済み",
+    no_message_activity: "期間内の投稿活動なし",
+    engagement_window_immature: "Engagementの観測期間が不足",
+    live_join_sources_only: "ライブ加入イベントのみを使用",
+    unverified_sources_excluded: "同期・未検証の加入イベントを除外",
+    sync_or_unverified_join_sources_only: "同期・未検証の加入イベントしかありません",
+    retention_unverified_sources_only: "Retentionを検証可能なライブ加入データがありません",
+    retention_window_immature: "Retentionの観測期間が不足",
+    no_eligible_live_join_cohort: "判定可能なライブ加入コホートなし",
+    small_live_join_cohort: "ライブ加入コホートが少数",
+    author_sample_sufficient: "投稿者サンプルは十分",
+    insufficient_unique_authors: "投稿者サンプルが不足",
+    voice_sessions_valid: "Voiceセッションは正常",
+    voice_not_observed: "Voiceデータ未観測",
+    voice_sessions_all_invalid: "Voiceセッションがすべて無効",
+    voice_window_immature: "Voiceの観測期間が不足",
+    voice_outliers_excluded: "Voice異常セッションを除外",
+    voice_outlier_rate_high: "Voice異常率が高いため暫定値のみ",
+    small_voice_sample: "Voiceセッションが少数",
+    membership_sample_sufficient: "参加・退出サンプルは十分",
+    small_membership_sample: "参加・退出サンプルが少数",
+    no_membership_events: "参加・退出イベントなし",
+    reaction_collection_mature: "Reaction収集期間は成熟",
+    reaction_collection_recent: "Reaction収集期間が30日未満",
+    reaction_collection_immature: "Reaction収集期間が14日未満",
+    reaction_not_observed: "Reactionデータ未観測",
+    small_reaction_sample: "Reactionイベントが少数",
+  };
+  return labels[value] ?? String(value || "利用できる根拠データがありません");
 }
 
 function DiagnosticsView({ data, en }: { data: AnalyticsData; en: boolean }) {

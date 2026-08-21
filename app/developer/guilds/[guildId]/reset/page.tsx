@@ -67,7 +67,6 @@ type ResetExecution = {
   dryRun: boolean
   reason: string
   status: string
-  backupPath: string | null
   requestedCount: number
   successCount: number
   failedCount: number
@@ -93,7 +92,6 @@ type Backup = {
   executionId: string
   planId: string
   fileName: string
-  filePath: string
   fileSize: number
   checksum: string
   schemaVersion: number
@@ -176,25 +174,40 @@ export default function GuildResetPage() {
     reason: '',
   })
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (includeBackups = true) => {
     try {
-      const [historyResponse, backupResponse] = await Promise.all([
-        fetch(`/api/developer/guilds/${guildId}/reset/history`, { cache: 'no-store' }),
-        fetch(`/api/developer/guilds/${guildId}/reset/backups`, { cache: 'no-store' }),
-      ])
+      const historyResponse = await fetch(
+        `/api/developer/guilds/${guildId}/reset/history?includeItems=false`,
+        { cache: 'no-store' },
+      )
       if (historyResponse.status === 403) {
         setForbidden(true)
         return
       }
       const history = await historyResponse.json().catch(() => null)
-      const backupData = await backupResponse.json().catch(() => null)
       if (!historyResponse.ok) throw new Error(history?.error || '管理データを取得できません。')
+      const nextRequests = Array.isArray(history.requests) ? history.requests as ResetRequest[] : []
+      const hasPendingRequest = nextRequests.some(
+        (request) => request.status === 'queued' || request.status === 'running',
+      )
       setGuildName(history.guild?.name || `Guild ${guildId}`)
       setSettings(history.settings ? { ...defaultSettings, ...history.settings } : defaultSettings)
       setPlans(Array.isArray(history.plans) ? history.plans : [])
       setExecutions(Array.isArray(history.executions) ? history.executions : [])
-      setRequests(Array.isArray(history.requests) ? history.requests : [])
-      if (backupResponse.ok) setBackups(Array.isArray(backupData?.backups) ? backupData.backups : [])
+      setRequests(nextRequests)
+      // Backups cannot change while no reset request is completing. Avoid
+      // downloading the same list on every progress poll, then refresh it on
+      // the first completed response.
+      if (includeBackups || !hasPendingRequest) {
+        const backupResponse = await fetch(
+          `/api/developer/guilds/${guildId}/reset/backups`,
+          { cache: 'no-store' },
+        )
+        const backupData = await backupResponse.json().catch(() => null)
+        if (backupResponse.ok) {
+          setBackups(Array.isArray(backupData?.backups) ? backupData.backups : [])
+        }
+      }
       const latestCompletedPlan = (history.requests as ResetRequest[] | undefined)?.find(
         (request) => request.action === 'plan' && request.status === 'completed' && request.result?.planId,
       )
@@ -215,8 +228,6 @@ export default function GuildResetPage() {
 
   useEffect(() => {
     void load()
-    const timer = window.setInterval(() => void load(), 5_000)
-    return () => window.clearInterval(timer)
   }, [load])
 
   useEffect(() => {
@@ -234,6 +245,14 @@ export default function GuildResetPage() {
   const pendingRequest = requests.find(
     (request) => request.status === 'queued' || request.status === 'running',
   )
+
+  useEffect(() => {
+    if (!pendingRequest) return
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load(false)
+    }, 5_000)
+    return () => window.clearInterval(timer)
+  }, [load, pendingRequest])
 
   const updateSettingsList = (
     key: 'protectedChannelIds' | 'protectedRoleIds' | 'allowedAdminIds',
@@ -687,7 +706,7 @@ export default function GuildResetPage() {
                     <FileJson className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
                     <div className="min-w-0">
                       <p className="break-all text-xs font-bold">{backup.fileName}</p>
-                      <p className="mt-1 break-all font-mono text-[10px] text-muted-foreground">{backup.filePath}</p>
+                      <p className="mt-1 text-[10px] text-muted-foreground">Botホストの保護されたバックアップ領域に保存</p>
                       <p className="mt-2 text-[11px] text-muted-foreground">{(backup.fileSize / 1024).toFixed(1)} KB · Schema v{backup.schemaVersion} · {formatDate(backup.createdAt)}</p>
                       <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">SHA-256 {backup.checksum}</p>
                     </div>

@@ -35,7 +35,17 @@ export async function GET(
       windowSeconds: 60,
     })
     const result = await pool.query(
-      'SELECT * FROM "guild_reset_settings" WHERE "guildId" = $1 LIMIT 1',
+      `
+        SELECT
+          "guildId", "enabled", "protectedChannelIds", "protectedRoleIds",
+          "resetLogChannelId", "backupChannelId", "allowedAdminIds",
+          "maxChannelDeletes", "maxRoleDeletes", "maxTotalOperations",
+          "guildCooldownHours", "developerCooldownMinutes", "defaultMode",
+          "createdAt", "updatedAt"
+        FROM "guild_reset_settings"
+        WHERE "guildId" = $1
+        LIMIT 1
+      `,
       [guildId],
     )
     return NextResponse.json(
@@ -141,7 +151,12 @@ export async function PUT(
           "developerCooldownMinutes" = EXCLUDED."developerCooldownMinutes",
           "defaultMode" = EXCLUDED."defaultMode",
           "updatedAt" = now()
-        RETURNING *
+        RETURNING
+          "guildId", "enabled", "protectedChannelIds", "protectedRoleIds",
+          "resetLogChannelId", "backupChannelId", "allowedAdminIds",
+          "maxChannelDeletes", "maxRoleDeletes", "maxTotalOperations",
+          "guildCooldownHours", "developerCooldownMinutes", "defaultMode",
+          "createdAt", "updatedAt"
       `,
       [
         guildId,

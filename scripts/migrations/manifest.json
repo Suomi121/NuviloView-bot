@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "migrations": [
+    {
+      "id": "20260814-nuke-protection-v1",
+      "file": "20260814-nuke-protection-v1.sql",
+      "checksum": "2ba60e16f8c797f8c427f58dff9a95ea64d17756ad52f93d1e721e618d799580",
+      "description": "Create the isolated Security/Nuke Protection tables and indexes.",
+      "risk": "medium",
+      "reversible": false,
+      "manualApprovalRequired": false,
+      "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "security_policy" },
+        { "kind": "table", "name": "security_incident" },
+        { "kind": "index", "name": "security_incident_guild_status_detected_idx" }
+      ]
+    },
+    {
+      "id": "20260816-distributed-runtime",
+      "file": "20260816-distributed-runtime.sql",
+      "downFile": "20260816-distributed-runtime.down.sql",
+      "checksum": "5639b63021c3c6d180fc1391435219eab3faa84ac2fad77de68b1f6c59c2306d",
+      "description": "Create lease and per-instance heartbeat coordination tables.",
+      "risk": "medium",
+      "reversible": true,
+      "manualApprovalRequired": false,
+      "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "service_lease" },
+        { "kind": "table", "name": "service_heartbeat" },
+        { "kind": "index", "name": "service_heartbeat_service_last_idx" }
+      ]
+    },
+    {
+      "id": "20260816-reaction-roles",
+      "file": "20260816-reaction-roles.sql",
+      "downFile": "20260816-reaction-roles.down.sql",
+      "checksum": "1ba31158f90088ba60d9ce6f4abb3dcd98afd2950daca7aa361edfbbc6e70639",
+      "description": "Create reaction-role rules with Guild/message/emoji uniqueness.",
+      "risk": "medium",
+      "reversible": true,
+      "manualApprovalRequired": false,
+      "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "reaction_role_rule" },
+        { "kind": "index", "name": "reaction_role_rule_guild_channel_idx" }
+      ]
+    },
+    {
+      "id": "20260821-branding-schema",
+      "file": "20260821-branding-schema.sql",
+      "checksum": "0e09b545a826c68af804f8712353737ddf5e4e594198b2bb44b2faf87de41dc8",
+      "description": "Bring the OEM branding table under explicit migration management.",
+      "risk": "low",
+      "reversible": false,
+      "manualApprovalRequired": false,
+      "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "branding" }
+      ]
+    },
+    {
+      "id": "20260821-migration-journal",
+      "file": "20260821-migration-journal.sql",
+      "checksum": "ea46b4a4f012256115c1e8e280213ae19c1c2c3a78c2e4c51b72e259a2d484f3",
+      "description": "Create the checksum-protected migration journal.",
+      "risk": "low",
+      "reversible": false,
+      "manualApprovalRequired": false,
+      "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "schema_migration" }
+      ]
+    },
+    {
+      "id": "20260821-retention-indexes",
+      "file": "20260821-retention-indexes.sql",
+      "checksum": "e2a0c11d1079a9d23ef79a77329bce0d0182eb96143649dab0fb8e15f51d5a97",
+      "description": "Add global timestamp indexes required by bounded retention cleanup.",
+      "risk": "medium",
+      "reversible": false,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        { "kind": "index", "name": "discord_message_retention_idx" },
+        { "kind": "index", "name": "service_heartbeat_retention_idx" },
+        { "kind": "index", "name": "guild_member_event_retention_idx" }
+      ]
+    },
+    {
+      "id": "20260821-security-v1",
+      "file": "20260821-security-v1.sql",
+      "downFile": "20260821-security-v1.down.sql",
+      "checksum": "1aa45016fbc7ae8f05036f85db7be15c8a3667bf2b757489ed44f58cdaf37467",
+      "description": "Extend Security policy and incidents for Security v1 operation.",
+      "risk": "high",
+      "reversible": true,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        { "kind": "column", "table": "security_policy", "name": "channelProtection" },
+        { "kind": "column", "table": "security_incident", "name": "incidentType" },
+        { "kind": "index", "name": "security_incident_guild_type_detected_idx" }
+      ]
+    },
+    {
+      "id": "20260821-message-history-import-v2",
+      "file": "20260821-message-history-import-v2.sql",
+      "checksum": "ba1642f1070d3f306791456601b7b784841acdb4512d0ddc75a4e2f94a732817",
+      "description": "Add durable Message History Import v2 jobs, checkpoints, audit metadata, and message provenance.",
+      "risk": "medium",
+      "reversible": false,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        { "kind": "column", "table": "discord_message", "name": "source" },
+        { "kind": "column", "table": "history_import_job", "name": "lastProgressAt" },
+        { "kind": "table", "name": "history_import_channel_progress" },
+        { "kind": "table", "name": "message_import_audit_event" },
+        { "kind": "index", "name": "history_import_job_one_active_per_guild_v2_idx" }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   text,
@@ -9,6 +10,8 @@ import {
   uniqueIndex,
   index,
   jsonb,
+  bigint,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 // --- Better Auth required tables -------------------------------------------
@@ -184,11 +187,17 @@ export const discordMessage = pgTable("discord_message", {
   // applying a member's current roles retroactively to historical activity.
   authorRoleIds: jsonb("authorRoleIds").notNull().default([]),
   content: text("content").notNull(),
+  // Existing rows cannot be reliably classified retroactively. New gateway
+  // and v2 import writes explicitly use live or history_import.
+  source: text("source").notNull().default("existing"),
+  importJobId: integer("importJobId"),
   createdAt: timestamp("createdAt", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  index("discord_message_guild_source_created_idx").on(table.guildId, table.source, table.createdAt),
+]);
 
 // A session starts when a non-bot member joins a voice channel and ends when
 // they leave voice altogether. Moving between voice channels is continuous.
@@ -405,6 +414,21 @@ export const botHeartbeat = pgTable("bot_heartbeat", {
   stoppedAt: timestamp("stoppedAt", { withTimezone: true }),
 });
 
+// Cross-host singleton ownership for the Discord Bot. A single conditional
+// PostgreSQL upsert changes owner and increments the fencing token atomically.
+export const serviceLease = pgTable("service_lease", {
+  serviceKey: text("serviceKey").primaryKey(),
+  ownerInstanceId: text("ownerInstanceId"),
+  hostId: text("hostId"),
+  fencingToken: bigint("fencingToken", { mode: "number" }).notNull().default(0),
+  leaseExpiresAt: timestamp("leaseExpiresAt", { withTimezone: true }).notNull(),
+  acquiredAt: timestamp("acquiredAt", { withTimezone: true }),
+  renewedAt: timestamp("renewedAt", { withTimezone: true }),
+  metadata: jsonb("metadata").notNull().default({}),
+}, (table) => [
+  index("service_lease_expiry_idx").on(table.leaseExpiresAt),
+]);
+
 // Administrator-configured self-service roles. A single message/emoji mapping
 // may grant several bounded, non-privileged roles.
 export const reactionRoleRule = pgTable("reaction_role_rule", {
@@ -421,6 +445,57 @@ export const reactionRoleRule = pgTable("reaction_role_rule", {
 }, (table) => [
   uniqueIndex("reaction_role_rule_target_unique").on(table.guildId, table.messageId, table.emojiKey),
   index("reaction_role_rule_guild_channel_idx").on(table.guildId, table.channelId),
+]);
+
+// Each process launch keeps a distinct row so operators can distinguish the
+// active owner from stale, contended, or previously stopped instances.
+export const serviceHeartbeat = pgTable("service_heartbeat", {
+  instanceId: text("instanceId").primaryKey(),
+  serviceKey: text("serviceKey")
+    .notNull()
+    .references(() => serviceLease.serviceKey, { onDelete: "restrict" }),
+  hostId: text("hostId").notNull(),
+  fencingToken: bigint("fencingToken", { mode: "number" }),
+  platform: text("platform").notNull(),
+  hostname: text("hostname").notNull(),
+  pid: integer("pid").notNull(),
+  startedAt: timestamp("startedAt", { withTimezone: true }).notNull(),
+  lastHeartbeatAt: timestamp("lastHeartbeatAt", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  status: text("status").notNull(),
+  leaseState: text("leaseState").notNull(),
+  appVersion: text("appVersion").notNull(),
+  runtimeVersion: text("runtimeVersion").notNull(),
+  commitSha: text("commitSha"),
+  guildCount: integer("guildCount").notNull().default(0),
+  metadata: jsonb("metadata").notNull().default({}),
+  stoppedAt: timestamp("stoppedAt", { withTimezone: true }),
+}, (table) => [
+  index("service_heartbeat_service_last_idx").on(table.serviceKey, table.lastHeartbeatAt),
+  index("service_heartbeat_host_last_idx").on(table.hostId, table.lastHeartbeatAt),
+  index("service_heartbeat_service_started_idx").on(table.serviceKey, table.startedAt),
+]);
+
+// Append-only journal used by the reviewed migration runner. It stores only
+// migration metadata and checksums, never credentials or application data.
+export const schemaMigration = pgTable("schema_migration", {
+  id: text("id").primaryKey(),
+  checksum: text("checksum").notNull(),
+  description: text("description").notNull(),
+  risk: text("risk").notNull(),
+  appliedAt: timestamp("appliedAt", { withTimezone: true }).notNull().defaultNow(),
+  appliedBy: text("appliedBy").notNull(),
+});
+
+// Persistent backing for the distributed API rate limiter.
+export const apiRateLimit = pgTable("api_rate_limit", {
+  key: text("key").notNull(),
+  bucketStart: timestamp("bucketStart", { withTimezone: true }).notNull(),
+  count: integer("count").notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.key, table.bucketStart] }),
+  index("api_rate_limit_bucket_start_idx").on(table.bucketStart),
 ]);
 
 // Notifications are scoped to the signed-in dashboard user. Deletion is soft so
@@ -474,16 +549,101 @@ export const historyImportJob = pgTable("history_import_job", {
     .references(() => user.id, { onDelete: "cascade" }),
   days: integer("days").notNull(),
   mode: text("mode").notNull().default("standard"),
+  version: integer("version").notNull().default(1),
+  source: text("source").notNull().default("legacy"),
   status: text("status").notNull().default("queued"),
   processedMessages: integer("processedMessages").notNull().default(0),
   failedChannels: integer("failedChannels").notNull().default(0),
+  totalChannels: integer("totalChannels").notNull().default(0),
+  completedChannels: integer("completedChannels").notNull().default(0),
+  skippedChannels: integer("skippedChannels").notNull().default(0),
+  estimatedMessages: integer("estimatedMessages"),
+  fetchedMessages: integer("fetchedMessages").notNull().default(0),
+  insertedMessages: integer("insertedMessages").notNull().default(0),
+  duplicateMessages: integer("duplicateMessages").notNull().default(0),
+  failedMessages: integer("failedMessages").notNull().default(0),
+  currentChannelId: text("currentChannelId"),
+  cancelRequested: boolean("cancelRequested").notNull().default(false),
+  pauseRequested: boolean("pauseRequested").notNull().default(false),
+  safeErrorCode: text("safeErrorCode"),
+  safeErrorSummary: text("safeErrorSummary"),
+  retryState: text("retryState"),
+  retryAfterAt: timestamp("retryAfterAt", { withTimezone: true }),
+  lastApiResponseAt: timestamp("lastApiResponseAt", { withTimezone: true }),
+  lastDbWriteAt: timestamp("lastDbWriteAt", { withTimezone: true }),
+  lastProgressAt: timestamp("lastProgressAt", { withTimezone: true }),
+  lastWorkerHeartbeatAt: timestamp("lastWorkerHeartbeatAt", { withTimezone: true }),
+  workerHostId: text("workerHostId"),
+  workerInstanceId: text("workerInstanceId"),
   requestedAt: timestamp("requestedAt", { withTimezone: true })
     .notNull()
     .defaultNow(),
   startedAt: timestamp("startedAt", { withTimezone: true }),
+  pausedAt: timestamp("pausedAt", { withTimezone: true }),
+  cancelledAt: timestamp("cancelledAt", { withTimezone: true }),
+  failedAt: timestamp("failedAt", { withTimezone: true }),
   completedAt: timestamp("completedAt", { withTimezone: true }),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+  resetAt: timestamp("resetAt", { withTimezone: true }),
+  resetBy: text("resetBy"),
   error: text("error"),
-});
+}, (table) => [
+  index("history_import_job_guild_requested_idx").on(table.guildId, table.requestedAt),
+  index("history_import_job_status_progress_idx").on(table.status, table.lastProgressAt),
+  index("history_import_job_terminal_completed_idx")
+    .on(table.completedAt)
+    .where(sql`${table.status} in ('cancelled', 'completed', 'failed')`),
+  uniqueIndex("history_import_job_one_active_per_guild_v2_idx")
+    .on(table.guildId)
+    .where(sql`${table.status} in ('queued', 'preparing', 'running', 'pausing', 'paused', 'cancelling', 'stalled')`),
+]);
+
+export const historyImportChannelProgress = pgTable("history_import_channel_progress", {
+  id: serial("id").primaryKey(),
+  jobId: integer("jobId").notNull().references(() => historyImportJob.id, { onDelete: "cascade" }),
+  guildId: text("guildId").notNull(),
+  channelId: text("channelId").notNull(),
+  channelName: text("channelName").notNull(),
+  status: text("status").notNull().default("pending"),
+  skipReason: text("skipReason"),
+  nextBeforeMessageId: text("nextBeforeMessageId"),
+  oldestMessageId: text("oldestMessageId"),
+  fetchedCount: integer("fetchedCount").notNull().default(0),
+  insertedCount: integer("insertedCount").notNull().default(0),
+  duplicateCount: integer("duplicateCount").notNull().default(0),
+  failedCount: integer("failedCount").notNull().default(0),
+  skipRequested: boolean("skipRequested").notNull().default(false),
+  retryCount: integer("retryCount").notNull().default(0),
+  retryAfterAt: timestamp("retryAfterAt", { withTimezone: true }),
+  lastApiResponseAt: timestamp("lastApiResponseAt", { withTimezone: true }),
+  lastDbWriteAt: timestamp("lastDbWriteAt", { withTimezone: true }),
+  lastProgressAt: timestamp("lastProgressAt", { withTimezone: true }),
+  startedAt: timestamp("startedAt", { withTimezone: true }),
+  completedAt: timestamp("completedAt", { withTimezone: true }),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+  safeErrorCode: text("safeErrorCode"),
+  safeErrorSummary: text("safeErrorSummary"),
+}, (table) => [
+  uniqueIndex("history_import_channel_job_channel_unique").on(table.jobId, table.channelId),
+  index("history_import_channel_job_status_idx").on(table.jobId, table.status, table.updatedAt),
+  index("history_import_channel_guild_channel_idx").on(table.guildId, table.channelId),
+]);
+
+export const messageImportAuditEvent = pgTable("message_import_audit_event", {
+  id: serial("id").primaryKey(),
+  jobId: integer("jobId"),
+  guildId: text("guildId").notNull(),
+  channelId: text("channelId"),
+  eventType: text("eventType").notNull(),
+  actorId: text("actorId"),
+  counts: jsonb("counts").notNull().default({}),
+  safeErrorCode: text("safeErrorCode"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("message_import_audit_guild_created_idx").on(table.guildId, table.createdAt),
+  index("message_import_audit_job_created_idx").on(table.jobId, table.createdAt),
+  index("message_import_audit_created_idx").on(table.createdAt),
+]);
 
 // Developer-only destructive reset controls. These tables are intentionally
 // isolated from analytics data so the feature can remain disabled without
@@ -626,4 +786,151 @@ export const guildResetRequest = pgTable("guild_reset_request", {
 }, (table) => [
   index("guild_reset_request_status_created_idx").on(table.status, table.createdAt),
   index("guild_reset_request_guild_created_idx").on(table.guildId, table.createdAt),
+]);
+
+// Nuke Protection v1 is isolated from analytics and message storage. Evidence
+// contains Discord IDs and administrative action metadata, never message body.
+export const securityPolicy = pgTable("security_policy", {
+  guildId: text("guildId").primaryKey(),
+  enabled: boolean("enabled").notNull().default(true),
+  mode: text("mode").notNull().default("shadow"),
+  sensitivity: text("sensitivity").notNull().default("balanced"),
+  alertEnabled: boolean("alertEnabled").notNull().default(true),
+  alertChannelId: text("alertChannelId"),
+  manualContainment: boolean("manualContainment").notNull().default(true),
+  automaticContainment: boolean("automaticContainment").notNull().default(false),
+  channelProtection: boolean("channelProtection").notNull().default(true),
+  roleProtection: boolean("roleProtection").notNull().default(true),
+  autoRestore: boolean("autoRestore").notNull().default(false),
+  webhookProtection: boolean("webhookProtection").notNull().default(true),
+  botSpamProtection: boolean("botSpamProtection").notNull().default(true),
+  botDuplicateSpam: boolean("botDuplicateSpam").notNull().default(true),
+  botEveryoneSpam: boolean("botEveryoneSpam").notNull().default(true),
+  detectorThresholds: jsonb("detectorThresholds").notNull().default({}),
+  snapshotEnabled: boolean("snapshotEnabled").notNull().default(true),
+  riskWeights: jsonb("riskWeights").notNull().default({}),
+  thresholds: jsonb("thresholds").notNull().default({}),
+  snapshotRetentionCount: integer("snapshotRetentionCount").notNull().default(7),
+  snapshotRetentionDays: integer("snapshotRetentionDays").notNull().default(30),
+  incidentRetentionDays: integer("incidentRetentionDays").notNull().default(90),
+  protectionStatus: text("protectionStatus").notNull().default("Disabled"),
+  statusReason: text("statusReason"),
+  missingPermissions: jsonb("missingPermissions").notNull().default([]),
+  lastDiagnosticAt: timestamp("lastDiagnosticAt", { withTimezone: true }),
+  lastIncidentAt: timestamp("lastIncidentAt", { withTimezone: true }),
+  updatedBy: text("updatedBy"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const securityTrustedActor = pgTable("security_trusted_actor", {
+  guildId: text("guildId").notNull(),
+  actorId: text("actorId").notNull(),
+  label: text("label"),
+  actorType: text("actorType").notNull().default("unknown"),
+  trustedBy: text("trustedBy").notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("security_trusted_actor_guild_actor_unique").on(table.guildId, table.actorId),
+]);
+
+export const securityIncident = pgTable("security_incident", {
+  id: text("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  actorId: text("actorId"),
+  actorType: text("actorType").notNull().default("unknown"),
+  actorName: text("actorName"),
+  incidentType: text("incidentType"),
+  severity: text("severity").notNull().default("Normal"),
+  riskScore: integer("riskScore").notNull().default(0),
+  riskExplanation: jsonb("riskExplanation").notNull().default({}),
+  actionTaken: jsonb("actionTaken").notNull().default({}),
+  status: text("status").notNull().default("Open"),
+  firstDetectedAt: timestamp("firstDetectedAt", { withTimezone: true }).notNull(),
+  lastDetectedAt: timestamp("lastDetectedAt", { withTimezone: true }).notNull(),
+  actionCount: integer("actionCount").notNull().default(0),
+  trustedActor: boolean("trustedActor").notNull().default(false),
+  guildOwner: boolean("guildOwner").notNull().default(false),
+  selfActor: boolean("selfActor").notNull().default(false),
+  containmentStatus: text("containmentStatus").notNull().default("not_requested"),
+  resolution: text("resolution"),
+  resolutionReason: text("resolutionReason"),
+  alertMessageId: text("alertMessageId"),
+  lastAlertedSeverity: text("lastAlertedSeverity"),
+  lastAlertedAt: timestamp("lastAlertedAt", { withTimezone: true }),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("security_incident_guild_status_detected_idx").on(table.guildId, table.status, table.lastDetectedAt),
+  index("security_incident_guild_actor_detected_idx").on(table.guildId, table.actorId, table.lastDetectedAt),
+  index("security_incident_guild_type_detected_idx").on(table.guildId, table.incidentType, table.lastDetectedAt),
+]);
+
+export const securityIncidentAction = pgTable("security_incident_action", {
+  id: serial("id").primaryKey(),
+  incidentId: text("incidentId").notNull(),
+  guildId: text("guildId").notNull(),
+  auditLogEntryId: text("auditLogEntryId").notNull(),
+  actionType: text("actionType").notNull(),
+  actorId: text("actorId"),
+  targetId: text("targetId"),
+  occurredAt: timestamp("occurredAt", { withTimezone: true }).notNull(),
+  riskWeight: integer("riskWeight").notNull().default(0),
+  destructive: boolean("destructive").notNull().default(false),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("security_incident_action_audit_entry_unique").on(table.auditLogEntryId),
+  index("security_incident_action_incident_occurred_idx").on(table.incidentId, table.occurredAt),
+  index("security_incident_action_guild_actor_occurred_idx").on(table.guildId, table.actorId, table.occurredAt),
+]);
+
+export const securitySnapshot = pgTable("security_snapshot", {
+  id: text("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  source: text("source").notNull().default("manual"),
+  schemaVersion: integer("schemaVersion").notNull().default(1),
+  checksum: text("checksum").notNull(),
+  data: jsonb("data").notNull(),
+  createdBy: text("createdBy"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("security_snapshot_guild_created_idx").on(table.guildId, table.createdAt),
+]);
+
+export const securityAuditEvent = pgTable("security_audit_event", {
+  id: serial("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  incidentId: text("incidentId"),
+  eventType: text("eventType").notNull(),
+  actorId: text("actorId"),
+  actorName: text("actorName"),
+  source: text("source").notNull().default("bot"),
+  details: jsonb("details").notNull().default({}),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("security_audit_event_guild_created_idx").on(table.guildId, table.createdAt),
+  index("security_audit_event_incident_created_idx").on(table.incidentId, table.createdAt),
+]);
+
+// Vercel cannot directly mutate Discord. Authorized requests are claimed by
+// the connected Bot and completed with a bounded result document.
+export const securityActionRequest = pgTable("security_action_request", {
+  id: text("id").primaryKey(),
+  guildId: text("guildId").notNull(),
+  incidentId: text("incidentId"),
+  action: text("action").notNull(),
+  requestedBy: text("requestedBy").notNull(),
+  requestedByName: text("requestedByName"),
+  payload: jsonb("payload").notNull().default({}),
+  status: text("status").notNull().default("queued"),
+  result: jsonb("result"),
+  errorCode: text("errorCode"),
+  errorMessage: text("errorMessage"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  claimedAt: timestamp("claimedAt", { withTimezone: true }),
+  completedAt: timestamp("completedAt", { withTimezone: true }),
+}, (table) => [
+  index("security_action_request_status_created_idx").on(table.status, table.createdAt),
+  index("security_action_request_guild_created_idx").on(table.guildId, table.createdAt),
 ]);

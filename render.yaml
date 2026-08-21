@@ -16,6 +16,20 @@ services:
         sync: false
       - key: NUVILOVIEW_CLIENT_ID
         sync: false
+      - key: NUVILOVIEW_DISTRIBUTED_SINGLETON
+        value: "false"
+      - key: NUVILOVIEW_DEPLOYMENT_ENV
+        value: "production"
+      - key: NUVILOVIEW_SERVICE_KEY
+        value: "nuviloview.discord-bot.production"
+      - key: NUVILOVIEW_HOST_ID
+        value: "render-production"
+      - key: NUVILOVIEW_LEASE_TTL_SECONDS
+        value: "45"
+      - key: NUVILOVIEW_LEASE_RENEW_SECONDS
+        value: "15"
+      - key: NUVILOVIEW_HEARTBEAT_SECONDS
+        value: "15"
       - key: DISCORD_DEV_GUILD_ID
         sync: false
       - key: MESSAGE_RETENTION_DAYS

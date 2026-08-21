@@ -2,17 +2,54 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   SNIPE_RETENTION_MS,
+  SNIPE_RETENTION_DAYS,
+  SNIPE_CLEANUP_TIMER_MAX_MS,
+  SNIPE_HISTORY_LIMIT,
   SNIPE_RESULT_SESSION_MS,
   canDeleteSnipeResult,
   createSnipeDeleteCustomId,
   createSnipePageCustomId,
+  escapeSnipeText,
+  getSnipeCleanupDelay,
+  limitSnipeHistory,
   parseSnipeDeleteCustomId,
   parseSnipePageCustomId,
 } from "../lib/snipe-utils.mjs";
 
-test("Snipe history is retained for three days while result controls expire sooner", () => {
-  assert.equal(SNIPE_RETENTION_MS, 3 * 24 * 60 * 60 * 1_000);
+test("Snipe text cannot trigger mentions or break code blocks", () => {
+  const escaped = escapeSnipeText("@everyone **alert** ```danger```", 360);
+  assert.equal(escaped.includes("@everyone"), false);
+  assert.equal(escaped.includes("```"), false);
+  assert.match(escaped, /＠everyone/);
+});
+
+test("Snipe history is retained for 90 days while result controls expire sooner", () => {
+  assert.equal(SNIPE_RETENTION_DAYS, 90);
+  assert.equal(SNIPE_RETENTION_MS, 90 * 24 * 60 * 60 * 1_000);
   assert.equal(SNIPE_RESULT_SESSION_MS, 15 * 60 * 1_000);
+  assert.equal(SNIPE_HISTORY_LIMIT, 999_999);
+});
+
+test("Snipe cleanup safely divides a 90-day wait into Node-compatible timers", () => {
+  const now = Date.UTC(2026, 7, 16);
+  assert.equal(
+    getSnipeCleanupDelay(now + SNIPE_RETENTION_MS, now),
+    SNIPE_CLEANUP_TIMER_MAX_MS,
+  );
+  assert.equal(getSnipeCleanupDelay(now - 1_000, now), 1);
+});
+
+test("Snipe history discards oldest records beyond the configured maximum", () => {
+  const newestFirst = [
+    { messageId: "newest" },
+    { messageId: "middle" },
+    { messageId: "oldest" },
+  ];
+  assert.deepEqual(
+    limitSnipeHistory(newestFirst, 2).map((record) => record.messageId),
+    ["newest", "middle"],
+  );
+  assert.throws(() => limitSnipeHistory(newestFirst, 0), RangeError);
 });
 
 test("Snipe delete component is bound to its command executor", () => {

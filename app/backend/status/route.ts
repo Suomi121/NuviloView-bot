@@ -55,25 +55,73 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // 📊 1. グラフ用の過去14日間のデータを取得
-    const result = await pool.query<{ label: string; value: number; memberCount: number; reactionCount: number; activeMemberCount: number }>(`
-      SELECT
-        to_char(stats.date, 'MM/DD') as label,
-        stats."messageCount"::int as value,
-        stats."memberCount"::int as "memberCount",
-        stats."reactionCount"::int as "reactionCount",
-        COALESCE(active."activeMemberCount", 0)::int as "activeMemberCount"
-      FROM "daily_stats" stats
-      LEFT JOIN (
+    // The chart used to fetch the same date range three times (daily stats,
+    // stored messages, and member activity). Return one row per day instead so
+    // Neon sends one consolidated result set while the response stays identical.
+    const dailyTrendResult = await pool.query<{
+      label: string
+      hasDailyStats: boolean
+      dailyMessageCount: number
+      value: number
+      memberCount: number
+      reactionCount: number
+      activeMemberCount: number
+    }>(`
+      WITH dates AS (
+        SELECT generate_series(CURRENT_DATE - ($2::int - 1), CURRENT_DATE, interval '1 day')::date AS date
+      ), stored_messages AS (
+        SELECT "createdAt"::date AS date, COUNT("id")::int AS value
+        FROM "discord_message"
+        WHERE "guildId" = $1
+          AND "createdAt" >= CURRENT_DATE - ($2::int - 1)
+        GROUP BY "createdAt"::date
+      ), active_members AS (
         SELECT date, COUNT(*)::int AS "activeMemberCount"
         FROM "daily_active_member"
         WHERE "guildId" = $1 AND date >= CURRENT_DATE - ($2::int - 1)
         GROUP BY date
-      ) active ON active.date = stats.date
-      WHERE stats."guildId" = $1 AND stats.date >= CURRENT_DATE - ($2::int - 1)
-      ORDER BY stats.date ASC
+      )
+      SELECT
+        to_char(dates.date, 'MM/DD') AS label,
+        (stats.date IS NOT NULL) AS "hasDailyStats",
+        COALESCE(stats."messageCount", 0)::int AS "dailyMessageCount",
+        GREATEST(
+          COALESCE(stats."messageCount", 0),
+          COALESCE(stored_messages.value, 0)
+        )::int AS value,
+        COALESCE((
+          SELECT previous_stats."memberCount"::int
+          FROM "daily_stats" AS previous_stats
+          WHERE previous_stats."guildId" = $1 AND previous_stats.date <= dates.date
+          ORDER BY previous_stats.date DESC
+          LIMIT 1
+        ), 0)::int AS "memberCount",
+        COALESCE(stats."reactionCount", 0)::int AS "reactionCount",
+        COALESCE(active_members."activeMemberCount", 0)::int AS "activeMemberCount"
+      FROM dates
+      LEFT JOIN "daily_stats" AS stats
+        ON stats."guildId" = $1 AND stats.date = dates.date
+      LEFT JOIN stored_messages ON stored_messages.date = dates.date
+      LEFT JOIN active_members ON active_members.date = dates.date
+      ORDER BY dates.date ASC
     `, [guildId, days])
-    const rows = result.rows
+    const rows = dailyTrendResult.rows
+      .filter((row) => row.hasDailyStats)
+      .map((row) => ({
+        label: row.label,
+        value: row.dailyMessageCount,
+        memberCount: row.memberCount,
+        reactionCount: row.reactionCount,
+        activeMemberCount: row.activeMemberCount,
+      }))
+    const messageTrend = dailyTrendResult.rows.map((row) => ({
+      label: row.label,
+      value: row.value,
+    }))
+    const memberTrend = dailyTrendResult.rows.map((row) => ({
+      memberCount: row.memberCount,
+      activeMemberCount: row.activeMemberCount,
+    }))
     const botStatusResult = await pool.query<{
       lastRecordedAt: Date | null
       lastPermissionCheckAt: Date | null
@@ -96,11 +144,13 @@ export async function GET(request: Request) {
           FROM "bot_channel_access"
           WHERE "guildId" = $1 AND "canRead" = false
         ), 0)::int AS "unreadableChannelCount",
-        COALESCE((
-          SELECT ARRAY_AGG("channelName" ORDER BY "channelName")
+        ARRAY(
+          SELECT "channelName"
           FROM "bot_channel_access"
           WHERE "guildId" = $1 AND "canRead" = false
-        ), ARRAY[]::text[]) AS "unreadableChannelNames"
+          ORDER BY "channelName"
+          LIMIT 3
+        ) AS "unreadableChannelNames"
     `, [guildId])
     const botStatus = botStatusResult.rows[0] ?? {
       lastRecordedAt: null,
@@ -108,50 +158,6 @@ export async function GET(request: Request) {
       unreadableChannelCount: 0,
       unreadableChannelNames: [],
     }
-    const messageTrendResult = await pool.query<{ label: string; value: number }>(`
-      WITH dates AS (
-        SELECT generate_series(CURRENT_DATE - ($2::int - 1), CURRENT_DATE, interval '1 day')::date AS date
-      ), stored_messages AS (
-        SELECT "createdAt"::date AS date, COUNT("id")::int AS value
-        FROM "discord_message"
-        WHERE "guildId" = $1
-          AND "createdAt" >= CURRENT_DATE - ($2::int - 1)
-        GROUP BY "createdAt"::date
-      )
-      SELECT
-        to_char(dates.date, 'MM/DD') AS label,
-        GREATEST(
-          COALESCE(stats."messageCount", 0),
-          COALESCE(stored_messages.value, 0)
-        )::int AS value
-      FROM dates
-      LEFT JOIN "daily_stats" AS stats
-        ON stats."guildId" = $1 AND stats.date = dates.date
-      LEFT JOIN stored_messages ON stored_messages.date = dates.date
-      ORDER BY dates.date ASC
-    `, [guildId, days])
-    const messageTrend = messageTrendResult.rows
-    const memberTrendResult = await pool.query<{ memberCount: number; activeMemberCount: number }>(`
-      WITH dates AS (
-        SELECT generate_series(CURRENT_DATE - ($2::int - 1), CURRENT_DATE, interval '1 day')::date AS date
-      )
-      SELECT
-        COALESCE((
-          SELECT stats."memberCount"::int
-          FROM "daily_stats" AS stats
-          WHERE stats."guildId" = $1 AND stats.date <= dates.date
-          ORDER BY stats.date DESC
-          LIMIT 1
-        ), 0)::int AS "memberCount",
-        COALESCE((
-          SELECT COUNT(*)::int
-          FROM "daily_active_member" AS active
-          WHERE active."guildId" = $1 AND active.date = dates.date
-        ), 0)::int AS "activeMemberCount"
-      FROM dates
-      ORDER BY dates.date ASC
-    `, [guildId, days])
-    const memberTrend = memberTrendResult.rows
     const totalMessageResult = await pool.query<{ count: number }>(`
       SELECT COUNT(*)::int AS count FROM "discord_message" WHERE "guildId" = $1
     `, [guildId])
@@ -167,10 +173,6 @@ export async function GET(request: Request) {
       WHERE "guildId" = $1
       ORDER BY "occurredAt" DESC
       LIMIT 5
-    `, [guildId])
-    const activeMemberResult = await pool.query<{ count: number }>(`
-      SELECT COUNT(*)::int AS count FROM "daily_active_member"
-      WHERE "guildId" = $1 AND date = CURRENT_DATE
     `, [guildId])
     const comparisonResult = await pool.query<{ previousMemberCount: number; previousActiveMemberCount: number; previousMessageCount: number; previousReactionRate: number }>(`
       SELECT
@@ -337,7 +339,7 @@ export async function GET(request: Request) {
         latestMemberCount: memberTrend.at(-1)?.memberCount ?? 0, // カード用
         latestMessageCount: messageTrend.at(-1)?.value ?? 0, // カード用
         totalMessageCount,
-        activeMemberCount: activeMemberResult.rows[0]?.count ?? 0,
+        activeMemberCount: memberTrend.at(-1)?.activeMemberCount ?? 0,
         previousMemberCount: comparison.previousMemberCount,
         previousActiveMemberCount: comparison.previousActiveMemberCount,
         periodMessageCount: messageTrend.reduce((sum, row) => sum + row.value, 0),
@@ -371,7 +373,7 @@ export async function GET(request: Request) {
     const previousMessages = previousWeek.reduce((sum, row) => sum + row.messageCount, 0)
     const memberDelta = latestData.memberCount - (previousWeek.at(-1)?.memberCount ?? latestData.memberCount)
     const messageDelta = previousMessages > 0 ? Math.round(((recentMessages - previousMessages) / previousMessages) * 100) : 0
-    const activeMemberCount = activeMemberResult.rows[0]?.count ?? 0
+    const activeMemberCount = memberTrend.at(-1)?.activeMemberCount ?? 0
     const periodMessageCount = messageTrend.reduce((sum, row) => sum + row.value, 0)
     const livePeriodMessageCount = rows.reduce((sum, row) => sum + row.value, 0)
     const periodReactionCount = rows.reduce((sum, row) => sum + row.reactionCount, 0)

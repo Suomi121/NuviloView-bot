@@ -2,7 +2,7 @@ import { ArrowRight, ArrowUpRight, Bot, Check, ShieldCheck } from 'lucide-react'
 import { LoginButton } from '@/components/login-button'
 
 export function HeroSection() {
-  const clientId = process.env.DISCORD_CLIENT_ID
+  const clientId = process.env.NUVILOVIEW_CLIENT_ID ?? process.env.DISCORD_CLIENT_ID
   const botInviteUrl = clientId
     ? `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=1099511721094&integration_type=0&scope=bot%20applications.commands`
     : null
@@ -79,7 +79,7 @@ export function HeroSection() {
                 Botを追加 <ArrowUpRight className="h-3.5 w-3.5" />
               </a>
             ) : (
-              <span className="shrink-0 rounded-lg border border-border px-3.5 py-2.5 text-xs font-medium text-muted-foreground">Bot設定を準備中</span>
+              <a href="/support" className="shrink-0 rounded-lg border border-border px-3.5 py-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground">Bot招待を確認できません · サポート</a>
             )}
           </div>
           <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 border-t border-border/70 pt-3 text-[11px] text-muted-foreground">

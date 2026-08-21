@@ -26,9 +26,19 @@ import {
 } from "discord.js";
 import { neon } from "@neondatabase/serverless";
 import { createHmac, randomInt, randomUUID } from "node:crypto";
-import { escapeScopeText, formatScopeMessage, plainComponentText } from "./lib/scopeserver-utils.mjs";
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { createGuildResetService } from "./lib/guild-reset-service.mjs";
 import { getGuildResetConfig, isResetDeveloper, parseIdList } from "./lib/guild-reset-utils.mjs";
+import { createNukeProtectionService } from "./lib/nuke-protection-service.mjs";
+import {
+  RUNTIME_EXIT_CODES,
+  RuntimeCoordinator,
+  createRuntimeIdentity,
+  createRuntimeLeaseRepository,
+  getRuntimeConfig,
+  validateRuntimeConfig,
+} from "./lib/runtime-singleton.mjs";
 import {
   formatModerationActionResult,
   getModerationTargetError,
@@ -64,6 +74,7 @@ import {
   defaultSpamProtectionConfig,
   getAutomaticSpamProtectionBlockReason,
   parseSpamActionCustomId,
+  shouldTrackSpamMessage,
 } from "./lib/spam-protection.mjs";
 import {
   SNIPE_HISTORY_LIMIT,
@@ -72,6 +83,9 @@ import {
   canDeleteSnipeResult,
   createSnipeDeleteCustomId,
   createSnipePageCustomId,
+  escapeSnipeText,
+  getSnipeCleanupDelay,
+  limitSnipeHistory,
   parseSnipeDeleteCustomId,
   parseSnipePageCustomId,
 } from "./lib/snipe-utils.mjs";
@@ -87,6 +101,14 @@ import {
   normalizeReactionRoleIds,
   parseReactionRoleEmoji,
 } from "./lib/reaction-role-utils.mjs";
+import {
+  MESSAGE_SOURCE,
+  getMessageImportConfig,
+} from "./lib/message-history-import.mjs";
+import {
+  createMessageHistoryImportRepository,
+  createMessageHistoryImportWorker,
+} from "./lib/message-history-import-worker.mjs";
 
 if (!process.env.DATABASE_URL || !process.env.NUVILOVIEW_BOT_TOKEN) {
   throw new Error(
@@ -95,11 +117,17 @@ if (!process.env.DATABASE_URL || !process.env.NUVILOVIEW_BOT_TOKEN) {
 }
 
 const sql = neon(process.env.DATABASE_URL);
+const runtimeConfig = getRuntimeConfig(process.env);
+const runtimeIdentity = createRuntimeIdentity(process.env);
+const runtimeRepository = createRuntimeLeaseRepository((text, parameters) =>
+  sql.query(text, parameters),
+);
 const messageRetentionDays = Number.isInteger(
   Number(process.env.MESSAGE_RETENTION_DAYS),
 )
   ? Math.min(Math.max(Number(process.env.MESSAGE_RETENTION_DAYS), 7), 365)
   : 90;
+const messageImportConfig = getMessageImportConfig(process.env);
 const libreTranslateUrl = (process.env.LIBRETRANSLATE_URL?.trim() || "http://127.0.0.1:5000").replace(/\/+$/, "");
 const libreTranslateVersion = process.env.LIBRETRANSLATE_VERSION?.trim() || "1.9.6";
 const translationMonthlyLimit = 600_000;
@@ -152,6 +180,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.MessageContent,
   ],
@@ -170,10 +199,52 @@ const commandSyncCooldownMs = 60 * 1000;
 const guildCommandSyncCooldownMs = 5 * 60 * 1000;
 const commandSyncAttempts = new Map();
 const botServersAttempts = new Map();
-const scopeServerAttempts = new Map();
 const guildCommandSyncAttempts = new Map();
 const blockedGuildIds = new Set();
+const messageHistoryImportRepository = createMessageHistoryImportRepository((text, parameters) =>
+  sql.query(text, parameters),
+);
+const messageHistoryImportWorker = createMessageHistoryImportWorker({
+  repository: messageHistoryImportRepository,
+  discordClient: client,
+  config: messageImportConfig,
+  identity: runtimeIdentity,
+  isGuildBlocked,
+  roleIdsForMessage: (message) => analyticsRoleIds(message.member),
+});
+// Keep the last successful DB snapshots in memory. Gateway events may ask for
+// the same inventory repeatedly, but unchanged JSON does not need to cross the
+// Neon connection or rewrite every row again.
+const channelAccessSnapshots = new Map();
+const analyticsInventorySnapshots = new Map();
 const guildResetConfig = getGuildResetConfig();
+const nukeProtectionService = createNukeProtectionService({
+  client,
+  sql,
+  environment: process.env,
+});
+let runtimeCoordinator = null;
+const runtimeOperationalMetrics = {
+  discordReadyAt: null,
+  lastDiscordDisconnectAt: null,
+  lastDiscordReconnectAt: null,
+  lastDiscordResumeAt: null,
+  lastDiscordInvalidSessionAt: null,
+  lastDiscordErrorAt: null,
+  lastDiscordLoginFailureAt: null,
+  lastDiscordRateLimitAt: null,
+  lastAnalyticsSuccessAt: null,
+  lastAnalyticsFailureAt: null,
+  disconnectCount: 0,
+  reconnectCount: 0,
+  rateLimitCount: 0,
+};
+
+function updateRuntimeOperationalMetrics(values) {
+  Object.assign(runtimeOperationalMetrics, values);
+  if (runtimeCoordinator) void runtimeCoordinator.recordNow();
+}
+
 let lastPresenceGuildCount = null;
 const translationAttempts = new Map();
 const translationRequests = new Map();
@@ -198,11 +269,6 @@ const spamTrackerPruneTimer = setInterval(
   Math.max(spamWindowMs * 2, 60_000),
 );
 spamTrackerPruneTimer.unref();
-const scopeServerRequests = new Map();
-const scopeServerRequestLifetimeMs = 5 * 60 * 1000;
-const scopeServerCooldownMs = 10 * 1000;
-const scopeChannelPageSize = 25;
-const scopeMessagePageSize = 5;
 const helpCommand = new SlashCommandBuilder()
   .setName("help")
   .setDescription("NuviloChan Botで使えるコマンドを表示します")
@@ -311,17 +377,32 @@ const setRollCommand = new SlashCommandBuilder()
           .setRequired(true),
       )
       .addStringOption((option) =>
-        option.setName("message_id").setDescription("対象メッセージのID").setRequired(true).setMinLength(16).setMaxLength(22),
+        option
+          .setName("message_id")
+          .setDescription("対象メッセージのID")
+          .setRequired(true)
+          .setMinLength(16)
+          .setMaxLength(22),
       )
       .addStringOption((option) =>
-        option.setName("emoji").setDescription("付与に使用するUnicode絵文字またはカスタム絵文字").setRequired(true).setMinLength(1).setMaxLength(128),
+        option
+          .setName("emoji")
+          .setDescription("付与に使用するUnicode絵文字またはカスタム絵文字")
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(128),
       )
       .addRoleOption((option) =>
-        option.setName("role_1").setDescription("付与するロール1").setRequired(true),
+        option
+          .setName("role_1")
+          .setDescription("付与するロール1")
+          .setRequired(true),
       );
     for (let index = 2; index <= REACTION_ROLE_LIMIT; index += 1) {
       subcommand.addRoleOption((option) =>
-        option.setName(`role_${index}`).setDescription(`付与するロール${index}`),
+        option
+          .setName(`role_${index}`)
+          .setDescription(`付与するロール${index}`),
       );
     }
     return subcommand;
@@ -331,13 +412,27 @@ const setRollCommand = new SlashCommandBuilder()
       .setName("remove")
       .setDescription("登録済みのリアクションロール設定を削除します")
       .addChannelOption((option) =>
-        option.setName("channel").setDescription("対象メッセージがあるチャンネル").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true),
+        option
+          .setName("channel")
+          .setDescription("対象メッセージがあるチャンネル")
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+          .setRequired(true),
       )
       .addStringOption((option) =>
-        option.setName("message_id").setDescription("対象メッセージのID").setRequired(true).setMinLength(16).setMaxLength(22),
+        option
+          .setName("message_id")
+          .setDescription("対象メッセージのID")
+          .setRequired(true)
+          .setMinLength(16)
+          .setMaxLength(22),
       )
       .addStringOption((option) =>
-        option.setName("emoji").setDescription("削除する設定の絵文字").setRequired(true).setMinLength(1).setMaxLength(128),
+        option
+          .setName("emoji")
+          .setDescription("削除する設定の絵文字")
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(128),
       ),
   )
   .addSubcommand((subcommand) =>
@@ -345,7 +440,10 @@ const setRollCommand = new SlashCommandBuilder()
       .setName("list")
       .setDescription("このサーバーのリアクションロール設定を表示します")
       .addChannelOption((option) =>
-        option.setName("channel").setDescription("このチャンネルの設定だけ表示します").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        option
+          .setName("channel")
+          .setDescription("このチャンネルの設定だけ表示します")
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
       ),
   )
   .toJSON();
@@ -370,24 +468,6 @@ const botServersCommand = new SlashCommandBuilder()
       .setName("page")
       .setDescription("表示するページ番号")
       .setMinValue(1),
-  )
-  .toJSON();
-const scopeServerCommand = new SlashCommandBuilder()
-  .setName("scopeserver")
-  .setDescription("開発者用: 指定サーバーの最近のメッセージを安全に確認します")
-  .addStringOption((option) =>
-    option
-      .setName("server")
-      .setDescription("対象サーバー名またはGuild ID")
-      .setRequired(true)
-      .setAutocomplete(true),
-  )
-  .addIntegerOption((option) =>
-    option
-      .setName("limit")
-      .setDescription("取得する最近のメッセージ数（初期値10件）")
-      .setMinValue(1)
-      .setMaxValue(50),
   )
   .toJSON();
 const diagnosticsCommand = new SlashCommandBuilder()
@@ -546,7 +626,6 @@ const extendedCommands = [
 const developerCommands = [
   commandUpdateCommand,
   botServersCommand,
-  scopeServerCommand,
   diagnosticsCommand,
   guildBlockCommand,
   guildUnblockCommand,
@@ -860,336 +939,6 @@ function updateBotPresence() {
     { type: ActivityType.Playing },
   );
   lastPresenceGuildCount = guildCount;
-}
-
-function getScopeGuildChoices(focusedValue = "") {
-  const query = focusedValue.trim().toLowerCase();
-  return getAvailableBotGuilds()
-    .filter((guild) =>
-      !query || guild.id.includes(query) || guild.name.toLowerCase().includes(query),
-    )
-    .slice(0, 25)
-    .map((guild) => ({
-      name: plainComponentText(`${guild.name} — ${guild.id}`, 100),
-      value: guild.id,
-    }));
-}
-
-async function getScopeableChannels(guild) {
-  const botMember = guild.members.me ?? (await guild.members.fetchMe());
-  const fetched = await guild.channels.fetch();
-  const supported = [...fetched.values()].filter(
-    (channel) =>
-      channel &&
-      (channel.type === ChannelType.GuildText ||
-        channel.type === ChannelType.GuildAnnouncement),
-  );
-  const diagnostics = { supported: supported.length, missingView: 0, missingHistory: 0 };
-  const channels = [];
-
-  for (const channel of supported) {
-    const permissions = channel.permissionsFor(botMember);
-    if (!permissions?.has(PermissionFlagsBits.ViewChannel)) {
-      diagnostics.missingView += 1;
-      continue;
-    }
-    if (!permissions.has(PermissionFlagsBits.ReadMessageHistory)) {
-      diagnostics.missingHistory += 1;
-      continue;
-    }
-    channels.push({
-      id: channel.id,
-      name: channel.name,
-      categoryName: channel.parent?.name ?? "カテゴリなし",
-      position: channel.rawPosition ?? 0,
-    });
-  }
-
-  channels.sort((left, right) =>
-    left.position - right.position || left.name.localeCompare(right.name, "ja"),
-  );
-  return { channels, diagnostics };
-}
-
-function createScopeChannelPicker(request, requestedPage = 0) {
-  const totalPages = Math.max(1, Math.ceil(request.channels.length / scopeChannelPageSize));
-  const page = Math.min(Math.max(requestedPage, 0), totalPages - 1);
-  const currentChannels = request.channels.slice(
-    page * scopeChannelPageSize,
-    (page + 1) * scopeChannelPageSize,
-  );
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(`nvscope:${request.id}:select:${page}`)
-    .setPlaceholder("確認するチャンネルを選択")
-    .addOptions(
-      currentChannels.map((channel) => ({
-        label: plainComponentText(`#${channel.name}`, 100),
-        value: channel.id,
-        description: plainComponentText(`${channel.categoryName} · ID ${channel.id}`, 100),
-      })),
-    );
-  const components = [new ActionRowBuilder().addComponents(select)];
-
-  if (totalPages > 1) {
-    components.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`nvscope:${request.id}:channels:${page - 1}`)
-          .setLabel("前へ")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(page === 0),
-        new ButtonBuilder()
-          .setCustomId(`nvscope:${request.id}:channels:${page + 1}`)
-          .setLabel("次へ")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(page >= totalPages - 1),
-      ),
-    );
-  }
-
-  return {
-    content:
-      `**対象Guild:** ${escapeScopeText(request.guildName, 100)} \`${request.guildId}\`\n` +
-      `Botが閲覧・履歴取得できる通常テキストチャンネルは${request.channels.length.toLocaleString("ja-JP")}件です。確認するチャンネルを選択してください。` +
-      (totalPages > 1 ? `\n-# チャンネル一覧 ${page + 1}/${totalPages}ページ` : ""),
-    embeds: [],
-    components,
-    allowedMentions: { parse: [] },
-  };
-}
-
-function createScopeMessageView(request, requestedPage = 0) {
-  const pages = request.messagePages ?? [[]];
-  const totalPages = Math.max(1, pages.length);
-  const page = Math.min(Math.max(requestedPage, 0), totalPages - 1);
-  const blocks = pages[page] ?? [];
-  const embed = new EmbedBuilder()
-    .setColor(0x7877ff)
-    .setTitle(`${plainComponentText(request.guildName, 80)} · #${plainComponentText(request.channelName, 80)}`)
-    .setDescription(blocks.length ? blocks.join("\n\n") : "このチャンネルに取得可能なメッセージはありません。")
-    .setFooter({
-      text: `取得 ${request.messageCount}件 · Page ${page + 1}/${totalPages} · 古い順に表示 · ${new Date().toLocaleString("ja-JP")}`,
-    });
-  const components = [];
-  if (totalPages > 1) {
-    components.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`nvscope:${request.id}:messages:${page - 1}`)
-          .setLabel("前へ")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(page === 0),
-        new ButtonBuilder()
-          .setCustomId(`nvscope:${request.id}:messages:${page + 1}`)
-          .setLabel("次へ")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(page >= totalPages - 1),
-      ),
-    );
-  }
-  return {
-    content:
-      `-# 開発者専用 · メッセージ本文・添付内容はDBや監査ログへ保存されません · 操作期限 ${Math.ceil(scopeServerRequestLifetimeMs / 60_000)}分`,
-    embeds: [embed],
-    components,
-    allowedMentions: { parse: [] },
-  };
-}
-
-function recordScopeServerAudit({ userId, guildId, channelId = null, count = 0, outcome, reason = null }) {
-  console.info("[scopeserver-audit]", JSON.stringify({
-    command: "scopeserver",
-    userId,
-    guildId,
-    channelId,
-    count,
-    outcome,
-    reason,
-    executedAt: new Date().toISOString(),
-  }));
-}
-
-function classifyScopeServerError(error) {
-  const code = Number(error?.code);
-  const status = Number(error?.status);
-  if (code === 10003) return { reason: "channel_deleted", message: "選択したチャンネルは削除されたか、取得できなくなりました。" };
-  if (code === 10004) return { reason: "guild_unavailable", message: "取得中にBotが対象Guildから退出しました。" };
-  if (code === 50001) return { reason: "missing_access", message: "Botが対象チャンネルへアクセスできません。" };
-  if (code === 50013) return { reason: "missing_permissions", message: "Botのチャンネル権限が不足しています。" };
-  if (status === 429 || code === 20028 || code === 20029) return { reason: "discord_rate_limit", message: "Discord APIのレート制限中です。少し待ってから再実行してください。" };
-  return { reason: `discord_api_${Number.isFinite(code) ? code : "unknown"}`, message: "Discordからメッセージを取得できませんでした。少し待ってから再実行してください。" };
-}
-
-function getScopeServerRequest(requestId) {
-  const request = scopeServerRequests.get(requestId);
-  if (!request || request.expiresAt <= Date.now()) {
-    scopeServerRequests.delete(requestId);
-    return null;
-  }
-  return request;
-}
-
-function scheduleScopeServerExpiry(interaction, request) {
-  const timer = setTimeout(() => {
-    scopeServerRequests.delete(request.id);
-    void interaction.editReply({ components: [] }).catch(() => {});
-  }, scopeServerRequestLifetimeMs);
-  timer.unref?.();
-}
-
-async function handleScopeServerCommand(interaction) {
-  if (!canUseBotServers(interaction)) {
-    await interaction.reply({ content: "このコマンドを実行する権限がありません。", flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  const guildId = interaction.options.getString("server", true).trim();
-  const limit = Math.min(Math.max(interaction.options.getInteger("limit") ?? 10, 1), 50);
-  if (!/^\d{16,22}$/.test(guildId)) {
-    await interaction.reply({ content: "サーバーを候補から選ぶか、正しいGuild IDを入力してください。", flags: MessageFlags.Ephemeral });
-    recordScopeServerAudit({ userId: interaction.user.id, guildId, count: limit, outcome: "failure", reason: "invalid_guild_id" });
-    return;
-  }
-  const guild = client.guilds.cache.get(guildId);
-  if (!guild || isGuildBlocked(guildId)) {
-    await interaction.reply({ content: "Botが参加している対象Guildが見つかりません。退出済み・停止済みの可能性があります。", flags: MessageFlags.Ephemeral });
-    recordScopeServerAudit({ userId: interaction.user.id, guildId, count: limit, outcome: "failure", reason: "guild_not_found" });
-    return;
-  }
-
-  const previousAttempt = scopeServerAttempts.get(interaction.user.id) ?? 0;
-  const remainingSeconds = Math.ceil((scopeServerCooldownMs - (Date.now() - previousAttempt)) / 1000);
-  if (remainingSeconds > 0) {
-    await interaction.reply({ content: `このコマンドは${remainingSeconds}秒後に再実行できます。`, flags: MessageFlags.Ephemeral });
-    return;
-  }
-  scopeServerAttempts.set(interaction.user.id, Date.now());
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-  try {
-    const { channels, diagnostics } = await getScopeableChannels(guild);
-    if (channels.length === 0) {
-      const detail = diagnostics.supported === 0
-        ? "通常のテキスト・アナウンスチャンネルがありません。"
-        : `対象${diagnostics.supported}件のうち、ViewChannel不足 ${diagnostics.missingView}件、ReadMessageHistory不足 ${diagnostics.missingHistory}件です。`;
-      await interaction.editReply({ content: `Botが安全に履歴を取得できるチャンネルがありません。\n${detail}`, allowedMentions: { parse: [] } });
-      recordScopeServerAudit({ userId: interaction.user.id, guildId, count: limit, outcome: "failure", reason: "no_readable_channels" });
-      return;
-    }
-
-    const request = {
-      id: randomUUID().replaceAll("-", "").slice(0, 20),
-      userId: interaction.user.id,
-      guildId,
-      guildName: guild.name,
-      limit,
-      channels,
-      expiresAt: Date.now() + scopeServerRequestLifetimeMs,
-      channelId: null,
-      channelName: null,
-      messageCount: 0,
-      messagePages: null,
-    };
-    scopeServerRequests.set(request.id, request);
-    scheduleScopeServerExpiry(interaction, request);
-    await interaction.editReply(createScopeChannelPicker(request));
-  } catch (error) {
-    const classified = classifyScopeServerError(error);
-    console.error("Scope server channel discovery failed:", safeErrorText(error));
-    await interaction.editReply({ content: classified.message, components: [], allowedMentions: { parse: [] } });
-    recordScopeServerAudit({ userId: interaction.user.id, guildId, count: limit, outcome: "failure", reason: classified.reason });
-  }
-}
-
-async function handleScopeServerComponent(interaction) {
-  if (!canUseBotServers(interaction)) {
-    await interaction.reply({ content: "この操作は開発者本人だけが実行できます。", flags: MessageFlags.Ephemeral });
-    return;
-  }
-  const [, requestId, action, rawPage] = interaction.customId.split(":");
-  const request = getScopeServerRequest(requestId);
-  if (!request) {
-    await interaction.reply({ content: "この操作は期限切れです。`/scopeserver` をもう一度実行してください。", flags: MessageFlags.Ephemeral });
-    return;
-  }
-  if (request.userId !== interaction.user.id) {
-    await interaction.reply({ content: "この操作はコマンド実行者本人だけが使用できます。", flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  if (interaction.isButton() && action === "channels") {
-    const page = Number.parseInt(rawPage, 10);
-    await interaction.update(createScopeChannelPicker(request, Number.isInteger(page) ? page : 0));
-    return;
-  }
-  if (interaction.isButton() && action === "messages") {
-    if (!request.messagePages) {
-      await interaction.reply({ content: "メッセージ一覧を取得できません。コマンドをやり直してください。", flags: MessageFlags.Ephemeral });
-      return;
-    }
-    const page = Number.parseInt(rawPage, 10);
-    await interaction.update(createScopeMessageView(request, Number.isInteger(page) ? page : 0));
-    return;
-  }
-  if (!interaction.isStringSelectMenu() || action !== "select") {
-    await interaction.reply({ content: "この操作を処理できませんでした。", flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  const channelId = interaction.values[0];
-  if (!request.channels.some((channel) => channel.id === channelId)) {
-    await interaction.reply({ content: "選択されたチャンネルは許可済み候補にありません。", flags: MessageFlags.Ephemeral });
-    recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "forged_channel_id" });
-    return;
-  }
-
-  await interaction.deferUpdate();
-  try {
-    const guild = client.guilds.cache.get(request.guildId);
-    if (!guild || isGuildBlocked(request.guildId)) {
-      await interaction.editReply({ content: "取得中にBotが対象Guildから退出したか、Guildが停止されました。", embeds: [], components: [], allowedMentions: { parse: [] } });
-      recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "guild_left_during_request" });
-      return;
-    }
-    const channel = await guild.channels.fetch(channelId).catch(() => null);
-    if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
-      await interaction.editReply({ content: "選択したチャンネルは削除されたか、対応対象ではなくなりました。", embeds: [], components: [], allowedMentions: { parse: [] } });
-      recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "channel_deleted" });
-      return;
-    }
-    const botMember = guild.members.me ?? (await guild.members.fetchMe());
-    const permissions = channel.permissionsFor(botMember);
-    if (!permissions?.has(PermissionFlagsBits.ViewChannel)) {
-      await interaction.editReply({ content: "Botにこのチャンネルの `ViewChannel` 権限がありません。", embeds: [], components: [], allowedMentions: { parse: [] } });
-      recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "missing_view_channel" });
-      return;
-    }
-    if (!permissions.has(PermissionFlagsBits.ReadMessageHistory)) {
-      await interaction.editReply({ content: "Botにこのチャンネルの `ReadMessageHistory` 権限がありません。", embeds: [], components: [], allowedMentions: { parse: [] } });
-      recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: "missing_read_message_history" });
-      return;
-    }
-
-    const fetched = await channel.messages.fetch({ limit: request.limit, cache: false });
-    const messages = [...fetched.values()].sort((left, right) => left.createdTimestamp - right.createdTimestamp);
-    const blocks = messages.map((message, index) => formatScopeMessage(message, index + 1));
-    request.channelId = channel.id;
-    request.channelName = channel.name;
-    request.messageCount = messages.length;
-    request.messagePages = [];
-    for (let index = 0; index < blocks.length; index += scopeMessagePageSize) {
-      request.messagePages.push(blocks.slice(index, index + scopeMessagePageSize));
-    }
-    if (request.messagePages.length === 0) request.messagePages.push([]);
-
-    await interaction.editReply(createScopeMessageView(request));
-    recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: messages.length, outcome: "success" });
-  } catch (error) {
-    const classified = classifyScopeServerError(error);
-    console.error("Scope server message fetch failed:", safeErrorText(error));
-    await interaction.editReply({ content: classified.message, embeds: [], components: [], allowedMentions: { parse: [] } });
-    recordScopeServerAudit({ userId: interaction.user.id, guildId: request.guildId, channelId, count: request.limit, outcome: "failure", reason: classified.reason });
-  }
 }
 
 const translationLanguages = preferredTranslationLanguages.map(
@@ -1828,15 +1577,18 @@ async function loadReactionRoleRules(guildId = null) {
   for (const row of rows) {
     const roleIds = normalizeReactionRoleIds(row.roleIds);
     if (roleIds.length === 0) continue;
-    reactionRoleRules.set(reactionRoleRuleKey(row.guildId, row.messageId, row.emojiKey), {
-      id: Number(row.id),
-      guildId: row.guildId,
-      channelId: row.channelId,
-      messageId: row.messageId,
-      emojiKey: row.emojiKey,
-      emojiDisplay: row.emojiDisplay,
-      roleIds,
-    });
+    reactionRoleRules.set(
+      reactionRoleRuleKey(row.guildId, row.messageId, row.emojiKey),
+      {
+        id: Number(row.id),
+        guildId: row.guildId,
+        channelId: row.channelId,
+        messageId: row.messageId,
+        emojiKey: row.emojiKey,
+        emojiDisplay: row.emojiDisplay,
+        roleIds,
+      },
+    );
   }
 }
 
@@ -1850,11 +1602,15 @@ function getReactionRoleSafetyError(role, guild, botMember) {
   const dangerous = reactionRoleDeniedPermissions.find(([permission]) =>
     role.permissions.has(permission),
   );
-  return dangerous ? `${role.name}には「${dangerous[1]}」権限があるため登録できません。` : null;
+  if (dangerous) return `${role.name}には「${dangerous[1]}」権限があるため登録できません。`;
+  return null;
 }
 
 async function requireReactionRoleAdministrator(interaction) {
-  if (interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+  if (
+    interaction.inGuild() &&
+    interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+  ) {
     return true;
   }
   await interaction.reply({
@@ -1877,20 +1633,23 @@ async function handleSetRollCommand(interaction) {
           SELECT "channelId", "messageId", "emojiDisplay", "roleIds", "updatedAt"
           FROM "reaction_role_rule"
           WHERE "guildId" = ${guild.id} AND "channelId" = ${selectedChannel.id}
-          ORDER BY "updatedAt" DESC LIMIT 50
+          ORDER BY "updatedAt" DESC
+          LIMIT 50
         `
       : await sql`
           SELECT "channelId", "messageId", "emojiDisplay", "roleIds", "updatedAt"
           FROM "reaction_role_rule"
           WHERE "guildId" = ${guild.id}
-          ORDER BY "updatedAt" DESC LIMIT 50
+          ORDER BY "updatedAt" DESC
+          LIMIT 50
         `;
     if (rows.length === 0) {
       await interaction.editReply("リアクションロール設定はまだありません。");
       return;
     }
     const lines = rows.slice(0, 25).map((row, index) => {
-      const roles = normalizeReactionRoleIds(row.roleIds).map((roleId) => `<@&${roleId}>`).join(" ") || "有効なロールなし";
+      const roleIds = normalizeReactionRoleIds(row.roleIds);
+      const roles = roleIds.map((roleId) => `<@&${roleId}>`).join(" ") || "有効なロールなし";
       const link = `https://discord.com/channels/${guild.id}/${row.channelId}/${row.messageId}`;
       return `${index + 1}. ${row.emojiDisplay} <#${row.channelId}> [メッセージ](${link})\n   ${roles}`;
     });
@@ -1902,7 +1661,9 @@ async function handleSetRollCommand(interaction) {
   }
 
   const messageId = interaction.options.getString("message_id", true).trim();
-  const parsedEmoji = parseReactionRoleEmoji(interaction.options.getString("emoji", true));
+  const parsedEmoji = parseReactionRoleEmoji(
+    interaction.options.getString("emoji", true),
+  );
   if (!isReactionRoleMessageId(messageId) || !parsedEmoji) {
     await interaction.reply({
       content: "メッセージIDまたは絵文字の形式が正しくありません。絵文字は1個だけ指定してください。",
@@ -1910,8 +1671,16 @@ async function handleSetRollCommand(interaction) {
     });
     return;
   }
-  if (!selectedChannel || selectedChannel.guildId !== guild.id || !selectedChannel.isTextBased() || !("messages" in selectedChannel)) {
-    await interaction.reply({ content: "このサーバーのテキストチャンネルを指定してください。", flags: MessageFlags.Ephemeral });
+  if (
+    !selectedChannel ||
+    selectedChannel.guildId !== guild.id ||
+    !selectedChannel.isTextBased() ||
+    !("messages" in selectedChannel)
+  ) {
+    await interaction.reply({
+      content: "このサーバーのテキストチャンネルを指定してください。",
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
 
@@ -1919,14 +1688,18 @@ async function handleSetRollCommand(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const rows = await sql`
       DELETE FROM "reaction_role_rule"
-      WHERE "guildId" = ${guild.id} AND "channelId" = ${selectedChannel.id}
-        AND "messageId" = ${messageId} AND "emojiKey" = ${parsedEmoji.key}
+      WHERE "guildId" = ${guild.id}
+        AND "channelId" = ${selectedChannel.id}
+        AND "messageId" = ${messageId}
+        AND "emojiKey" = ${parsedEmoji.key}
       RETURNING "id"
     `;
     reactionRoleRules.delete(reactionRoleRuleKey(guild.id, messageId, parsedEmoji.key));
-    await interaction.editReply(rows.length
-      ? `✅ ${parsedEmoji.display} のリアクションロール設定を削除しました。すでに付与済みのロールは変更しません。`
-      : "一致するリアクションロール設定はありません。");
+    await interaction.editReply(
+      rows.length
+        ? `✅ ${parsedEmoji.display} のリアクションロール設定を削除しました。すでに付与済みのロールは変更しません。`
+        : "一致するリアクションロール設定はありません。",
+    );
     return;
   }
 
@@ -1942,45 +1715,71 @@ async function handleSetRollCommand(interaction) {
     return;
   }
   const channelPermissions = selectedChannel.permissionsFor(botMember);
-  if (!channelPermissions?.has(PermissionFlagsBits.ViewChannel)
-    || !channelPermissions.has(PermissionFlagsBits.ReadMessageHistory)
-    || !channelPermissions.has(PermissionFlagsBits.AddReactions)) {
-    await interaction.editReply("Botに対象チャンネルの閲覧・メッセージ履歴・リアクション追加権限が必要です。");
+  if (
+    !channelPermissions?.has(PermissionFlagsBits.ViewChannel) ||
+    !channelPermissions.has(PermissionFlagsBits.ReadMessageHistory) ||
+    !channelPermissions.has(PermissionFlagsBits.AddReactions)
+  ) {
+    await interaction.editReply(
+      "Botに対象チャンネルの閲覧・メッセージ履歴・リアクション追加権限が必要です。",
+    );
     return;
   }
-  const safetyErrors = roles.map((role) => getReactionRoleSafetyError(role, guild, botMember)).filter(Boolean);
+  const safetyErrors = roles
+    .map((role) => getReactionRoleSafetyError(role, guild, botMember))
+    .filter(Boolean);
   if (safetyErrors.length) {
     await interaction.editReply(`このロールは安全に付与できません。\n${safetyErrors.map((error) => `• ${error}`).join("\n")}`);
     return;
   }
 
+  let targetMessage;
   try {
-    const targetMessage = await selectedChannel.messages.fetch(messageId);
+    targetMessage = await selectedChannel.messages.fetch(messageId);
     await targetMessage.react(parsedEmoji.reactionValue);
   } catch (error) {
     console.error("Reaction role target validation failed:", error);
-    await interaction.editReply("対象メッセージを取得できないか、その絵文字を追加できません。メッセージID・絵文字・Bot権限を確認してください。");
+    await interaction.editReply(
+      "対象メッセージを取得できないか、その絵文字を追加できません。メッセージID・絵文字・Bot権限を確認してください。",
+    );
     return;
   }
 
   const roleIds = roles.map((role) => role.id);
   const rows = await sql`
-    INSERT INTO "reaction_role_rule" ("guildId", "channelId", "messageId", "emojiKey", "emojiDisplay", "roleIds", "createdBy")
-    VALUES (${guild.id}, ${selectedChannel.id}, ${messageId}, ${parsedEmoji.key}, ${parsedEmoji.display}, ${JSON.stringify(roleIds)}::jsonb, ${interaction.user.id})
+    INSERT INTO "reaction_role_rule" (
+      "guildId", "channelId", "messageId", "emojiKey", "emojiDisplay", "roleIds", "createdBy"
+    )
+    VALUES (
+      ${guild.id}, ${selectedChannel.id}, ${messageId}, ${parsedEmoji.key},
+      ${parsedEmoji.display}, ${JSON.stringify(roleIds)}::jsonb, ${interaction.user.id}
+    )
     ON CONFLICT ("guildId", "messageId", "emojiKey") DO UPDATE SET
-      "channelId" = EXCLUDED."channelId", "emojiDisplay" = EXCLUDED."emojiDisplay",
-      "roleIds" = EXCLUDED."roleIds", "createdBy" = EXCLUDED."createdBy", "updatedAt" = now()
+      "channelId" = EXCLUDED."channelId",
+      "emojiDisplay" = EXCLUDED."emojiDisplay",
+      "roleIds" = EXCLUDED."roleIds",
+      "createdBy" = EXCLUDED."createdBy",
+      "updatedAt" = now()
     RETURNING "id"
   `;
-  reactionRoleRules.set(reactionRoleRuleKey(guild.id, messageId, parsedEmoji.key), {
-    id: Number(rows[0].id), guildId: guild.id, channelId: selectedChannel.id,
-    messageId, emojiKey: parsedEmoji.key, emojiDisplay: parsedEmoji.display, roleIds,
-  });
+  reactionRoleRules.set(
+    reactionRoleRuleKey(guild.id, messageId, parsedEmoji.key),
+    {
+      id: Number(rows[0].id),
+      guildId: guild.id,
+      channelId: selectedChannel.id,
+      messageId,
+      emojiKey: parsedEmoji.key,
+      emojiDisplay: parsedEmoji.display,
+      roleIds,
+    },
+  );
   const link = `https://discord.com/channels/${guild.id}/${selectedChannel.id}/${messageId}`;
   await interaction.editReply({
-    content: `✅ [対象メッセージ](${link}) の ${parsedEmoji.display} に設定しました。\n`
-      + `付与するロール: ${roleIds.map((roleId) => `<@&${roleId}>`).join(" ")}\n`
-      + "リアクションを外すと、設定されたロールも外れます。",
+    content:
+      `✅ [対象メッセージ](${link}) の ${parsedEmoji.display} に設定しました。\n` +
+      `付与するロール: ${roleIds.map((roleId) => `<@&${roleId}>`).join(" ")}\n` +
+      "リアクションを外すと、設定されたロールも外れます。",
     allowedMentions: { parse: [] },
   });
 }
@@ -1992,8 +1791,11 @@ async function applyReactionRoleChange(reaction, user, adding) {
   const emojiKey = getDiscordReactionEmojiKey(reaction.emoji);
   if (!emojiKey) return;
   const guild = reaction.message.guild;
-  const rule = reactionRoleRules.get(reactionRoleRuleKey(guild.id, reaction.message.id, emojiKey));
+  const rule = reactionRoleRules.get(
+    reactionRoleRuleKey(guild.id, reaction.message.id, emojiKey),
+  );
   if (!rule || rule.channelId !== reaction.message.channelId) return;
+
   const member = guild.members.cache.get(user.id) ?? await guild.members.fetch(user.id).catch(() => null);
   if (!member) return;
   const botMember = guild.members.me ?? await guild.members.fetchMe();
@@ -2338,8 +2140,8 @@ async function handleSecurityHelpCommand(message, args) {
       ),
       new TextDisplayBuilder().setContent(
         `### 🚨 自動スパム検知 — ${spamProtectionEnabled ? "稼働中" : "停止中"}\n` +
-          `${spamWindowMs / 1_000}秒以内に同一メンバーが${spamMessageLimit}件送信すると、` +
-          `通常メンバーを${spamTimeoutMinutes}分タイムアウトします。\n` +
+          `${spamWindowMs / 1_000}秒以内に同一ユーザーまたはBotが${spamMessageLimit}件送信すると、` +
+          `${spamTimeoutMinutes}分タイムアウトを試行します。\n` +
           "-# 検知カードからTimeout解除・Kick・BANを選択でき、成功後はカードを自動削除します。",
       ),
       new TextDisplayBuilder().setContent(
@@ -2466,14 +2268,14 @@ function getSnipeChannelKey(guildId, channelId) {
 function getLiveDeletedMessageSnipes(key, now = Date.now()) {
   const stored = deletedMessageSnipes.get(key);
   const records = Array.isArray(stored) ? stored : stored ? [stored] : [];
-  const liveRecords = records
-    .filter(
+  const liveRecords = limitSnipeHistory(
+    records.filter(
       (record) =>
         record &&
         Number.isFinite(record.deletedAt) &&
         now - record.deletedAt <= SNIPE_RETENTION_MS,
-    )
-    .slice(0, SNIPE_HISTORY_LIMIT);
+    ),
+  );
   if (liveRecords.length > 0) {
     deletedMessageSnipes.set(key, liveRecords);
   } else {
@@ -2490,14 +2292,18 @@ function scheduleSnipeHistoryCleanup(key) {
   if (previousTimer) clearTimeout(previousTimer);
   const records = getLiveDeletedMessageSnipes(key);
   if (records.length === 0) return;
-  const earliestExpiry = Math.min(
-    ...records.map((record) => record.deletedAt + SNIPE_RETENTION_MS),
-  );
+  let earliestExpiry = Number.POSITIVE_INFINITY;
+  for (const record of records) {
+    earliestExpiry = Math.min(
+      earliestExpiry,
+      record.deletedAt + SNIPE_RETENTION_MS,
+    );
+  }
   const cleanupTimer = setTimeout(() => {
     snipeHistoryCleanupTimers.delete(key);
     const remainingRecords = getLiveDeletedMessageSnipes(key);
     if (remainingRecords.length > 0) scheduleSnipeHistoryCleanup(key);
-  }, Math.max(1, earliestExpiry - Date.now() + 10));
+  }, getSnipeCleanupDelay(earliestExpiry));
   cleanupTimer.unref();
   snipeHistoryCleanupTimers.set(key, cleanupTimer);
 }
@@ -2505,14 +2311,14 @@ function scheduleSnipeHistoryCleanup(key) {
 function formatSnipeIdentity(userId, fallbackName = "不明なユーザー") {
   const normalizedId = String(userId ?? "").trim();
   if (/^\d{17,20}$/.test(normalizedId)) return `<@${normalizedId}>`;
-  return escapeScopeText(fallbackName, 80);
+  return escapeSnipeText(fallbackName, 80);
 }
 
 function buildSnipeEmbed(session) {
   const deleted = session.deletedMessages[session.currentIndex] ?? null;
   if (deleted) {
     const body = deleted.content
-      ? escapeScopeText(deleted.content, 850)
+      ? escapeSnipeText(deleted.content, 850)
       : "（本文なし・添付またはEmbedのみ）";
     const details = deleted.deletedById
       ? [`-# 削除者: ${formatSnipeIdentity(deleted.deletedById, deleted.deletedByName)}`]
@@ -4126,6 +3932,10 @@ async function updateMemberCount(guild) {
 async function recordBotHeartbeat() {
   if (!client.isReady()) return;
   const guildCount = getAvailableBotGuilds().length;
+  if (runtimeCoordinator) {
+    runtimeCoordinator.setStatus("Running", "Owned");
+    await runtimeCoordinator.recordNow();
+  }
   await sql`
     INSERT INTO "bot_heartbeat" ("id", "lastSeenAt", "startedAt", "guildCount", "stoppedAt")
     VALUES (${botHeartbeatId}, now(), ${botStartedAt}, ${guildCount}, NULL)
@@ -4135,7 +3945,6 @@ async function recordBotHeartbeat() {
       "guildCount" = EXCLUDED."guildCount",
       "stoppedAt" = NULL
   `;
-  await Promise.allSettled(client.guilds.cache.map(syncGuildRegistry));
 }
 
 async function syncChannelAccess(guild) {
@@ -4154,8 +3963,25 @@ async function syncChannelAccess(guild) {
             permissions?.has(PermissionFlagsBits.ReadMessageHistory),
         ),
       };
-    });
+    })
+    .sort((left, right) => left.channelId.localeCompare(right.channelId));
   const snapshot = JSON.stringify(channelAccess);
+
+  if (channelAccessSnapshots.get(guild.id) === snapshot) {
+    // checkedAt is a guild-level freshness indicator in every current reader.
+    // Refresh one row instead of rewriting all channels when nothing changed.
+    await sql`
+      UPDATE "bot_channel_access"
+      SET "checkedAt" = now()
+      WHERE "guildId" = ${guild.id}
+        AND "channelId" = (
+          SELECT MIN("channelId")
+          FROM "bot_channel_access"
+          WHERE "guildId" = ${guild.id}
+        )
+    `;
+    return;
+  }
 
   await sql`
     INSERT INTO "bot_channel_access" ("guildId", "channelId", "channelName", "canRead", "checkedAt")
@@ -4167,6 +3993,8 @@ async function syncChannelAccess(guild) {
       "channelName" = EXCLUDED."channelName",
       "canRead" = EXCLUDED."canRead",
       "checkedAt" = EXCLUDED."checkedAt"
+    WHERE "bot_channel_access"."channelName" IS DISTINCT FROM EXCLUDED."channelName"
+       OR "bot_channel_access"."canRead" IS DISTINCT FROM EXCLUDED."canRead"
   `;
   await sql`
     DELETE FROM "bot_channel_access" AS access
@@ -4177,6 +4005,17 @@ async function syncChannelAccess(guild) {
         WHERE current."channelId" = access."channelId"
       )
   `;
+  await sql`
+    UPDATE "bot_channel_access"
+    SET "checkedAt" = now()
+    WHERE "guildId" = ${guild.id}
+      AND "channelId" = (
+        SELECT MIN("channelId")
+        FROM "bot_channel_access"
+        WHERE "guildId" = ${guild.id}
+      )
+  `;
+  channelAccessSnapshots.set(guild.id, snapshot);
 }
 
 function analyticsRoleIds(member) {
@@ -4215,49 +4054,72 @@ async function syncAnalyticsInventory(guild, { fetchMembers = false } = {}) {
     }
   }
   const [channels, roles] = await Promise.all([guild.channels.fetch(), guild.roles.fetch()]);
-  const channelRows = [...channels.values()].filter(Boolean).map((channel) => ({
-    channelId: channel.id,
-    channelName: "name" in channel ? channel.name : "Deleted Channel",
-    channelType: String(channel.type),
-  }));
-  const roleRows = [...roles.values()].filter(Boolean).map((role) => ({
-    roleId: role.id,
-    roleName: role.name,
-    memberCount: role.members?.size ?? 0,
-    isManaged: role.managed,
-    isBotRole: Boolean(role.tags?.botId),
-    isEveryone: role.id === guild.id,
-    color: role.color,
-    position: role.position,
-  }));
-  await sql`
-    INSERT INTO "guild_channel_registry" ("guildId", "channelId", "channelName", "channelType", "deletedAt", "updatedAt")
-    SELECT ${guild.id}, row."channelId", row."channelName", row."channelType", NULL, now()
-    FROM jsonb_to_recordset(${JSON.stringify(channelRows)}::jsonb)
-      AS row("channelId" text, "channelName" text, "channelType" text)
-    ON CONFLICT ("guildId", "channelId") DO UPDATE SET
-      "channelName" = EXCLUDED."channelName", "channelType" = EXCLUDED."channelType", "deletedAt" = NULL, "updatedAt" = now()
-  `;
-  await sql`
-    UPDATE "guild_channel_registry" registry SET "deletedAt" = COALESCE(registry."deletedAt", now()), "updatedAt" = now()
-    WHERE registry."guildId" = ${guild.id}
-      AND NOT (registry."channelId" = ANY(${channelRows.map((row) => row.channelId)}::text[]))
-  `;
-  await sql`
-    INSERT INTO "guild_role_registry" ("guildId", "roleId", "roleName", "memberCount", "isManaged", "isBotRole", "isEveryone", "color", "position", "deletedAt", "updatedAt")
-    SELECT ${guild.id}, row."roleId", row."roleName", row."memberCount", row."isManaged", row."isBotRole", row."isEveryone", row."color", row."position", NULL, now()
-    FROM jsonb_to_recordset(${JSON.stringify(roleRows)}::jsonb)
-      AS row("roleId" text, "roleName" text, "memberCount" integer, "isManaged" boolean, "isBotRole" boolean, "isEveryone" boolean, "color" integer, "position" integer)
-    ON CONFLICT ("guildId", "roleId") DO UPDATE SET
-      "roleName" = EXCLUDED."roleName", "memberCount" = EXCLUDED."memberCount", "isManaged" = EXCLUDED."isManaged",
-      "isBotRole" = EXCLUDED."isBotRole", "isEveryone" = EXCLUDED."isEveryone", "color" = EXCLUDED."color",
-      "position" = EXCLUDED."position", "deletedAt" = NULL, "updatedAt" = now()
-  `;
-  await sql`
-    UPDATE "guild_role_registry" registry SET "deletedAt" = COALESCE(registry."deletedAt", now()), "updatedAt" = now()
-    WHERE registry."guildId" = ${guild.id}
-      AND NOT (registry."roleId" = ANY(${roleRows.map((row) => row.roleId)}::text[]))
-  `;
+  const channelRows = [...channels.values()]
+    .filter(Boolean)
+    .map((channel) => ({
+      channelId: channel.id,
+      channelName: "name" in channel ? channel.name : "Deleted Channel",
+      channelType: String(channel.type),
+    }))
+    .sort((left, right) => left.channelId.localeCompare(right.channelId));
+  const roleRows = [...roles.values()]
+    .filter(Boolean)
+    .map((role) => ({
+      roleId: role.id,
+      roleName: role.name,
+      memberCount: role.members?.size ?? 0,
+      isManaged: role.managed,
+      isBotRole: Boolean(role.tags?.botId),
+      isEveryone: role.id === guild.id,
+      color: role.color,
+      position: role.position,
+    }))
+    .sort((left, right) => left.roleId.localeCompare(right.roleId));
+  const inventorySnapshot = JSON.stringify([channelRows, roleRows]);
+  if (analyticsInventorySnapshots.get(guild.id) !== inventorySnapshot) {
+    await sql`
+      INSERT INTO "guild_channel_registry" ("guildId", "channelId", "channelName", "channelType", "deletedAt", "updatedAt")
+      SELECT ${guild.id}, row."channelId", row."channelName", row."channelType", NULL, now()
+      FROM jsonb_to_recordset(${JSON.stringify(channelRows)}::jsonb)
+        AS row("channelId" text, "channelName" text, "channelType" text)
+      ON CONFLICT ("guildId", "channelId") DO UPDATE SET
+        "channelName" = EXCLUDED."channelName", "channelType" = EXCLUDED."channelType", "deletedAt" = NULL, "updatedAt" = now()
+      WHERE "guild_channel_registry"."channelName" IS DISTINCT FROM EXCLUDED."channelName"
+         OR "guild_channel_registry"."channelType" IS DISTINCT FROM EXCLUDED."channelType"
+         OR "guild_channel_registry"."deletedAt" IS NOT NULL
+    `;
+    await sql`
+      UPDATE "guild_channel_registry" registry SET "deletedAt" = now(), "updatedAt" = now()
+      WHERE registry."guildId" = ${guild.id}
+        AND registry."deletedAt" IS NULL
+        AND NOT (registry."channelId" = ANY(${channelRows.map((row) => row.channelId)}::text[]))
+    `;
+    await sql`
+      INSERT INTO "guild_role_registry" ("guildId", "roleId", "roleName", "memberCount", "isManaged", "isBotRole", "isEveryone", "color", "position", "deletedAt", "updatedAt")
+      SELECT ${guild.id}, row."roleId", row."roleName", row."memberCount", row."isManaged", row."isBotRole", row."isEveryone", row."color", row."position", NULL, now()
+      FROM jsonb_to_recordset(${JSON.stringify(roleRows)}::jsonb)
+        AS row("roleId" text, "roleName" text, "memberCount" integer, "isManaged" boolean, "isBotRole" boolean, "isEveryone" boolean, "color" integer, "position" integer)
+      ON CONFLICT ("guildId", "roleId") DO UPDATE SET
+        "roleName" = EXCLUDED."roleName", "memberCount" = EXCLUDED."memberCount", "isManaged" = EXCLUDED."isManaged",
+        "isBotRole" = EXCLUDED."isBotRole", "isEveryone" = EXCLUDED."isEveryone", "color" = EXCLUDED."color",
+        "position" = EXCLUDED."position", "deletedAt" = NULL, "updatedAt" = now()
+      WHERE "guild_role_registry"."roleName" IS DISTINCT FROM EXCLUDED."roleName"
+         OR "guild_role_registry"."memberCount" IS DISTINCT FROM EXCLUDED."memberCount"
+         OR "guild_role_registry"."isManaged" IS DISTINCT FROM EXCLUDED."isManaged"
+         OR "guild_role_registry"."isBotRole" IS DISTINCT FROM EXCLUDED."isBotRole"
+         OR "guild_role_registry"."isEveryone" IS DISTINCT FROM EXCLUDED."isEveryone"
+         OR "guild_role_registry"."color" IS DISTINCT FROM EXCLUDED."color"
+         OR "guild_role_registry"."position" IS DISTINCT FROM EXCLUDED."position"
+         OR "guild_role_registry"."deletedAt" IS NOT NULL
+    `;
+    await sql`
+      UPDATE "guild_role_registry" registry SET "deletedAt" = now(), "updatedAt" = now()
+      WHERE registry."guildId" = ${guild.id}
+        AND registry."deletedAt" IS NULL
+        AND NOT (registry."roleId" = ANY(${roleRows.map((row) => row.roleId)}::text[]))
+    `;
+    analyticsInventorySnapshots.set(guild.id, inventorySnapshot);
+  }
   if (fetchMembers) {
     for (const member of guild.members.cache.values()) {
       await recordGuildMemberEvent(member, "join", "discord_sync");
@@ -4434,6 +4296,23 @@ async function storeMessage(message) {
   const channelName =
     "name" in message.channel ? message.channel.name : "不明なチャンネル";
   const roleIds = JSON.stringify(analyticsRoleIds(message.member));
+  if (messageImportConfig.enabled) {
+    await sql`
+      INSERT INTO "discord_message" ("id", "guildId", "channelId", "channelName", "authorId", "authorName", "authorIsBot", "authorRoleIds", "content", "source", "importJobId", "createdAt", "updatedAt")
+      VALUES (${message.id}, ${message.guild.id}, ${message.channel.id}, ${channelName}, ${message.author.id}, ${message.member?.displayName ?? message.author.username}, ${message.author.bot}, ${roleIds}::jsonb, ${message.content}, ${MESSAGE_SOURCE.live}, NULL, ${message.createdAt}, now())
+      ON CONFLICT ("id") DO UPDATE SET
+        "channelId" = EXCLUDED."channelId",
+        "channelName" = EXCLUDED."channelName",
+        "authorName" = EXCLUDED."authorName",
+        "authorIsBot" = EXCLUDED."authorIsBot",
+        "authorRoleIds" = EXCLUDED."authorRoleIds",
+        "content" = EXCLUDED."content",
+        "source" = ${MESSAGE_SOURCE.live},
+        "importJobId" = NULL,
+        "updatedAt" = now()
+    `;
+    return;
+  }
   await sql`
     INSERT INTO "discord_message" ("id", "guildId", "channelId", "channelName", "authorId", "authorName", "authorIsBot", "authorRoleIds", "content", "createdAt", "updatedAt")
     VALUES (${message.id}, ${message.guild.id}, ${message.channel.id}, ${channelName}, ${message.author.id}, ${message.member?.displayName ?? message.author.username}, ${message.author.bot}, ${roleIds}::jsonb, ${message.content}, ${message.createdAt}, now())
@@ -4451,7 +4330,7 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function updateHistoryImportJob(id, fields) {
+async function updateLegacyHistoryImportJob(id, fields) {
   await sql`
     UPDATE "history_import_job"
     SET "processedMessages" = ${fields.processedMessages}, "failedChannels" = ${fields.failedChannels}
@@ -4459,7 +4338,7 @@ async function updateHistoryImportJob(id, fields) {
   `;
 }
 
-async function claimHistoryImportJob() {
+async function claimLegacyHistoryImportJob() {
   const jobs = await sql`
     WITH candidate AS (
       SELECT "id"
@@ -4480,7 +4359,7 @@ async function claimHistoryImportJob() {
 
 // Discord only exposes historical messages per channel. Voice-state events are
 // deliberately not reconstructed here: they are accurate only from Bot uptime.
-async function processHistoryImportJob(job) {
+async function processLegacyHistoryImportJob(job) {
   let processedMessages = 0;
   let failedChannels = 0;
   try {
@@ -4526,7 +4405,7 @@ async function processHistoryImportJob(job) {
             }
           }
           before = messages.last()?.id;
-          await updateHistoryImportJob(job.id, {
+          await updateLegacyHistoryImportJob(job.id, {
             processedMessages,
             failedChannels,
           });
@@ -4539,7 +4418,7 @@ async function processHistoryImportJob(job) {
           `History import skipped channel ${channel?.id ?? "unknown"}:`,
           error.message,
         );
-        await updateHistoryImportJob(job.id, {
+        await updateLegacyHistoryImportJob(job.id, {
           processedMessages,
           failedChannels,
         });
@@ -4568,9 +4447,14 @@ async function processHistoryImportJob(job) {
   }
 }
 
+async function pollLegacyHistoryImportJobs() {
+  const job = await claimLegacyHistoryImportJob();
+  if (job) await processLegacyHistoryImportJob(job);
+}
+
 async function pollHistoryImportJobs() {
-  const job = await claimHistoryImportJob();
-  if (job) await processHistoryImportJob(job);
+  if (messageImportConfig.enabled) return messageHistoryImportWorker.poll();
+  return pollLegacyHistoryImportJobs();
 }
 
 let guildResetRequestPolling = false;
@@ -4610,6 +4494,8 @@ async function syncServerVoiceSession(guild) {
 }
 
 client.once("clientReady", async () => {
+  runtimeCoordinator?.setStatus("Running", "Owned");
+  updateRuntimeOperationalMetrics({ discordReadyAt: new Date().toISOString() });
   updateBotPresence();
   console.log(`NuviloView:OEM bot logged in as ${client.user.tag}`);
   try {
@@ -4629,7 +4515,7 @@ client.once("clientReady", async () => {
       client.guilds.cache.map((guild) => leaveBlockedGuild(guild, "startup")),
     );
     await Promise.allSettled(client.guilds.cache.map(syncGuildRegistry));
-    await Promise.allSettled(
+    const initialAnalyticsResults = await Promise.allSettled(
       client.guilds.cache.map((guild) => syncAnalyticsInventory(guild, { fetchMembers: true })),
     );
     await Promise.all(client.guilds.cache.map(updateMemberCount));
@@ -4640,10 +4526,19 @@ client.once("clientReady", async () => {
     await Promise.allSettled(client.guilds.cache.map(checkGuildAlerts));
     await Promise.allSettled(client.guilds.cache.map(syncServerVoiceSession));
     await Promise.allSettled(client.guilds.cache.map(syncCurrentVoiceSessions));
+    await Promise.allSettled(client.guilds.cache.map((guild) => nukeProtectionService.diagnoseGuild(guild)));
+    await Promise.allSettled(client.guilds.cache.map((guild) => nukeProtectionService.ensureDailySnapshot(guild)));
+    updateRuntimeOperationalMetrics(
+      initialAnalyticsResults.some((result) => result.status === "rejected")
+        ? { lastAnalyticsFailureAt: new Date().toISOString() }
+        : { lastAnalyticsSuccessAt: new Date().toISOString() },
+    );
     await purgeExpiredMessages();
     void pollHistoryImportJobs();
     void pollGuildResetRequests();
+    void nukeProtectionService.pollActionRequests();
   } catch (error) {
+    updateRuntimeOperationalMetrics({ lastAnalyticsFailureAt: new Date().toISOString() });
     console.error("Initial member sync failed:", error);
   }
 });
@@ -4661,6 +4556,8 @@ client.on("guildCreate", (guild) =>
       syncAnalyticsInventory(guild, { fetchMembers: true }),
       syncServerVoiceSession(guild),
       syncCurrentVoiceSessions(guild),
+      nukeProtectionService.diagnoseGuild(guild),
+      nukeProtectionService.ensureDailySnapshot(guild),
       loadReactionRoleRules(guild.id),
     ]);
   })(),
@@ -4668,7 +4565,10 @@ client.on("guildCreate", (guild) =>
 
 client.on("guildDelete", (guild) => {
   updateBotPresence();
+  channelAccessSnapshots.delete(guild.id);
+  analyticsInventorySnapshots.delete(guild.id);
   clearGuildReactionRoleRules(guild.id);
+  nukeProtectionService.clearGuild(guild.id);
   void markGuildDisconnected(guild.id).catch((error) =>
     console.error("Failed to mark removed guild as disconnected:", error),
   );
@@ -4686,21 +4586,6 @@ client.on("interactionCreate", async (interaction) => {
         .catch(() => {});
       return;
     }
-    if (interaction.commandName !== "scopeserver") return;
-    if (!canUseBotServers(interaction)) {
-      await interaction.respond([]).catch(() => {});
-      return;
-    }
-    const focused = interaction.options.getFocused();
-    await interaction.respond(getScopeGuildChoices(String(focused))).catch(() => {});
-    return;
-  }
-
-  if (
-    (interaction.isButton() || interaction.isStringSelectMenu()) &&
-    interaction.customId.startsWith("nvscope:")
-  ) {
-    await handleScopeServerComponent(interaction);
     return;
   }
 
@@ -5069,11 +4954,6 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  if (interaction.commandName === "scopeserver") {
-    await handleScopeServerCommand(interaction);
-    return;
-  }
-
   if (interaction.commandName === "guildblock") {
     if (!canUseBotServers(interaction)) {
       await interaction.reply({
@@ -5436,7 +5316,7 @@ client.on("interactionCreate", async (interaction) => {
         {
           name: "一時処理",
           value:
-            "zx?snipeはチャンネルごとに直近10件の削除本文・投稿者・削除者等をBotメモリで最大3日保持し、結果は実行チャンネルを閲覧できるメンバーに表示します。" +
+            "zx?snipeはチャンネルごとに最大999,999件の削除本文・投稿者・削除者等をBotメモリで最大90日間（約3か月）保持し、上限超過時は古い履歴から切り捨てます。結果は実行チャンネルを閲覧できるメンバーに表示します。" +
             "翻訳本文・結果は最大5分の一時処理のみでDB保存せず、月間文字数合計だけを記録します。スパム判定は送信時刻と件数を短時間だけ比較し、判定用に本文を追加保存しません。",
         },
         {
@@ -5629,7 +5509,7 @@ client.on("interactionCreate", async (interaction) => {
       {
         name: "🛡️　**セキュリティ・モデレーション**",
         value:
-          "━━━━━━━━━━━━━━━━━━\nセキュリティ機能は独立した `r?` コマンドです。`r?help` で一覧と使い方、`r?perm_check`で実行者とBotの権限を確認できます。\n5秒以内に同一メンバーが8件送信するとスパムを検知し、通常メンバーを一時タイムアウトします。検知通知からTO解除・Kick・BANを選択できます。",
+          "━━━━━━━━━━━━━━━━━━\nセキュリティ機能は独立した `r?` コマンドです。`r?help` で一覧と使い方、`r?perm_check`で実行者とBotの権限を確認できます。\n5秒以内に同一ユーザーまたはBotが3件送信するとスパムを検知し、5分間のタイムアウトを試行します。検知通知からTO解除・Kick・BANを選択できます。",
         inline: false,
       },
       {
@@ -5662,7 +5542,35 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.guild || isGuildBlocked(message.guild.id)) return;
+  if (!message.guild || isGuildBlocked(message.guild.id)) return;
+
+  const trackSpam = () => {
+    if (
+      !spamProtectionEnabled ||
+      !shouldTrackSpamMessage({
+        authorId: message.author.id,
+        clientUserId: client.user?.id,
+        isWebhook: Boolean(message.webhookId),
+      })
+    ) {
+      return;
+    }
+    const spamDetection = spamTracker.record(
+      `${message.guild.id}:${message.author.id}`,
+      message.createdTimestamp,
+    );
+    if (spamDetection.detected) {
+      void handleSpamDetection(message, spamDetection).catch((error) =>
+        console.error("Spam detection handling failed:", error),
+      );
+    }
+  };
+
+  if (message.author.bot) {
+    await nukeProtectionService.handleBotMessage(message);
+    trackSpam();
+    return;
+  }
 
   const securityInvocation = parseSecurityCommand(message.content);
   if (securityInvocation) {
@@ -5697,17 +5605,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (spamProtectionEnabled) {
-    const spamDetection = spamTracker.record(
-      `${message.guild.id}:${message.author.id}`,
-      message.createdTimestamp,
-    );
-    if (spamDetection.detected) {
-      void handleSpamDetection(message, spamDetection).catch((error) =>
-        console.error("Spam detection handling failed:", error),
-      );
-    }
-  }
+  trackSpam();
 
   try {
     await sql`
@@ -5828,14 +5726,12 @@ async function rememberDeletedMessageForSnipe(
     deletedByName: deleter?.name ?? null,
     deletedAt,
   };
-  const history = [
-    record,
-    ...getLiveDeletedMessageSnipes(key).filter(
-      (candidate) => candidate.messageId !== message.id,
-    ),
-  ]
-    .sort((left, right) => right.deletedAt - left.deletedAt)
-    .slice(0, SNIPE_HISTORY_LIMIT);
+  const history = [record];
+  for (const candidate of getLiveDeletedMessageSnipes(key)) {
+    if (candidate.messageId === message.id) continue;
+    history.push(candidate);
+    if (history.length >= SNIPE_HISTORY_LIMIT) break;
+  }
   deletedMessageSnipes.set(key, history);
   scheduleSnipeHistoryCleanup(key);
 }
@@ -5954,6 +5850,7 @@ client.on(
       }),
       recordGuildMemberEvent(member, "join"),
       syncAnalyticsInventory(member.guild),
+      syncGuildRegistry(member.guild),
     ])
     );
   },
@@ -5972,14 +5869,62 @@ client.on(
       }),
       recordGuildMemberEvent(member, "leave"),
       syncAnalyticsInventory(member.guild),
+      syncGuildRegistry(member.guild),
       syncServerVoiceSession(member.guild),
     ])
     );
   },
 );
 client.on("error", (error) => {
+  updateRuntimeOperationalMetrics({ lastDiscordErrorAt: new Date().toISOString() });
   console.error("Discord client error:", error);
   void reportOperationalAlert("Discord client error", error);
+});
+
+client.on("shardDisconnect", (_event, shardId) => {
+  updateRuntimeOperationalMetrics({
+    lastDiscordDisconnectAt: new Date().toISOString(),
+    disconnectCount: runtimeOperationalMetrics.disconnectCount + 1,
+  });
+  console.warn(`[Discord] shard ${shardId} disconnected.`);
+});
+
+client.on("shardReconnecting", (shardId) => {
+  updateRuntimeOperationalMetrics({
+    lastDiscordReconnectAt: new Date().toISOString(),
+    reconnectCount: runtimeOperationalMetrics.reconnectCount + 1,
+  });
+  console.warn(`[Discord] shard ${shardId} reconnecting.`);
+});
+
+client.on("shardResume", (shardId, replayedEvents) => {
+  updateRuntimeOperationalMetrics({ lastDiscordResumeAt: new Date().toISOString() });
+  console.info(`[Discord] shard ${shardId} resumed with ${replayedEvents} replayed event(s).`);
+});
+
+client.on("invalidated", () => {
+  updateRuntimeOperationalMetrics({ lastDiscordInvalidSessionAt: new Date().toISOString() });
+  console.error("[Discord] gateway session invalidated.");
+});
+
+client.rest.on("rateLimited", (rateLimit) => {
+  updateRuntimeOperationalMetrics({
+    lastDiscordRateLimitAt: new Date().toISOString(),
+    rateLimitCount: runtimeOperationalMetrics.rateLimitCount + 1,
+  });
+  console.warn(
+    `[Discord] REST rate limited global=${Boolean(rateLimit.global)} retryAfterMs=${Math.ceil(rateLimit.timeToReset || 0)}`,
+  );
+});
+
+client.on("guildAuditLogEntryCreate", (entry, guild) => {
+  if (isGuildBlocked(guild.id)) return;
+  void nukeProtectionService.handleAuditLogEntry(entry, guild);
+});
+
+client.on("webhookUpdate", (channel) => {
+  if (!channel?.guild || isGuildBlocked(channel.guild.id)) return;
+  void nukeProtectionService.handleWebhookUpdate(channel);
 });
 
 for (const eventName of ["channelCreate", "channelDelete", "channelUpdate", "roleCreate", "roleDelete", "roleUpdate"]) {
@@ -5987,17 +5932,33 @@ for (const eventName of ["channelCreate", "channelDelete", "channelUpdate", "rol
     const subject = args.at(-1) ?? args[0];
     const guild = subject?.guild;
     if (!guild || isGuildBlocked(guild.id)) return;
-    void syncAnalyticsInventory(guild).catch((error) =>
-      console.error(`Failed to refresh analytics inventory after ${eventName}:`, error),
-    );
+    void Promise.allSettled([
+      syncAnalyticsInventory(guild),
+      syncChannelAccess(guild),
+    ]).then((results) => {
+      for (const result of results) {
+        if (result.status === "rejected") {
+          console.error(`Failed to refresh Bot inventory after ${eventName}:`, result.reason);
+        }
+      }
+    });
   });
 }
 
-client.on("guildMemberUpdate", (_before, after) => {
+client.on("guildMemberUpdate", (before, after) => {
   if (isGuildBlocked(after.guild.id)) return;
+  const rolesChanged =
+    before.roles.cache.size !== after.roles.cache.size ||
+    [...before.roles.cache.keys()].some((roleId) => !after.roles.cache.has(roleId));
+  if (!rolesChanged) return;
   void syncAnalyticsInventory(after.guild).catch((error) =>
     console.error("Failed to refresh role analytics after member update:", error),
   );
+  if (after.id === client.user?.id) {
+    void syncChannelAccess(after.guild).catch((error) =>
+      console.error("Failed to refresh channel permissions after Bot role update:", error),
+    );
+  }
 });
 
 process.on("unhandledRejection", (error) => {
@@ -6007,15 +5968,24 @@ process.on("unhandledRejection", (error) => {
 
 setInterval(
   () => {
-    void Promise.allSettled(
-      client.guilds.cache.map(async (guild) => {
-        await updateMemberCount(guild);
-        await syncChannelAccess(guild);
-        await syncAnalyticsInventory(guild);
-        await syncGuildRegistry(guild);
-        await checkGuildAlerts(guild);
-      }),
-    );
+    void (async () => {
+      const results = await Promise.allSettled(
+        client.guilds.cache.map(async (guild) => {
+          await updateMemberCount(guild);
+          await syncChannelAccess(guild);
+          await syncAnalyticsInventory(guild);
+          await syncGuildRegistry(guild);
+          await checkGuildAlerts(guild);
+          await nukeProtectionService.diagnoseGuild(guild);
+        }),
+      );
+      const failed = results.filter((result) => result.status === "rejected").length;
+      updateRuntimeOperationalMetrics(
+        failed
+          ? { lastAnalyticsFailureAt: new Date().toISOString() }
+          : { lastAnalyticsSuccessAt: new Date().toISOString() },
+      );
+    })();
   },
   15 * 60 * 1000,
 );
@@ -6045,13 +6015,29 @@ setInterval(() => {
   void pollHistoryImportJobs().catch((error) =>
     console.error("Failed to poll history import jobs:", error),
   );
-}, 30 * 1000);
+}, 60 * 1000);
 
 setInterval(() => {
   void pollGuildResetRequests().catch((error) =>
     console.error("Failed to poll Guild reset requests:", error),
   );
-}, 3 * 1000);
+}, 5 * 1000);
+
+setInterval(() => {
+  void nukeProtectionService.pollActionRequests();
+}, 5 * 1000);
+
+setInterval(() => {
+  void Promise.allSettled(
+    client.guilds.cache.map((guild) => nukeProtectionService.ensureDailySnapshot(guild)),
+  );
+}, 60 * 60 * 1000);
+
+setInterval(() => {
+  void nukeProtectionService.purgeExpiredSecurityData().catch((error) =>
+    console.error("Failed to purge expired Nuke Protection data:", error),
+  );
+}, 12 * 60 * 60 * 1000);
 
 setInterval(() => {
   const now = Date.now();
@@ -6061,24 +6047,111 @@ setInterval(() => {
 }, 60 * 1000);
 
 let shuttingDown = false;
-async function shutdown(signal) {
+let localStopWatcher;
+async function shutdown(
+  signal,
+  exitCode = RUNTIME_EXIT_CODES.NORMAL,
+  { releaseLease = true } = {},
+) {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (localStopWatcher) clearInterval(localStopWatcher);
   console.log(`${signal} received. Disconnecting NuviloChan Bot...`);
-  try {
-    await sql`
-      UPDATE "bot_heartbeat"
-      SET "stoppedAt" = now()
-      WHERE "id" = ${botHeartbeatId}
-    `;
-  } catch (error) {
-    console.error("Failed to mark Bot as stopped:", error);
-  }
   client.destroy();
-  process.exit(0);
+  if (releaseLease) {
+    try {
+      await sql`
+        UPDATE "bot_heartbeat"
+        SET "stoppedAt" = now()
+        WHERE "id" = ${botHeartbeatId}
+      `;
+    } catch (error) {
+      console.error("Failed to mark Bot as stopped:", error);
+    }
+  }
+  if (runtimeCoordinator) {
+    await runtimeCoordinator.stop({
+      release: releaseLease,
+      finalStatus: releaseLease ? "Stopped" : "LeaseLost",
+    });
+  }
+  process.exit(exitCode);
 }
 
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 process.once("SIGINT", () => void shutdown("SIGINT"));
 
-await client.login(process.env.NUVILOVIEW_BOT_TOKEN);
+const localStopFile = process.env.NUVILOVIEW_BOT_STOP_FILE?.trim();
+if (localStopFile && isAbsolute(localStopFile)) {
+  localStopWatcher = setInterval(() => {
+    if (existsSync(localStopFile)) void shutdown("LOCAL_STOP_REQUEST");
+  }, 1_000);
+  localStopWatcher.unref();
+}
+
+async function startBot() {
+  if (runtimeConfig.enabled) {
+    const configurationErrors = validateRuntimeConfig(runtimeConfig, runtimeIdentity);
+    if (configurationErrors.length) {
+      for (const error of configurationErrors) {
+        console.error(`[Singleton] configuration invalid: ${error}`);
+      }
+      return RUNTIME_EXIT_CODES.CONFIGURATION_INVALID;
+    }
+
+    runtimeCoordinator = new RuntimeCoordinator({
+      repository: runtimeRepository,
+      config: runtimeConfig,
+      identity: runtimeIdentity,
+      heartbeatData: () => ({
+        guildCount: client.isReady() ? getAvailableBotGuilds().length : 0,
+        metadata: {
+          ...runtimeOperationalMetrics,
+          discordReady: client.isReady(),
+        },
+      }),
+      onLeaseLost: async () => {
+        await shutdown("LEASE_LOST", RUNTIME_EXIT_CODES.LEASE_LOST, {
+          releaseLease: false,
+        });
+      },
+    });
+
+    let acquisition;
+    try {
+      acquisition = await runtimeCoordinator.acquire();
+    } catch (error) {
+      console.error("[Singleton] database unavailable during lease acquisition", error);
+      return RUNTIME_EXIT_CODES.DATABASE_UNAVAILABLE;
+    }
+    if (!acquisition.acquired) {
+      const owner = acquisition.owner;
+      console.info(
+        `[Singleton] another NuviloView instance owns the lease; Discord login was skipped host=${owner?.hostId || "unknown"} expires=${owner?.leaseExpiresAt?.toISOString?.() || "unknown"}`,
+      );
+      return RUNTIME_EXIT_CODES.LEASE_CONTENDED;
+    }
+
+    try {
+      await runtimeCoordinator.start();
+    } catch (error) {
+      console.error("[Singleton] failed to start lease heartbeat", error);
+      await runtimeCoordinator.stop();
+      return RUNTIME_EXIT_CODES.DATABASE_UNAVAILABLE;
+    }
+  }
+
+  try {
+    await client.login(process.env.NUVILOVIEW_BOT_TOKEN);
+    return null;
+  } catch (error) {
+    updateRuntimeOperationalMetrics({ lastDiscordLoginFailureAt: new Date().toISOString() });
+    runtimeCoordinator?.setStatus("Error", runtimeCoordinator.leaseState);
+    await runtimeCoordinator?.recordNow({ status: "Error" });
+    await runtimeCoordinator?.stop();
+    throw error;
+  }
+}
+
+const startupExitCode = await startBot();
+if (startupExitCode != null) process.exit(startupExitCode);

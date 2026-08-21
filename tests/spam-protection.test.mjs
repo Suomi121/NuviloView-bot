@@ -4,34 +4,36 @@ import {
   canManageSpamAction,
   createSpamActionCustomId,
   createSpamTracker,
+  defaultSpamProtectionConfig,
   getAutomaticSpamProtectionBlockReason,
   parseSpamActionCustomId,
+  shouldTrackSpamMessage,
 } from "../lib/spam-protection.mjs";
 
-test("spam is detected on the eighth message inside five seconds", () => {
+test("the default spam threshold is three messages inside five seconds", () => {
+  assert.equal(defaultSpamProtectionConfig.messageLimit, 3);
+  assert.equal(defaultSpamProtectionConfig.windowMs, 5_000);
   const tracker = createSpamTracker({
-    messageLimit: 8,
+    messageLimit: defaultSpamProtectionConfig.messageLimit,
     windowMs: 5_000,
     detectionCooldownMs: 60_000,
   });
-  for (let index = 0; index < 7; index += 1) {
-    assert.equal(tracker.record("guild:user", index * 500).detected, false);
-  }
-  const result = tracker.record("guild:user", 3_500);
+  assert.equal(tracker.record("guild:user", 0).detected, false);
+  assert.equal(tracker.record("guild:user", 1_000).detected, false);
+  const result = tracker.record("guild:user", 2_000);
   assert.equal(result.detected, true);
-  assert.equal(result.count, 8);
+  assert.equal(result.count, 3);
 });
 
 test("messages outside the rolling window do not trigger detection", () => {
   const tracker = createSpamTracker({
-    messageLimit: 8,
+    messageLimit: 3,
     windowMs: 5_000,
     detectionCooldownMs: 60_000,
   });
-  for (let index = 0; index < 7; index += 1) {
-    tracker.record("guild:user", index * 500);
-  }
-  const result = tracker.record("guild:user", 8_501);
+  tracker.record("guild:user", 0);
+  tracker.record("guild:user", 1_000);
+  const result = tracker.record("guild:user", 6_001);
   assert.equal(result.detected, false);
   assert.equal(result.count, 1);
 });
@@ -64,14 +66,14 @@ test("prune removes inactive windows and expired cooldowns", () => {
   assert.equal(tracker.cooldownCount, 0);
 });
 
-test("automatic timeout protects bots, owners, and moderators", () => {
+test("automatic timeout includes bots while protecting owners and human moderators", () => {
   assert.equal(
     getAutomaticSpamProtectionBlockReason({
       isBot: true,
       isOwner: false,
-      hasModerationPermission: false,
+      hasModerationPermission: true,
     }),
-    "Botアカウント",
+    null,
   );
   assert.equal(
     getAutomaticSpamProtectionBlockReason({
@@ -96,6 +98,33 @@ test("automatic timeout protects bots, owners, and moderators", () => {
       hasModerationPermission: false,
     }),
     null,
+  );
+});
+
+test("spam tracking includes other bots but excludes this Bot and webhooks", () => {
+  assert.equal(
+    shouldTrackSpamMessage({
+      authorId: "11111111111111111",
+      clientUserId: "22222222222222222",
+      isWebhook: false,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldTrackSpamMessage({
+      authorId: "22222222222222222",
+      clientUserId: "22222222222222222",
+      isWebhook: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldTrackSpamMessage({
+      authorId: "11111111111111111",
+      clientUserId: "22222222222222222",
+      isWebhook: true,
+    }),
+    false,
   );
 });
 

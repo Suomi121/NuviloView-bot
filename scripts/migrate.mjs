@@ -1,6 +1,10 @@
 import pg from "pg";
 import { readFile } from "node:fs/promises";
 
+if (!process.argv.includes("--execute-bootstrap")) {
+  throw new Error("Legacy schema bootstrap is disabled by default. Use the reviewed db:bootstrap command only for an empty database.");
+}
+
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set before running migrations.");
 }
@@ -596,6 +600,21 @@ try {
       END IF;
     END $$
   `);
+  const nukeProtectionMigration = await readFile(
+    new URL("./migrations/20260814-nuke-protection-v1.sql", import.meta.url),
+    "utf8",
+  );
+  await pool.query(nukeProtectionMigration);
+  const securityV1Migration = await readFile(
+    new URL("./migrations/20260821-security-v1.sql", import.meta.url),
+    "utf8",
+  );
+  await pool.query(securityV1Migration);
+  const distributedRuntimeMigration = await readFile(
+    new URL("./migrations/20260816-distributed-runtime.sql", import.meta.url),
+    "utf8",
+  );
+  await pool.query(distributedRuntimeMigration);
   const reactionRoleMigration = await readFile(
     new URL("./migrations/20260816-reaction-roles.sql", import.meta.url),
     "utf8",

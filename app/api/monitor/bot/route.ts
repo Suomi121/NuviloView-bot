@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { pool } from '@/lib/db'
+import { evaluateRuntimeSnapshot, getRuntimeMonitorConfig } from '@/lib/runtime-monitor.mjs'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,6 +31,46 @@ export async function GET(request: Request) {
   }
 
   try {
+    if (process.env.NUVILOVIEW_DISTRIBUTED_SINGLETON?.trim().toLowerCase() === 'true') {
+      const config = getRuntimeMonitorConfig(process.env)
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN READ ONLY')
+        const clock = await client.query<{ dbNow: Date }>('SELECT CURRENT_TIMESTAMP AS "dbNow"')
+        const lease = await client.query(`
+          SELECT "serviceKey", "ownerInstanceId", "hostId", "fencingToken", "leaseExpiresAt", "acquiredAt", "renewedAt"
+          FROM "service_lease"
+          WHERE "serviceKey" = $1
+          LIMIT 1
+        `, [config.serviceKey])
+        const heartbeats = await client.query(`
+          SELECT "instanceId", "hostId", "fencingToken", "startedAt", "lastHeartbeatAt", "status", "leaseState"
+          FROM "service_heartbeat"
+          WHERE "serviceKey" = $1
+            AND "lastHeartbeatAt" >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+          ORDER BY "lastHeartbeatAt" DESC
+          LIMIT 500
+        `, [config.serviceKey])
+        await client.query('COMMIT')
+        const result = evaluateRuntimeSnapshot({
+          dbNow: clock.rows[0]?.dbNow,
+          lease: lease.rows[0] ?? null,
+          heartbeats: heartbeats.rows,
+          config,
+        })
+        const isAvailable = result.state === 'Healthy' || result.state === 'Warning'
+        return NextResponse.json(
+          { status: isAvailable ? 'ok' : 'down' },
+          { status: isAvailable ? 200 : 503, headers: noStoreHeaders },
+        )
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {})
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+
     const result = await pool.query<{ lastSeenAt: Date; stoppedAt: Date | null }>(`
       SELECT "lastSeenAt", "stoppedAt"
       FROM "bot_heartbeat"

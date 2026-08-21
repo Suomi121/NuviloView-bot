@@ -11,14 +11,23 @@ $envFile = Join-Path $projectRoot '.env.local'
 $botFile = Join-Path $projectRoot 'discord-bot.mjs'
 $tokenCheckFile = Join-Path $PSScriptRoot 'token-leak-check.mjs'
 $logDirectory = Join-Path $projectRoot 'logs'
+$runtimeDirectory = Join-Path $projectRoot 'data\runtime'
 $runnerLog = Join-Path $logDirectory 'bot-runner.log'
 $botOutputLog = Join-Path $logDirectory 'bot-output.log'
 $tokenCheckLog = Join-Path $logDirectory 'token-leak-check.log'
+$runnerPidFile = Join-Path $logDirectory 'bot-runner.pid'
+$stopRequestFile = Join-Path $logDirectory 'bot-runner.stop'
+$disabledFlagFile = Join-Path $runtimeDirectory 'bot-disabled.flag'
 $mutexName = 'Global\NuviloViewDiscordBotRunner'
 $maxLogSizeBytes = 10MB
 $logRetentionDays = 14
 $stableRunSeconds = 300
 $maximumRestartDelaySeconds = 900
+$leaseContentionExitCode = 20
+$leaseLostExitCode = 21
+$leaseConfigurationExitCode = 22
+$leaseDatabaseExitCode = 23
+$leaseContentionDelaySeconds = 300
 
 $nodeCommand = Get-Command 'node.exe' -ErrorAction SilentlyContinue
 $nodePath = if (Test-Path -LiteralPath 'C:\Program Files\nodejs\node.exe') {
@@ -30,6 +39,7 @@ $nodePath = if (Test-Path -LiteralPath 'C:\Program Files\nodejs\node.exe') {
 }
 
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
 Set-Location $projectRoot
 
 function Write-RunnerLog {
@@ -140,6 +150,21 @@ function Get-RestartDelaySeconds {
   return [Math]::Min(30 * [Math]::Pow(2, $power), $maximumRestartDelaySeconds)
 }
 
+function Test-StopRequested {
+  return Test-Path -LiteralPath $stopRequestFile
+}
+
+function Wait-ForStopRequest {
+  param([Parameter(Mandatory = $true)][int]$Seconds)
+
+  $checks = [Math]::Max(1, $Seconds * 4)
+  for ($check = 0; $check -lt $checks; $check++) {
+    if (Test-StopRequested) { return $true }
+    Start-Sleep -Milliseconds 250
+  }
+  return $false
+}
+
 $mutex = $null
 $hasMutex = $false
 
@@ -155,6 +180,15 @@ try {
     Write-RunnerLog 'Another Bot runner is already active. This duplicate launch will exit.'
     exit 0
   }
+
+  if (-not $ValidateOnly -and (Test-Path -LiteralPath $disabledFlagFile)) {
+    Write-RunnerLog 'Bot is disabled by the persistent PC control setting. Runner will exit.'
+    exit 0
+  }
+
+  Remove-Item -LiteralPath $stopRequestFile -Force -ErrorAction SilentlyContinue
+  Set-Content -LiteralPath $runnerPidFile -Value $PID -Encoding ASCII
+  $env:NUVILOVIEW_BOT_STOP_FILE = $stopRequestFile
 
   $configurationErrors = @(Test-BotConfiguration)
   if ($configurationErrors.Count -gt 0) {
@@ -183,6 +217,11 @@ try {
   $consecutiveQuickFailures = 0
 
   while ($true) {
+    if (Test-StopRequested) {
+      Write-RunnerLog 'Local stop requested before Bot launch. Runner will exit.'
+      exit 0
+    }
+
     foreach ($logPath in @($runnerLog, $botOutputLog, $tokenCheckLog)) {
       Rotate-Log -Path $logPath
     }
@@ -193,7 +232,10 @@ try {
         Write-RunnerLog "Configuration error: $configurationError"
       }
       if ($Once) { exit 1 }
-      Start-Sleep -Seconds 60
+      if (Wait-ForStopRequest -Seconds 60) {
+        Write-RunnerLog 'Local stop requested while waiting for a valid configuration.'
+        exit 0
+      }
       continue
     }
 
@@ -203,7 +245,10 @@ try {
     if ($tokenCheckExitCode -ne 0) {
       Write-RunnerLog "Token leak check failed with exit code $tokenCheckExitCode. Bot start was blocked."
       if ($Once) { exit $tokenCheckExitCode }
-      Start-Sleep -Seconds 60
+      if (Wait-ForStopRequest -Seconds 60) {
+        Write-RunnerLog 'Local stop requested while startup was blocked by the token leak check.'
+        exit 0
+      }
       continue
     }
 
@@ -230,6 +275,11 @@ try {
     $botExitCode = $LASTEXITCODE
     $runSeconds = [Math]::Max(0, [int]((Get-Date) - $runStartedAt).TotalSeconds)
 
+    if (Test-StopRequested) {
+      Write-RunnerLog "Bot accepted the local stop request and exited with code $botExitCode after $runSeconds seconds."
+      exit 0
+    }
+
     if ($Once) {
       Write-RunnerLog "Bot stopped with exit code $botExitCode after $runSeconds seconds. Once mode will exit."
       exit $botExitCode
@@ -244,7 +294,34 @@ try {
         }
       }
       Write-RunnerLog "Discord session-start limit reached. Bot exited with code $botExitCode; retrying in $delaySeconds seconds."
-      Start-Sleep -Seconds $delaySeconds
+      if (Wait-ForStopRequest -Seconds $delaySeconds) {
+        Write-RunnerLog 'Local stop requested during the Discord session-limit wait.'
+        exit 0
+      }
+      continue
+    }
+
+    if ($botExitCode -eq $leaseContentionExitCode) {
+      Write-RunnerLog "Another host owns the distributed Bot lease. Retrying in $leaseContentionDelaySeconds seconds without contacting Discord."
+      if (Wait-ForStopRequest -Seconds $leaseContentionDelaySeconds) {
+        Write-RunnerLog 'Local stop requested during the distributed lease wait.'
+        exit 0
+      }
+      continue
+    }
+
+    if ($botExitCode -eq $leaseConfigurationExitCode) {
+      Write-RunnerLog 'Distributed singleton configuration is invalid. Automatic restart is stopped until configuration is corrected.'
+      exit $botExitCode
+    }
+
+    if ($botExitCode -eq $leaseLostExitCode -or $botExitCode -eq $leaseDatabaseExitCode) {
+      $leaseFailureDelaySeconds = 60
+      Write-RunnerLog "Distributed lease safety stopped the Bot with exit code $botExitCode. Retrying in $leaseFailureDelaySeconds seconds."
+      if (Wait-ForStopRequest -Seconds $leaseFailureDelaySeconds) {
+        Write-RunnerLog 'Local stop requested during the distributed lease recovery wait.'
+        exit 0
+      }
       continue
     }
 
@@ -257,9 +334,21 @@ try {
     }
 
     Write-RunnerLog "Bot stopped with exit code $botExitCode after $runSeconds seconds. Restarting in $delaySeconds seconds."
-    Start-Sleep -Seconds $delaySeconds
+    if (Wait-ForStopRequest -Seconds $delaySeconds) {
+      Write-RunnerLog 'Local stop requested during the restart delay.'
+      exit 0
+    }
   }
 } finally {
+  $recordedPid = if (Test-Path -LiteralPath $runnerPidFile) {
+    (Get-Content -LiteralPath $runnerPidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+  } else {
+    $null
+  }
+  if ($recordedPid -and $recordedPid.ToString().Trim() -eq $PID.ToString()) {
+    Remove-Item -LiteralPath $runnerPidFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stopRequestFile -Force -ErrorAction SilentlyContinue
+  }
   if ($hasMutex -and $mutex) {
     $mutex.ReleaseMutex()
   }

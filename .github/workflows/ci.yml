@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/nuviloview_ci
+      BETTER_AUTH_SECRET: ci-only-placeholder-not-a-production-secret
+      BETTER_AUTH_URL: http://127.0.0.1:3000
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+      GUILD_RESET_ENABLED: "false"
+      NUVILOVIEW_NUKE_PROTECTION: "false"
+      NUVILOVIEW_DISTRIBUTED_SINGLETON: "false"
+      MESSAGE_HISTORY_IMPORT_V2_ENABLED: "false"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Use locked pnpm version
+        uses: pnpm/action-setup@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate migration manifest
+        run: pnpm run migration:validate
+
+      - name: Check static schema drift
+        run: pnpm run migration:drift:static
+
+      - name: Scan repository for token leaks
+        run: pnpm run security:tokens
+
+      - name: Check JavaScript module syntax
+        run: pnpm run syntax:check
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Test
+        run: pnpm test
+
+      - name: Check critical production dependency advisories
+        run: pnpm run dependency:audit
+
+      - name: Build
+        run: pnpm run build

@@ -8,7 +8,7 @@ export function comparison(current: number, previous: number, options?: { minimu
 export function percentagePointChange(currentRate: number | null, previousRate: number | null): number | null;
 export function contribution(delta: number, totalDelta: number): number | null;
 export function scoreStatus(score: number | null): "excellent" | "healthy" | "fair" | "weak" | "critical" | "unavailable";
-export function calculateHealthScore(input: Record<string, number | null | undefined>): { score: number | null; status: string; provisionalScore: number | null; provisionalStatus: string; isAvailable: boolean; isProvisional: boolean; availabilityReason: string | null; availabilityReasons: string[]; availableCategoryCount: number; confidence: "high" | "medium" | "low"; confidenceScore: number | null; categories: Record<string, number | null>; availableWeight: number; inputs: Record<string, number | null> };
+export function calculateHealthScore(input: Record<string, number | boolean | null | undefined>): { score: number | null; status: string; provisionalScore: number | null; provisionalStatus: string; isAvailable: boolean; isProvisional: boolean; availabilityReason: string | null; availabilityReasons: string[]; availableCategoryCount: number; confidence: "high" | "medium" | "low"; confidenceScore: number | null; categories: Record<string, number | null>; availableWeight: number; inputs: Record<string, number | null> };
 export function channelStatus(input: { current: number; previous: number; uniqueUsers: number }): string;
 export function buildInsights(input: any): any[];
 export function isAuthorizedGuild(managedGuilds: Array<{ id: string }>, guildId: string): boolean;

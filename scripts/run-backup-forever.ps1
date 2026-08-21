@@ -1,60 +1,112 @@
-$ErrorActionPreference = 'Continue'
+[CmdletBinding()]
+param(
+  [ValidateSet('schedule', 'once', 'status')][string]$Mode = 'schedule',
+  [ValidateRange(0, 23)][int]$TargetHour = 0,
+  [ValidateRange(30, 3600)][int]$PollSeconds = 60,
+  [ValidateRange(1, 3650)][int]$RetentionDays = 90,
+  [ValidateRange(1, 5)][int]$DestinationCopyAttempts = 3
+)
 
+$ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $logDirectory = Join-Path $projectRoot 'logs'
 $logFile = Join-Path $logDirectory 'backup.log'
-$markerFile = Join-Path $logDirectory 'backup-last-run.txt'
+$successMarker = Join-Path $logDirectory 'backup-last-success.json'
+$attemptMarker = Join-Path $logDirectory 'backup-last-attempt.json'
+$statusFile = Join-Path $logDirectory 'backup-status.json'
 $backupScript = Join-Path $PSScriptRoot 'backup-server.ps1'
-$targetHour = 0 # 00:00 (midnight), local PC time
-$mutexName = 'Global\NuviloViewBackupRunner'
+$mutex = $null
+$hasMutex = $false
+
+function Rotate-BackupLog {
+  if (-not (Test-Path -LiteralPath $logFile -PathType Leaf)) { return }
+  if ((Get-Item -LiteralPath $logFile).Length -lt 5MB) { return }
+  for ($index = 4; $index -ge 1; $index -= 1) {
+    $source = "$logFile.$index"
+    $destination = "$logFile.$($index + 1)"
+    if (Test-Path -LiteralPath $source) { Move-Item -LiteralPath $source -Destination $destination -Force }
+  }
+  Move-Item -LiteralPath $logFile -Destination "$logFile.1" -Force
+}
+
+function Write-RunnerLog {
+  param([string]$Level, [string]$Message)
+  Rotate-BackupLog
+  $safeMessage = $Message -replace '(?i)postgres(?:ql)?://[^\s]+', '[REDACTED_DATABASE_URL]'
+  $safeMessage = $safeMessage -replace '(?i)https://(?:canary\.)?discord(?:app)?\.com/api/webhooks/[^\s]+', '[REDACTED_WEBHOOK]'
+  "[$((Get-Date).ToString('o'))] [$Level] $safeMessage" | Add-Content -LiteralPath $logFile -Encoding UTF8
+}
+
+function Read-MarkerDate {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  try { return [string](Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json).date } catch { return $null }
+}
+
+function Write-Marker {
+  param([string]$Path, [string]$Date, [string]$Status)
+  [ordered]@{ date = $Date; status = $Status; updatedAt = (Get-Date).ToString('o') } |
+    ConvertTo-Json | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Invoke-OneBackup {
+  $today = (Get-Date).ToString('yyyy-MM-dd')
+  Write-Marker -Path $attemptMarker -Date $today -Status 'started'
+  Write-RunnerLog -Level 'INFO' -Message 'Starting the single daily backup pipeline attempt.'
+  $arguments = @(
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', $backupScript,
+    '-RetentionDays', [string]$RetentionDays,
+    '-DestinationCopyAttempts', [string]$DestinationCopyAttempts
+  )
+  $encryptEnabled = [Environment]::GetEnvironmentVariable('NUVILOVIEW_BACKUP_ENCRYPTION_ENABLED', 'Process') -eq 'true'
+  if ($encryptEnabled) { $arguments += '-Encrypt' }
+  & powershell.exe @arguments 2>&1 | ForEach-Object { Write-RunnerLog -Level 'PIPELINE' -Message ([string]$_) }
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -eq 0) {
+    Write-Marker -Path $attemptMarker -Date $today -Status 'completed'
+    Write-Marker -Path $successMarker -Date $today -Status 'complete'
+    Write-RunnerLog -Level 'INFO' -Message 'Daily backup completed and restore verification passed.'
+  } else {
+    Write-Marker -Path $attemptMarker -Date $today -Status 'failed'
+    Write-RunnerLog -Level 'ERROR' -Message 'Daily backup failed. The full pipeline will not be regenerated automatically again today.'
+  }
+  return $exitCode
+}
 
 New-Item -ItemType Directory -Force $logDirectory | Out-Null
 Set-Location $projectRoot
 
-function Invoke-DailyBackup {
-  $now = Get-Date
-  $today = $now.ToString('yyyy-MM-dd')
-  $alreadyBackedUp = (Test-Path $markerFile) -and ((Get-Content $markerFile -Raw).Trim() -eq $today)
-
-  # Run exactly once each calendar day. If the PC starts later in the day,
-  # catch up immediately instead of silently missing that day's backup.
-  if ($now.Hour -lt $targetHour -or $alreadyBackedUp) { return }
-
-  "[$($now.ToString('s'))] Starting daily server backup to F: and G:" | Add-Content -Path $logFile
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $backupScript 2>&1 |
-    Out-File -FilePath $logFile -Append -Encoding utf8
-
-  if ($LASTEXITCODE -eq 0) {
-    Set-Content -Path $markerFile -Value $today -NoNewline
-    "[$((Get-Date).ToString('s'))] Daily server backup completed" | Add-Content -Path $logFile
-  } else {
-    "[$((Get-Date).ToString('s'))] Daily server backup failed; it will retry in 5 minutes" | Add-Content -Path $logFile
-  }
+if ($Mode -eq 'status') {
+  if (Test-Path -LiteralPath $statusFile -PathType Leaf) { Get-Content -LiteralPath $statusFile -Raw }
+  else { [ordered]@{ status = 'never_run'; updatedAt = $null } | ConvertTo-Json }
+  exit 0
 }
 
-$mutex = $null
-$hasMutex = $false
 try {
-  $mutex = New-Object System.Threading.Mutex($false, $mutexName)
-  try {
-    $hasMutex = $mutex.WaitOne(0, $false)
-  } catch [System.Threading.AbandonedMutexException] {
-    $hasMutex = $true
-  }
+  try { $mutex = New-Object System.Threading.Mutex($false, 'Global\NuviloViewBackupRunnerV2') }
+  catch [System.UnauthorizedAccessException] { $mutex = New-Object System.Threading.Mutex($false, 'Local\NuviloViewBackupRunnerV2') }
+  try { $hasMutex = $mutex.WaitOne(0, $false) } catch [System.Threading.AbandonedMutexException] { $hasMutex = $true }
   if (-not $hasMutex) {
-    "[$((Get-Date).ToString('s'))] Another backup runner is already active; duplicate process exiting" |
-      Add-Content -Path $logFile
+    Write-RunnerLog -Level 'INFO' -Message 'Another backup runner is already active; duplicate process is exiting.'
     exit 0
   }
+
+  if ($Mode -eq 'once') { exit (Invoke-OneBackup) }
+
+  Write-RunnerLog -Level 'INFO' -Message "Backup scheduler started. One full pipeline attempt is allowed per calendar day at or after hour $TargetHour."
   while ($true) {
-    Invoke-DailyBackup
-    Start-Sleep -Seconds 300
+    $now = Get-Date
+    $today = $now.ToString('yyyy-MM-dd')
+    $attemptedDate = Read-MarkerDate -Path $attemptMarker
+    if ($now.Hour -ge $TargetHour -and $attemptedDate -ne $today) {
+      $null = Invoke-OneBackup
+    }
+    Start-Sleep -Seconds $PollSeconds
   }
 } finally {
-  if ($hasMutex -and $mutex) {
-    $mutex.ReleaseMutex()
-  }
-  if ($mutex) {
-    $mutex.Dispose()
-  }
+  if ($hasMutex -and $mutex) { try { $mutex.ReleaseMutex() } catch { } }
+  if ($mutex) { $mutex.Dispose() }
 }

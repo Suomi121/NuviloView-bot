@@ -29,6 +29,7 @@ test("backup source policy excludes secrets, generated output, logs, and private
 test("backup secret scan detects values without reporting the secret itself", () => {
   assert.deepEqual(scanTextForSecretTypes("API_KEY=\nCLIENT_SECRET=<configure-me>\n"), []);
   assert.deepEqual(scanTextForSecretTypes("const token = process.env.BOT_TOKEN;"), []);
+  assert.deepEqual(scanTextForSecretTypes("DATABASE_URL=postgresql://ci:ci@127.0.0.1/app_ci"), []);
   assert.deepEqual(scanTextForSecretTypes(["password = ", "a-real-looking-value-12345"].join("")), ["literal_secret_assignment"]);
   assert.deepEqual(scanTextForSecretTypes(["DATABASE_URL=postgres", "ql://user:password@db.invalid/app"].join("")), ["database_url_with_password"]);
   assert.deepEqual(scanTextForSecretTypes(["-----BEGIN ", "PRIVATE KEY-----\nnot-a-real-key"].join("")), ["private_key"]);

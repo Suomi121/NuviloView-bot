@@ -80,7 +80,13 @@ export function scanTextForSecretTypes(content) {
   const value = String(content ?? "");
   const findings = new Set();
   if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(value)) findings.add("private_key");
-  if (/\bpostgres(?:ql)?:\/\/[^\s:@/]+:[^\s@/]+@[^\s/]+/i.test(value)) findings.add("database_url_with_password");
+  const databaseUrlPattern = /\bpostgres(?:ql)?:\/\/([^\s:@/]+):([^\s@/]+)@[^\s/]+/gi;
+  for (const match of value.matchAll(databaseUrlPattern)) {
+    const credentials = `${match[1]}:${match[2]}`;
+    const isExplicitTestCredential = /(?:example|placeholder|change-?me|dummy|redacted|test[_-]?only)/i.test(credentials)
+      || /(?:^|[^a-z0-9])ci(?:[^a-z0-9]|$)/i.test(credentials);
+    if (!isExplicitTestCredential) findings.add("database_url_with_password");
+  }
   if (/https:\/\/(?:canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9._-]+/i.test(value)) findings.add("discord_webhook");
   if (/\b(?:mfa\.[\w-]{20,}|[\w-]{24,}\.[\w-]{6}\.[\w-]{20,})\b/.test(value)) findings.add("discord_token");
 

@@ -20,7 +20,7 @@ type Overview = {
   guild: { id: string; name: string; connected: boolean };
   featureEnabled: boolean;
   scopes: string[];
-  protection: { enabled: boolean; mode: "shadow" | "monitor" | "manual" | "protect" | "strict"; status: string; reason: string | null; lastDiagnosticAt: string | null; missingPermissions: string[] };
+  protection: { enabled: boolean; nukeProtectionMode: "off" | "shadow" | "active"; effectiveMode: "off" | "shadow" | "active"; mode: "shadow" | "monitor" | "manual" | "protect" | "strict"; status: string; reason: string | null; lastDiagnosticAt: string | null; missingPermissions: string[] };
   riskScore: number;
   openIncidents: number;
   last24HoursIncidents: number;
@@ -45,7 +45,7 @@ type IncidentDetail = {
 };
 type PolicyResponse = {
   policy: {
-    enabled: boolean; mode: "shadow" | "monitor" | "manual" | "protect" | "strict"; sensitivity: string; alertEnabled: boolean;
+    enabled: boolean; nukeProtectionMode: "off" | "shadow" | "active"; mode: "shadow" | "monitor" | "manual" | "protect" | "strict"; sensitivity: string; alertEnabled: boolean;
     alertChannelId: string | null; manualContainment: boolean; automaticContainment: boolean;
     channelProtection: boolean; roleProtection: boolean; autoRestore: boolean;
     webhookProtection: boolean; botSpamProtection: boolean; botDuplicateSpam: boolean; botEveryoneSpam: boolean;
@@ -56,6 +56,8 @@ type PolicyResponse = {
   trustedActors: Array<{ actorId: string; label: string | null; actorType: string; createdAt: string }>;
   guildOwner: { actorId: string; trustedAutomatically: boolean } | null;
   scopes: string[];
+  globalKillSwitchEnabled: boolean;
+  effectiveMode: "off" | "shadow" | "active";
 };
 type Snapshot = { id: string; source: string; schemaVersion: number; checksum: string; createdAt: string; channelCount: number; roleCount: number };
 
@@ -219,6 +221,17 @@ export default function SecurityPage() {
     await mutate("/api/security/policy", patch, "PUT");
   }
 
+  async function changeNukeProtectionMode(nextMode: "off" | "shadow" | "active") {
+    const current = policyData?.policy.nukeProtectionMode;
+    if (!current || current === nextMode) return;
+    const message = nextMode === "off"
+      ? "Disable Nuke Protection v2? Risk scoring, incidents, alerts, containment and restore will stop for this server."
+      : nextMode === "active"
+        ? `This will enable automated nuke detection.${policyData.policy.automaticContainment ? " Auto Containment is currently saved as ON and may run when the response policy permits it." : " Auto Containment remains OFF."}`
+        : "Switch Nuke Protection v2 to Shadow? Detection and incidents continue, but containment and restore are blocked.";
+    if (window.confirm(message)) await updatePolicy({ nukeProtectionMode: nextMode });
+  }
+
   const incident = detail?.incident;
   const riskExplanation = incident?.riskExplanation as {
     baseItems?: Array<{ actionType: string; points: number }>;
@@ -226,7 +239,8 @@ export default function SecurityPage() {
     rawRisk?: number;
   } | undefined;
   const containmentProtected = incident?.guildOwner || incident?.trustedActor || incident?.selfActor;
-  const containmentAvailable = canContain && overview?.featureEnabled && overview.protection.mode !== "shadow" && overview.protection.mode !== "monitor" && !containmentProtected;
+  const containmentAvailable = canContain && overview?.featureEnabled && overview.protection.effectiveMode === "active" && overview.protection.mode !== "shadow" && overview.protection.mode !== "monitor" && !containmentProtected;
+  const nukeOff = overview?.protection.effectiveMode === "off";
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -235,7 +249,7 @@ export default function SecurityPage() {
           <a href="/dashboard" className="rounded-lg p-2 text-muted-foreground transition hover:bg-secondary hover:text-foreground" aria-label="ダッシュボードへ戻る"><ArrowLeft className="h-5 w-5" /></a>
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="rounded-xl bg-primary/15 p-2 text-primary"><ShieldAlert className="h-5 w-5" /></span>
-            <div><h1 className="font-bold">Security</h1><p className="text-xs text-muted-foreground">Nuke Protection v1</p></div>
+            <div><h1 className="font-bold">Security</h1><p className="text-xs text-muted-foreground">Nuke Protection v2</p></div>
           </div>
           <select value={guildId} onChange={(event) => void selectGuild(event.target.value)} className="max-w-64 rounded-lg border border-border bg-card px-3 py-2 text-sm">
             {guilds.map((guild) => <option key={guild.id} value={guild.id}>{guild.name}</option>)}
@@ -255,7 +269,9 @@ export default function SecurityPage() {
             </div>
             <p className="mt-3 text-sm text-muted-foreground">{overview.protection.reason || "必要な監査権限とGateway Intentを確認済みです。"}</p>
             {overview.protection.missingPermissions.length > 0 && <p className="mt-2 text-xs text-amber-300">Protection degraded — Missing permission: {overview.protection.missingPermissions.join(", ")}</p>}
-            {overview.protection.mode === "shadow" && <div className="mt-4 flex items-center gap-2 rounded-lg border border-blue-500/25 bg-blue-500/10 px-3 py-2 text-sm text-blue-200"><Eye className="h-4 w-4" />Shadow Mode — 検知・記録のみ。封じ込めは実行されません。</div>}
+            {overview.protection.effectiveMode === "off" && <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200"><strong>Nuke Protection v2 is disabled for this server.</strong><p className="mt-1 text-xs">No nuke risk scoring, incidents, alerts, containment or restore actions will be performed.</p></div>}
+            {overview.protection.effectiveMode === "shadow" && <div className="mt-4 flex items-center gap-2 rounded-lg border border-blue-500/25 bg-blue-500/10 px-3 py-2 text-sm text-blue-200"><Eye className="h-4 w-4" />Shadow — Detection only. No containment or restore actions.</div>}
+            {!overview.featureEnabled && <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">Global emergency kill switch is OFF. Every Guild is effectively Off.</div>}
           </section>
 
           <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -291,26 +307,26 @@ export default function SecurityPage() {
                   <button disabled={!canManagePolicy || busy} onClick={() => void mutate(`/api/security/incidents/${incident?.id}/resolve`, { reason: "Reviewed in Security dashboard" })} className="rounded-lg border border-border px-3 py-2 text-xs font-bold hover:bg-secondary disabled:opacity-35">Resolve</button>
                   <button disabled={!canManagePolicy || busy} onClick={() => void mutate(`/api/security/incidents/${incident?.id}/false-positive`, { reason: "Marked in Security dashboard" })} className="rounded-lg border border-border px-3 py-2 text-xs font-bold hover:bg-secondary disabled:opacity-35">False positive</button>
                 </div>
-                {!containmentAvailable && <p className="text-xs text-muted-foreground">Containment unavailable: {overview.protection.mode === "shadow" ? "Shadow Mode" : containmentProtected ? "Guild owner / trusted actor / NuviloView self is protected" : "owner scope is required"}.</p>}
+                {!containmentAvailable && <p className="text-xs text-muted-foreground">Containment unavailable: {overview.protection.effectiveMode !== "active" ? `${overview.protection.effectiveMode.toUpperCase()} mode` : containmentProtected ? "Guild owner / trusted actor / NuviloView self is protected" : "required scope or response policy is unavailable"}.</p>}
               </div>}
             </section>
           </div>
 
           {policyData && <section className="grid gap-6 xl:grid-cols-2">
             <div className="rounded-2xl border border-border bg-card/75 p-5"><div className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-primary" /><h2 className="font-bold">Security Policy</h2></div><div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <Toggle label="Nuke Protection" checked={policyData.policy.enabled} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ enabled: checked })} />
+              <div className="sm:col-span-2"><p className="text-xs font-bold tracking-[.12em] text-muted-foreground">NUKE PROTECTION V2 MODE</p><div className="mt-2 grid grid-cols-3 gap-2">{(["off", "shadow", "active"] as const).map((mode) => <button key={mode} disabled={!canManagePolicy || busy} onClick={() => void changeNukeProtectionMode(mode)} className={`rounded-xl border px-3 py-3 text-sm font-bold transition disabled:opacity-40 ${policyData.policy.nukeProtectionMode === mode ? "border-primary bg-primary/15 text-primary" : "border-border bg-secondary/35 hover:bg-secondary"}`}>{mode[0].toUpperCase() + mode.slice(1)}</button>)}</div><p className="mt-2 text-xs text-muted-foreground">{policyData.effectiveMode === "off" ? "Disabled: scoring, incidents, alerts and actions are stopped." : policyData.effectiveMode === "shadow" ? "Detection only. Containment and restore are blocked." : "Detection enabled. Automated actions still require their separate settings."}</p></div>
               <Toggle label="Channel Protection" checked={policyData.policy.channelProtection} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ channelProtection: checked })} />
               <Toggle label="Role Protection" checked={policyData.policy.roleProtection} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ roleProtection: checked })} />
               <Toggle label="Webhook Protection" checked={policyData.policy.webhookProtection} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ webhookProtection: checked })} />
               <Toggle label="Bot Spam Protection" checked={policyData.policy.botSpamProtection} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ botSpamProtection: checked })} />
               <Toggle label="Duplicate Spam" checked={policyData.policy.botDuplicateSpam} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ botDuplicateSpam: checked })} />
               <Toggle label="Everyone / Here Spam" checked={policyData.policy.botEveryoneSpam} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ botEveryoneSpam: checked })} />
-              <Toggle label="Auto Restore" checked={policyData.policy.autoRestore} disabled={!canManagePolicy || busy || !["protect", "strict"].includes(policyData.policy.mode)} onChange={(checked) => void updatePolicy({ autoRestore: checked })} />
-              <Toggle label="Automatic Kick" checked={policyData.policy.automaticContainment} disabled={!canManagePolicy || busy || !["protect", "strict"].includes(policyData.policy.mode)} onChange={(checked) => void updatePolicy({ automaticContainment: checked })} />
-              <Toggle label="Dashboard / Discord alerts" checked={policyData.policy.alertEnabled} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ alertEnabled: checked })} />
-              <Toggle label="Manual containment" checked={policyData.policy.manualContainment} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ manualContainment: checked })} />
-              <Toggle label="Daily snapshot" checked={policyData.policy.snapshotEnabled} disabled={!canManagePolicy || busy} onChange={(checked) => void updatePolicy({ snapshotEnabled: checked })} />
-              <label className="text-sm"><span className="mb-2 block text-xs font-bold text-muted-foreground">MODE</span><select value={policyData.policy.mode} disabled={!canManagePolicy || busy} onChange={(event) => void updatePolicy({ mode: event.target.value })} className="w-full rounded-lg border border-border bg-secondary px-3 py-2"><option value="shadow">Shadow</option><option value="monitor">Monitor only</option><option value="manual">Manual containment</option><option value="protect">Protect</option><option value="strict">Strict</option></select></label>
+              <Toggle label={policyData.effectiveMode === "off" ? "Auto Restore — Disabled because Nuke Protection is Off" : "Auto Restore"} checked={policyData.policy.autoRestore} disabled={!canManagePolicy || busy || policyData.effectiveMode !== "active" || !["protect", "strict"].includes(policyData.policy.mode)} onChange={(checked) => void updatePolicy({ autoRestore: checked })} />
+              <Toggle label={policyData.effectiveMode === "off" ? "Automatic Kick — Disabled because Nuke Protection is Off" : "Automatic Kick"} checked={policyData.policy.automaticContainment} disabled={!canManagePolicy || busy || policyData.effectiveMode !== "active" || !["protect", "strict"].includes(policyData.policy.mode)} onChange={(checked) => void updatePolicy({ automaticContainment: checked })} />
+              <Toggle label="Dashboard / Discord alerts" checked={policyData.policy.alertEnabled} disabled={!canManagePolicy || busy || policyData.effectiveMode === "off"} onChange={(checked) => void updatePolicy({ alertEnabled: checked })} />
+              <Toggle label="Manual containment" checked={policyData.policy.manualContainment} disabled={!canManagePolicy || busy || policyData.effectiveMode !== "active"} onChange={(checked) => void updatePolicy({ manualContainment: checked })} />
+              <Toggle label="Daily snapshot" checked={policyData.policy.snapshotEnabled} disabled={!canManagePolicy || busy || policyData.effectiveMode === "off"} onChange={(checked) => void updatePolicy({ snapshotEnabled: checked })} />
+              <label className="text-sm"><span className="mb-2 block text-xs font-bold text-muted-foreground">RESPONSE POLICY</span><select value={policyData.policy.mode} disabled={!canManagePolicy || busy || policyData.effectiveMode !== "active"} onChange={(event) => void updatePolicy({ mode: event.target.value })} className="w-full rounded-lg border border-border bg-secondary px-3 py-2"><option value="shadow">Evidence only</option><option value="monitor">Monitor only</option><option value="manual">Manual containment</option><option value="protect">Protect</option><option value="strict">Strict</option></select></label>
               <label className="text-sm"><span className="mb-2 block text-xs font-bold text-muted-foreground">SENSITIVITY</span><select value={policyData.policy.sensitivity} disabled={!canManagePolicy || busy} onChange={(event) => void updatePolicy({ sensitivity: event.target.value })} className="w-full rounded-lg border border-border bg-secondary px-3 py-2"><option value="low">Low</option><option value="balanced">Balanced</option><option value="high">High</option><option value="custom">Custom</option></select></label>
               <label className="text-sm sm:col-span-2"><span className="mb-2 block text-xs font-bold text-muted-foreground">ALERT CHANNEL ID</span><input key={`${guildId}:${policyData.policy.alertChannelId ?? ""}`} defaultValue={policyData.policy.alertChannelId ?? ""} disabled={!canManagePolicy || busy} onBlur={(event) => { const value = event.target.value.trim(); if (value !== (policyData.policy.alertChannelId ?? "")) void updatePolicy({ alertChannelId: value || null }); }} placeholder="Discord channel ID (optional)" className="w-full rounded-lg border border-border bg-secondary px-3 py-2" /></label>
               <div className="grid grid-cols-2 gap-3 sm:col-span-2">
@@ -327,7 +343,7 @@ export default function SecurityPage() {
             <div className="rounded-2xl border border-border bg-card/75 p-5"><div className="flex items-center gap-2"><UserCheck className="h-4 w-4 text-primary" /><h2 className="font-bold">Trusted actors</h2></div>{policyData.guildOwner && <div className="mt-4 rounded-lg border border-border bg-secondary/45 px-3 py-2 text-sm"><strong>Guild Owner</strong><p className="mt-1 break-all text-xs text-muted-foreground">{policyData.guildOwner.actorId} · automatically protected</p></div>}<div className="mt-3 space-y-2">{policyData.trustedActors.map((actor) => <div key={actor.actorId} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{actor.label || actor.actorId}</p><p className="truncate text-xs text-muted-foreground">{actor.actorId} · {actor.actorType}</p></div><button disabled={!canManagePolicy || busy} onClick={() => void mutate("/api/security/trusted", { actorId: actor.actorId }, "DELETE")} className="text-xs text-red-300 disabled:opacity-30">Remove</button></div>)}</div><div className="mt-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"><input value={trustedActorId} onChange={(event) => setTrustedActorId(event.target.value)} placeholder="Discord User / Bot ID" className="rounded-lg border border-border bg-secondary px-3 py-2 text-sm" /><input value={trustedLabel} onChange={(event) => setTrustedLabel(event.target.value)} placeholder="Label (optional)" className="rounded-lg border border-border bg-secondary px-3 py-2 text-sm" /><button disabled={!canManagePolicy || busy || !trustedActorId} onClick={() => void mutate("/api/security/trusted", { actorId: trustedActorId, label: trustedLabel }).then((result) => { if (result) { setTrustedActorId(""); setTrustedLabel(""); } })} className="rounded-lg bg-primary px-3 py-2 text-sm font-bold text-primary-foreground disabled:opacity-35">Add</button></div></div>
           </section>}
 
-          <section className="rounded-2xl border border-border bg-card/75 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold">Snapshots & Restore Preview</h2><p className="mt-1 text-xs text-muted-foreground">構造メタデータのみ。Webhook token・Bot token・message contentは保存しません。</p></div><button disabled={!canRestore || busy || !overview.featureEnabled} onClick={() => void mutate("/api/security/snapshots", {})} className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-35">Create snapshot</button></div><div className="mt-4 divide-y divide-border rounded-xl border border-border">{snapshots.length === 0 ? <p className="p-5 text-center text-sm text-muted-foreground">Snapshotはまだありません。</p> : snapshots.map((snapshot) => <div key={snapshot.id} className="flex flex-wrap items-center gap-3 px-4 py-3"><div className="min-w-0 flex-1"><p className="text-sm font-semibold">{formatTime(snapshot.createdAt)} · {snapshot.source}</p><p className="mt-1 text-xs text-muted-foreground">{snapshot.channelCount} channels · {snapshot.roleCount} roles · SHA-256 {snapshot.checksum.slice(0, 12)}…</p></div><button disabled={!canRestore || busy || !overview.featureEnabled} onClick={() => void mutate("/api/security/restore-preview", { snapshotId: snapshot.id })} className="rounded-lg border border-border px-3 py-2 text-xs font-bold hover:bg-secondary disabled:opacity-35">Restore preview</button></div>)}</div>{operationResult && <pre className="mt-4 max-h-56 overflow-auto rounded-xl bg-secondary p-4 text-xs">{JSON.stringify(operationResult, null, 2)}</pre>}<p className="mt-3 text-xs text-muted-foreground">Previewと自動復旧はいずれもbest-effortです。Discord APIの制約により完全な復元は保証されません。</p></section>
+          <section className="rounded-2xl border border-border bg-card/75 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold">Snapshots & Restore Preview</h2><p className="mt-1 text-xs text-muted-foreground">構造メタデータのみ。Webhook token・Bot token・message contentは保存しません。</p></div><button disabled={!canRestore || busy || !overview.featureEnabled || nukeOff} onClick={() => void mutate("/api/security/snapshots", {})} className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-35">Create snapshot</button></div><div className="mt-4 divide-y divide-border rounded-xl border border-border">{snapshots.length === 0 ? <p className="p-5 text-center text-sm text-muted-foreground">Snapshotはまだありません。</p> : snapshots.map((snapshot) => <div key={snapshot.id} className="flex flex-wrap items-center gap-3 px-4 py-3"><div className="min-w-0 flex-1"><p className="text-sm font-semibold">{formatTime(snapshot.createdAt)} · {snapshot.source}</p><p className="mt-1 text-xs text-muted-foreground">{snapshot.channelCount} channels · {snapshot.roleCount} roles · SHA-256 {snapshot.checksum.slice(0, 12)}…</p></div><button disabled={!canRestore || busy || !overview.featureEnabled || nukeOff} onClick={() => void mutate("/api/security/restore-preview", { snapshotId: snapshot.id })} className="rounded-lg border border-border px-3 py-2 text-xs font-bold hover:bg-secondary disabled:opacity-35">Restore preview</button></div>)}</div>{operationResult && <pre className="mt-4 max-h-56 overflow-auto rounded-xl bg-secondary p-4 text-xs">{JSON.stringify(operationResult, null, 2)}</pre>}<p className="mt-3 text-xs text-muted-foreground">Previewと自動復旧はいずれもbest-effortです。Discord APIの制約により完全な復元は保証されません。</p></section>
         </>}
       </div>
       {busy && <div className="fixed bottom-5 right-5 flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm shadow-2xl"><LoaderCircle className="h-4 w-4 animate-spin" />処理中</div>}

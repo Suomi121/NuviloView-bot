@@ -22,7 +22,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     })
     const result = await pool.query(`
       SELECT incident."id", incident."guildOwner", incident."trustedActor", incident."selfActor",
-             incident."containmentStatus", policy."mode", policy."manualContainment"
+             incident."containmentStatus", policy."nukeProtectionMode", policy."mode", policy."manualContainment"
       FROM "security_incident" incident
       LEFT JOIN "security_policy" policy ON policy."guildId" = incident."guildId"
       WHERE incident."id" = $1 AND incident."guildId" = $2 LIMIT 1
@@ -32,8 +32,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (incident.guildOwner || incident.trustedActor || incident.selfActor) {
       throw new SecurityApiError('CONTAINMENT_PROTECTED', '保護対象のActorは封じ込めできません。', 409)
     }
-    if ((incident.mode ?? 'shadow') === 'shadow') {
+    if ((incident.nukeProtectionMode ?? 'shadow') !== 'active') {
       throw new SecurityApiError('SHADOW_MODE', 'Shadow Modeでは封じ込めを実行できません。', 409)
+    }
+    if ((incident.mode ?? 'shadow') === 'shadow' || incident.mode === 'monitor') {
+      throw new SecurityApiError('RESPONSE_MODE', '現在の応答方針では封じ込めを実行できません。', 409)
     }
     if (incident.manualContainment === false) {
       throw new SecurityApiError('CONTAINMENT_DISABLED', '手動封じ込めは無効です。', 409)

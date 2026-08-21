@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { pool } from '@/lib/db'
 import { getSecurityApiContext, securityApiError } from '@/lib/nuke-protection-api'
+import { resolveNukeProtectionMode } from '@/lib/nuke-protection.mjs'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,7 +16,7 @@ export async function GET(request: Request) {
     })
     const result = await pool.query(`
       SELECT
-        policy."enabled", policy."mode", policy."protectionStatus", policy."statusReason",
+        policy."enabled", policy."nukeProtectionMode", policy."mode", policy."protectionStatus", policy."statusReason",
         policy."lastDiagnosticAt", policy."lastIncidentAt", policy."missingPermissions",
         COALESCE((SELECT count(*)::int FROM "security_incident" incident
           WHERE incident."guildId" = $1 AND incident."status" IN ('Open', 'Contained', 'Monitoring')), 0) AS "openIncidents",
@@ -33,15 +34,19 @@ export async function GET(request: Request) {
       LEFT JOIN "security_policy" policy ON policy."guildId" = input."guildId"
     `, [guildId])
     const row = result.rows[0] ?? {}
+    const nukeProtectionMode = row.nukeProtectionMode ?? 'shadow'
+    const effectiveMode = resolveNukeProtectionMode({ globallyEnabled: context.featureEnabled, guildEnabled: row.enabled ?? true, mode: nukeProtectionMode })
     return NextResponse.json({
       guild: { id: guildId, name: context.guildName, connected: context.connected },
       featureEnabled: context.featureEnabled,
       scopes: context.scopes,
       protection: {
         enabled: row.enabled ?? true,
+        nukeProtectionMode,
+        effectiveMode,
         mode: row.mode ?? 'shadow',
-        status: !context.connected ? 'Error' : context.featureEnabled ? (row.protectionStatus ?? 'Limited') : 'Disabled',
-        reason: !context.connected ? 'Protection offline: Bot is no longer present in this Guild' : context.featureEnabled ? (row.statusReason ?? 'Bot diagnostics have not completed yet') : 'Feature flag is disabled',
+        status: !context.connected ? 'Error' : effectiveMode === 'off' ? 'Disabled' : (row.protectionStatus ?? 'Limited'),
+        reason: !context.connected ? 'Protection offline: Bot is no longer present in this Guild' : effectiveMode === 'off' ? (context.featureEnabled ? 'Nuke Protection v2 is disabled for this Guild' : 'Global emergency kill switch is disabled') : (row.statusReason ?? 'Bot diagnostics have not completed yet'),
         lastDiagnosticAt: row.lastDiagnosticAt ?? null,
         missingPermissions: Array.isArray(row.missingPermissions) ? row.missingPermissions : [],
       },

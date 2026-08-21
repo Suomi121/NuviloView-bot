@@ -9,10 +9,12 @@ import {
   securityScopesForAccess,
 } from '../lib/nuke-security-api-utils.mjs'
 
-test('managed non-owner receives view-only security scope', () => {
+test('Discord-managed Guild administrator receives security mutation scopes', () => {
   const scopes = securityScopesForAccess({ managedGuild: true, guildOwner: false })
-  assert.deepEqual(scopes, [SECURITY_SCOPES.view])
-  assert.equal(hasSecurityScope(scopes, SECURITY_SCOPES.contain), false)
+  assert.equal(hasSecurityScope(scopes, SECURITY_SCOPES.view), true)
+  assert.equal(hasSecurityScope(scopes, SECURITY_SCOPES.policy), true)
+  assert.equal(hasSecurityScope(scopes, SECURITY_SCOPES.contain), true)
+  assert.equal(hasSecurityScope(scopes, SECURITY_SCOPES.restore), true)
 })
 
 test('guild owner receives separated security mutation scopes', () => {
@@ -25,6 +27,12 @@ test('guild owner receives separated security mutation scopes', () => {
 
 test('wrong guild receives no scopes', () => {
   assert.deepEqual(securityScopesForAccess({ managedGuild: false, guildOwner: true }), [])
+})
+
+test('platform developer receives scopes without weakening ordinary cross-Guild isolation', () => {
+  const scopes = securityScopesForAccess({ managedGuild: false, guildOwner: false, platformDeveloper: true })
+  assert.deepEqual(new Set(scopes), new Set(Object.values(SECURITY_SCOPES)))
+  assert.deepEqual(securityScopesForAccess({ managedGuild: false, guildOwner: false }), [])
 })
 
 test('Discord IDs and trusted actor input are validated without accepting arbitrary values', () => {

@@ -8,7 +8,7 @@ export function executeSecurityKick(input: Record<string, any>): Promise<{ kicke
 export function createNukeProtectionService(input: Record<string, any>): {
   globallyEnabled: boolean
   diagnoseGuild(guild: Record<string, any>): Promise<Record<string, any>>
-  handleAuditLogEntry(entry: Record<string, any>, guild: Record<string, any>): Promise<Record<string, any> | null>
+  handleAuditLogEntry(entry: Record<string, any>, guild: Record<string, any>, options?: Record<string, any>): Promise<Record<string, any> | null>
   handleWebhookUpdate(channel: Record<string, any>): Promise<Record<string, any> | null>
   handleBotMessage(message: Record<string, any>): Promise<Record<string, any> | Record<string, any>[] | null>
   createSnapshotForGuild(guild: Record<string, any>, options?: Record<string, any>): Promise<Record<string, any>>

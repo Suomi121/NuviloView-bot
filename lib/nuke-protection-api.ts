@@ -6,6 +6,8 @@ import { auth } from '@/lib/auth'
 import { pool } from '@/lib/db'
 import { getManagedGuilds } from '@/lib/discord'
 import { hasJsonBody, isRateLimited, isTrustedMutation } from '@/lib/request-security'
+import { parseDeveloperIds } from '@/lib/guild-reset-utils.mjs'
+import { resolveNukeProtectionMode } from '@/lib/nuke-protection.mjs'
 import {
   SECURITY_SCOPES,
   hasSecurityScope,
@@ -33,6 +35,7 @@ export type SecurityApiContext = {
   connected: boolean
   scopes: string[]
   featureEnabled: boolean
+  platformDeveloper: boolean
 }
 
 function featureEnabled() {
@@ -104,7 +107,8 @@ export async function getSecurityApiContext(
   const discordUserId = account.rows[0]?.accountId
   const guild = registry.rows[0]
   const managedGuild = managedGuilds.some((candidate) => candidate.id === guildId)
-  if (!discordUserId || !managedGuild) {
+  const platformDeveloper = Boolean(discordUserId) && parseDeveloperIds(process.env).has(discordUserId)
+  if (!discordUserId || (!managedGuild && !platformDeveloper)) {
     throw new SecurityApiError('GUILD_FORBIDDEN', 'このGuildのSecurity情報を表示する権限がありません。', 403)
   }
   if (!guild || guild.blocked) {
@@ -116,6 +120,7 @@ export async function getSecurityApiContext(
   const scopes = securityScopesForAccess({
     managedGuild,
     guildOwner: guild.ownerId === discordUserId,
+    platformDeveloper,
   })
   if (options.requiredScope && !hasSecurityScope(scopes, options.requiredScope)) {
     throw new SecurityApiError('SCOPE_FORBIDDEN', 'このSecurity操作を実行する権限がありません。', 403)
@@ -130,6 +135,7 @@ export async function getSecurityApiContext(
     connected: guild.isConnected,
     scopes,
     featureEnabled: enabled,
+    platformDeveloper,
   }
 }
 
@@ -138,6 +144,24 @@ export async function enqueueSecurityAction(
   action: 'contain' | 'snapshot' | 'restore_preview',
   input: { incidentId?: string | null; payload?: Record<string, unknown> } = {},
 ) {
+  const policyResult = await pool.query<{ enabled: boolean | null; nukeProtectionMode: string | null }>(`
+    SELECT "enabled", "nukeProtectionMode"
+    FROM "security_policy"
+    WHERE "guildId" = $1
+    LIMIT 1
+  `, [context.guildId])
+  const policy = policyResult.rows[0]
+  const effectiveMode = resolveNukeProtectionMode({
+    globallyEnabled: context.featureEnabled,
+    guildEnabled: policy?.enabled ?? true,
+    mode: policy?.nukeProtectionMode ?? 'shadow',
+  })
+  if (effectiveMode === 'off') {
+    throw new SecurityApiError('NUKE_PROTECTION_OFF', 'Nuke Protection v2はこのGuildで無効です。', 409)
+  }
+  if (action === 'contain' && effectiveMode !== 'active') {
+    throw new SecurityApiError('SHADOW_MODE', 'Shadow Modeでは封じ込めを実行できません。', 409)
+  }
   const requestId = randomUUID()
   await pool.query(`
     INSERT INTO "security_action_request" (

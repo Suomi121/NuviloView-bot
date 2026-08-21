@@ -7,6 +7,7 @@ export type NukeAction = {
   occurredAt: string | Date
 }
 export declare const NUKE_PROTECTION_SCHEMA_VERSION: number
+export declare const NUKE_PROTECTION_MODES: readonly ['off', 'shadow', 'active']
 export declare const SECURITY_INCIDENT_STATUSES: readonly string[]
 export declare const DEFAULT_RISK_WEIGHTS: Readonly<Record<string, number>>
 export declare const DEFAULT_SEVERITY_THRESHOLDS: Readonly<Record<string, number>>
@@ -15,6 +16,8 @@ export declare const DEFAULT_TIME_WINDOWS_MS: readonly number[]
 export declare const DEFAULT_BURST_RULES: readonly Record<string, unknown>[]
 export declare const DEFAULT_NUKE_PROTECTION_POLICY: Readonly<Record<string, unknown>>
 export declare const DESTRUCTIVE_ACTION_TYPES: Set<string>
+export function normalizeNukeProtectionMode(value: unknown): 'off' | 'shadow' | 'active'
+export function resolveNukeProtectionMode(input?: { globallyEnabled?: boolean; guildEnabled?: boolean; mode?: unknown }): 'off' | 'shadow' | 'active'
 export function normalizeNukeProtectionPolicy(input?: Record<string, unknown>): Record<string, any>
 export function severityForRisk(riskScore: number, thresholds?: Record<string, number>): string
 export function calculateNukeRisk(actions: NukeAction[], options?: Record<string, any>): Record<string, any>

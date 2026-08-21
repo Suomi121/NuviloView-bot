@@ -38,15 +38,19 @@ export async function GET(request: Request) {
         guildId: string; name: string | null; iconUrl: string | null; ownerId: string | null
         memberCount: number | null; isConnected: boolean | null; lastSeenAt: Date | null
         reason: string | null; blockedBy: string | null; blockedAt: Date | null
+        nukeProtectionMode: 'off' | 'shadow' | 'active'
       }>(`
         SELECT
           COALESCE(registry."guildId", blocklist."guildId") AS "guildId",
           registry."name", registry."iconUrl", registry."ownerId", registry."memberCount",
           registry."isConnected", registry."lastSeenAt",
-          blocklist."reason", blocklist."blockedBy", blocklist."blockedAt"
+          blocklist."reason", blocklist."blockedBy", blocklist."blockedAt",
+          COALESCE(policy."nukeProtectionMode", 'shadow') AS "nukeProtectionMode"
         FROM "bot_guild_registry" AS registry
         FULL OUTER JOIN "bot_guild_blocklist" AS blocklist
           ON blocklist."guildId" = registry."guildId"
+        LEFT JOIN "security_policy" AS policy
+          ON policy."guildId" = COALESCE(registry."guildId", blocklist."guildId")
         ORDER BY (blocklist."guildId" IS NOT NULL) DESC, registry."name" ASC NULLS LAST, COALESCE(registry."guildId", blocklist."guildId") ASC
       `),
       includeAudit
@@ -80,6 +84,7 @@ export async function GET(request: Request) {
     })
     return NextResponse.json({
       guilds: guilds.rows,
+      nukeProtectionGlobalEnabled: process.env.NUVILOVIEW_NUKE_PROTECTION?.trim().toLowerCase() === 'true',
       guildResetAvailable: getGuildResetConfig(process.env).enabled,
       ...(includeAudit ? { audit: audit.rows } : {}),
       bot: { online: botOnline, lastSeenAt: latestHeartbeat?.lastSeenAt ?? null },

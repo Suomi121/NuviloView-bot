@@ -793,6 +793,7 @@ export const guildResetRequest = pgTable("guild_reset_request", {
 export const securityPolicy = pgTable("security_policy", {
   guildId: text("guildId").primaryKey(),
   enabled: boolean("enabled").notNull().default(true),
+  nukeProtectionMode: text("nukeProtectionMode").notNull().default("shadow"),
   mode: text("mode").notNull().default("shadow"),
   sensitivity: text("sensitivity").notNull().default("balanced"),
   alertEnabled: boolean("alertEnabled").notNull().default(true),

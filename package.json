@@ -16,6 +16,7 @@
     "monitor:runtime": "node --env-file=.env.local scripts/monitor-runtime.mjs --watch",
     "monitor:runtime:once": "node --env-file=.env.local scripts/monitor-runtime.mjs --json",
     "test:runtime:failover": "node --env-file=.env.local scripts/test-runtime-failover.mjs --execute-test-service",
+    "health:calibrate": "node --env-file=.env.local scripts/calibrate-health-v2.mjs",
     "security:tokens": "node scripts/token-leak-check.mjs",
     "db:migrate": "node --env-file=.env.local scripts/migrate.mjs",
     "privacy:anonymize-discord-email": "node --env-file=.env.local scripts/anonymize-discord-emails.mjs",

@@ -15,6 +15,10 @@ import {
   healthV2SnapshotScore,
   resolveHealthV2ReleaseConfig,
 } from "@/lib/health-v2-release.mjs";
+import {
+  attachHealthScoresToQualityGate,
+  createHealthDataQualityGate,
+} from "@/lib/health-data-quality.mjs";
 
 export type AnalyticsRange = {
   startDate: string;
@@ -54,14 +58,19 @@ async function loadRetention(guildId: string, range: AnalyticsRange, previous = 
   const startIndex = previous ? 4 : 2;
   const endIndex = previous ? 5 : 3;
   const result = await pool.query<NumericRow>(`
-    WITH parameter_types AS (SELECT $2::date, $3::date, $4::date, $5::date), all_joins AS (
-      SELECT e."id", e."userId", e."occurredAt" AS "joinedAt", e."roleIds",
-        LEAD(e."occurredAt") OVER (PARTITION BY e."userId" ORDER BY e."occurredAt", e."id") AS "nextJoinAt"
+    WITH parameter_types AS (SELECT $2::date, $3::date, $4::date, $5::date), raw_joins AS (
+      SELECT e."id", e."userId", e."occurredAt", e."roleIds", COALESCE(e."source", 'unknown') AS "source"
       FROM "guild_member_event" e
       WHERE e."guildId" = $1 AND e."eventType" = 'join'
         AND (NOT $9::boolean OR e."isBot" = false)
+    ), all_joins AS (
+      SELECT e."id", e."userId", e."occurredAt" AS "joinedAt", e."roleIds",
+        LEAD(e."occurredAt") OVER (PARTITION BY e."userId" ORDER BY e."occurredAt", e."id") AS "nextJoinAt"
+      FROM raw_joins e
+      WHERE e."source" IN ('gateway', 'discord_live')
     ), joins AS (
-      SELECT * FROM all_joins
+      SELECT "id", "userId", "joinedAt", "roleIds", "nextJoinAt"
+      FROM all_joins
       WHERE "joinedAt" >= ($${startIndex}::date::timestamp AT TIME ZONE $6)
         AND "joinedAt" < ((($${endIndex}::date + 1)::timestamp) AT TIME ZONE $6)
         AND ($7::text IS NULL OR "roleIds" ? $7::text)
@@ -182,12 +191,38 @@ async function loadRetention(guildId: string, range: AnalyticsRange, previous = 
       COUNT(*) FILTER (WHERE "joinedAt" <= now() - interval '7 day' AND ("firstReactionAt" IS NOT NULL OR "firstReactionReceivedAt" IS NOT NULL))::int AS "eligible7Reaction",
       COUNT(*) FILTER (WHERE "joinedAt" <= now() - interval '7 day' AND ("firstReactionAt" IS NOT NULL OR "firstReactionReceivedAt" IS NOT NULL) AND "retained7")::int AS "retained7Reaction",
       COUNT(*) FILTER (WHERE "joinedAt" <= now() - interval '7 day' AND "firstReactionAt" IS NULL AND "firstReactionReceivedAt" IS NULL)::int AS "eligible7NoReaction",
-      COUNT(*) FILTER (WHERE "joinedAt" <= now() - interval '7 day' AND "firstReactionAt" IS NULL AND "firstReactionReceivedAt" IS NULL AND "retained7")::int AS "retained7NoReaction"
+      COUNT(*) FILTER (WHERE "joinedAt" <= now() - interval '7 day' AND "firstReactionAt" IS NULL AND "firstReactionReceivedAt" IS NULL AND "retained7")::int AS "retained7NoReaction",
+      (SELECT COUNT(*)::int FROM raw_joins source_join
+        WHERE source_join."occurredAt" >= ($${startIndex}::date::timestamp AT TIME ZONE $6)
+          AND source_join."occurredAt" < ((($${endIndex}::date + 1)::timestamp) AT TIME ZONE $6)
+          AND ($7::text IS NULL OR source_join."roleIds" ? $7::text)
+          AND source_join."source" IN ('gateway', 'discord_live')) AS "discordLiveJoins",
+      (SELECT COUNT(*)::int FROM raw_joins source_join
+        WHERE source_join."occurredAt" >= ($${startIndex}::date::timestamp AT TIME ZONE $6)
+          AND source_join."occurredAt" < ((($${endIndex}::date + 1)::timestamp) AT TIME ZONE $6)
+          AND ($7::text IS NULL OR source_join."roleIds" ? $7::text)
+          AND source_join."source" = 'discord_sync') AS "discordSyncJoins",
+      (SELECT COUNT(*)::int FROM raw_joins source_join
+        WHERE source_join."occurredAt" >= ($${startIndex}::date::timestamp AT TIME ZONE $6)
+          AND source_join."occurredAt" < ((($${endIndex}::date + 1)::timestamp) AT TIME ZONE $6)
+          AND ($7::text IS NULL OR source_join."roleIds" ? $7::text)
+          AND source_join."source" = 'historical_import') AS "historicalImportJoins",
+      (SELECT COUNT(*)::int FROM raw_joins source_join
+        WHERE source_join."occurredAt" >= ($${startIndex}::date::timestamp AT TIME ZONE $6)
+          AND source_join."occurredAt" < ((($${endIndex}::date + 1)::timestamp) AT TIME ZONE $6)
+          AND ($7::text IS NULL OR source_join."roleIds" ? $7::text)
+          AND source_join."source" NOT IN ('gateway', 'discord_live', 'discord_sync', 'historical_import')) AS "unknownJoins"
     FROM enriched
   `, baseParams(guildId, range));
   const row = result.rows[0] ?? {};
   return {
     joined: number(row.joined),
+    sourceQuality: {
+      discordLive: number(row.discordLiveJoins),
+      discordSync: number(row.discordSyncJoins),
+      historicalImport: number(row.historicalImportJoins),
+      unknown: number(row.unknownJoins),
+    },
     retention7: { eligible: number(row.eligible7), retained: number(row.retained7), rate: nullableRate(row.retained7, row.eligible7) },
     retention30: { eligible: number(row.eligible30), retained: number(row.retained30), rate: nullableRate(row.retained30, row.eligible30) },
     firstMessage: {
@@ -217,6 +252,7 @@ async function loadCohorts(guildId: string, range: AnalyticsRange) {
       SELECT e."userId", e."occurredAt" AS "joinedAt"
       FROM "guild_member_event" e
       WHERE e."guildId" = $1 AND e."eventType" = 'join'
+        AND e."source" IN ('gateway', 'discord_live')
         AND ${boundsSql("e", "occurredAt", "current")}
         AND (NOT $9::boolean OR e."isBot" = false)
         AND ($7::text IS NULL OR e."roleIds" ? $7::text)
@@ -323,10 +359,10 @@ async function loadCoreMetrics(guildId: string, range: AnalyticsRange) {
         FROM "voice_session" v WHERE v."guildId" = $1 AND v."startedAt" < ((($5::date + 1)::timestamp) AT TIME ZONE $6)
           AND (v."endedAt" IS NULL OR v."endedAt" >= ($4::date::timestamp AT TIME ZONE $6))
           AND ($7::text IS NULL OR v."userRoleIds" ? $7::text) AND ($8::text IS NULL OR v."channelId" = $8::text) AND (NOT $9::boolean OR v."userIsBot" = false))::int AS "previousVoiceSeconds",
-      (SELECT COUNT(*) FROM "guild_member_event" e WHERE e."guildId" = $1 AND e."eventType" = 'join' AND ${boundsSql("e", "occurredAt", "current")} AND (NOT $9::boolean OR e."isBot" = false))::int AS "joins",
-      (SELECT COUNT(*) FROM "guild_member_event" e WHERE e."guildId" = $1 AND e."eventType" = 'join' AND ${boundsSql("e", "occurredAt", "previous")} AND (NOT $9::boolean OR e."isBot" = false))::int AS "previousJoins",
-      (SELECT COUNT(*) FROM "guild_member_event" e WHERE e."guildId" = $1 AND e."eventType" = 'leave' AND ${boundsSql("e", "occurredAt", "current")} AND (NOT $9::boolean OR e."isBot" = false))::int AS "leaves",
-      (SELECT COUNT(*) FROM "guild_member_event" e WHERE e."guildId" = $1 AND e."eventType" = 'leave' AND ${boundsSql("e", "occurredAt", "previous")} AND (NOT $9::boolean OR e."isBot" = false))::int AS "previousLeaves",
+      (SELECT COUNT(*) FROM "guild_member_event" e WHERE e."guildId" = $1 AND e."eventType" = 'join' AND e."source" IN ('gateway', 'discord_live') AND ${boundsSql("e", "occurredAt", "current")} AND (NOT $9::boolean OR e."isBot" = false))::int AS "joins",
+      (SELECT COUNT(*) FROM "guild_member_event" e WHERE e."guildId" = $1 AND e."eventType" = 'join' AND e."source" IN ('gateway', 'discord_live') AND ${boundsSql("e", "occurredAt", "previous")} AND (NOT $9::boolean OR e."isBot" = false))::int AS "previousJoins",
+      (SELECT COUNT(*) FROM "guild_member_event" e WHERE e."guildId" = $1 AND e."eventType" = 'leave' AND e."source" IN ('gateway', 'discord_live') AND ${boundsSql("e", "occurredAt", "current")} AND (NOT $9::boolean OR e."isBot" = false))::int AS "leaves",
+      (SELECT COUNT(*) FROM "guild_member_event" e WHERE e."guildId" = $1 AND e."eventType" = 'leave' AND e."source" IN ('gateway', 'discord_live') AND ${boundsSql("e", "occurredAt", "previous")} AND (NOT $9::boolean OR e."isBot" = false))::int AS "previousLeaves",
       COALESCE((SELECT "memberCount" FROM "bot_guild_registry" WHERE "guildId" = $1), 0)::int AS "memberCount",
       COALESCE((SELECT "memberCount" FROM "daily_stats" WHERE "guildId" = $1 AND "date" <= $5::date ORDER BY "date" DESC LIMIT 1), 0)::int AS "previousMemberCount"
   `, baseParams(guildId, range));
@@ -561,6 +597,128 @@ async function loadHeatmap(guildId: string, range: AnalyticsRange, channelId: st
   return result.rows.map((row) => ({ day: number(row.day), hour: number(row.hour), value: number(row.value) }));
 }
 
+async function loadHealthQualityMetrics(guildId: string, range: AnalyticsRange) {
+  const result = await pool.query<NumericRow>(`
+    WITH scoped_voice AS (
+      SELECT v.*,
+        COALESCE(v."endedAt", now()) AS "observedEndAt",
+        COUNT(*) OVER (
+          PARTITION BY v."userId", v."channelId", v."startedAt", v."endedAt"
+        ) AS "duplicateCount",
+        LAG(COALESCE(v."endedAt", now())) OVER (
+          PARTITION BY v."userId" ORDER BY v."startedAt", v."id"
+        ) AS "previousEndAt"
+      FROM "voice_session" v
+      WHERE v."guildId" = $1
+        AND v."startedAt" >= ($4::date::timestamp AT TIME ZONE $6)
+        AND v."startedAt" < ((($3::date + 1)::timestamp) AT TIME ZONE $6)
+        AND ($7::text IS NULL OR v."userRoleIds" ? $7::text)
+        AND ($8::text IS NULL OR v."channelId" = $8::text)
+        AND (NOT $9::boolean OR v."userIsBot" = false)
+    ), classified_voice AS (
+      SELECT *,
+        ("startedAt" > now() + interval '5 minutes') AS "futureTimestamp",
+        ("endedAt" IS NOT NULL AND "endedAt" < "startedAt") AS "negativeDuration",
+        ("observedEndAt" - "startedAt" > interval '24 hours') AS "over24Hours",
+        ("endedAt" IS NULL AND "startedAt" < now() - interval '24 hours') AS "unclosedOver24Hours",
+        ("duplicateCount" > 1) AS "duplicateSession",
+        ("previousEndAt" IS NOT NULL AND "previousEndAt" > "startedAt") AS "overlappingSession"
+      FROM scoped_voice
+    ), valid_voice AS (
+      SELECT * FROM classified_voice
+      WHERE NOT "futureTimestamp"
+        AND NOT "negativeDuration"
+        AND NOT "over24Hours"
+        AND NOT "unclosedOver24Hours"
+        AND NOT "duplicateSession"
+        AND NOT "overlappingSession"
+    ), reaction_tracking AS (
+      SELECT MIN("occurredAt") AS "trackingSince"
+      FROM "discord_reaction_event"
+      WHERE "guildId" = $1
+    )
+    SELECT
+      (SELECT MIN("startedAt") FROM "voice_session" WHERE "guildId" = $1) AS "voiceTrackingSince",
+      (SELECT "trackingSince" FROM reaction_tracking) AS "reactionTrackingSince",
+      COUNT(*) FILTER (WHERE ${boundsSql("valid_voice", "startedAt", "current")})::int AS "validVoiceSessions",
+      COUNT(DISTINCT "userId") FILTER (WHERE ${boundsSql("valid_voice", "startedAt", "current")})::int AS "validVoiceUsers",
+      COALESCE(SUM(EXTRACT(EPOCH FROM ("observedEndAt" - "startedAt"))) FILTER (WHERE ${boundsSql("valid_voice", "startedAt", "current")}), 0)::int AS "validVoiceSeconds",
+      COUNT(*) FILTER (WHERE ${boundsSql("valid_voice", "startedAt", "previous")})::int AS "previousValidVoiceSessions",
+      COUNT(DISTINCT "userId") FILTER (WHERE ${boundsSql("valid_voice", "startedAt", "previous")})::int AS "previousValidVoiceUsers",
+      COALESCE(SUM(EXTRACT(EPOCH FROM ("observedEndAt" - "startedAt"))) FILTER (WHERE ${boundsSql("valid_voice", "startedAt", "previous")}), 0)::int AS "previousValidVoiceSeconds",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "current")} AND "over24Hours") AS "voiceOver24Hours",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "current")} AND "unclosedOver24Hours") AS "voiceUnclosedOver24Hours",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "current")} AND "futureTimestamp") AS "voiceFutureTimestamp",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "current")} AND "negativeDuration") AS "voiceNegativeDuration",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "current")} AND "duplicateSession") AS "voiceDuplicate",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "current")} AND "overlappingSession") AS "voiceOverlap",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "previous")} AND "over24Hours") AS "previousVoiceOver24Hours",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "previous")} AND "unclosedOver24Hours") AS "previousVoiceUnclosedOver24Hours",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "previous")} AND "futureTimestamp") AS "previousVoiceFutureTimestamp",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "previous")} AND "negativeDuration") AS "previousVoiceNegativeDuration",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "previous")} AND "duplicateSession") AS "previousVoiceDuplicate",
+      (SELECT COUNT(*)::int FROM classified_voice WHERE ${boundsSql("classified_voice", "startedAt", "previous")} AND "overlappingSession") AS "previousVoiceOverlap",
+      (SELECT COUNT(*)::int FROM "discord_reaction_event" r
+        WHERE r."guildId" = $1 AND ${boundsSql("r", "occurredAt", "current")}
+          AND ($7::text IS NULL OR r."reactorRoleIds" ? $7::text)
+          AND ($8::text IS NULL OR r."channelId" = $8::text)
+          AND (NOT $9::boolean OR r."reactorIsBot" = false)) AS "reactionEvents",
+      (SELECT COUNT(*)::int FROM "discord_reaction_event" r
+        WHERE r."guildId" = $1 AND ${boundsSql("r", "occurredAt", "previous")}
+          AND ($7::text IS NULL OR r."reactorRoleIds" ? $7::text)
+          AND ($8::text IS NULL OR r."channelId" = $8::text)
+          AND (NOT $9::boolean OR r."reactorIsBot" = false)) AS "previousReactionEvents",
+      CASE
+        WHEN (SELECT "trackingSince" FROM reaction_tracking) IS NULL THEN 0
+        WHEN (SELECT "trackingSince" FROM reaction_tracking) <= ($2::date::timestamp AT TIME ZONE $6) THEN $10::int
+        ELSE LEAST($10::int, GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (
+          LEAST(now(), ((($3::date + 1)::timestamp) AT TIME ZONE $6)) - (SELECT "trackingSince" FROM reaction_tracking)
+        )) / 86400))::int)
+      END AS "reactionObservationDays",
+      CASE
+        WHEN (SELECT "trackingSince" FROM reaction_tracking) IS NULL THEN 0
+        WHEN (SELECT "trackingSince" FROM reaction_tracking) <= ($4::date::timestamp AT TIME ZONE $6) THEN $10::int
+        WHEN (SELECT "trackingSince" FROM reaction_tracking) >= ((($5::date + 1)::timestamp) AT TIME ZONE $6) THEN 0
+        ELSE LEAST($10::int, GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (
+          ((($5::date + 1)::timestamp) AT TIME ZONE $6) - (SELECT "trackingSince" FROM reaction_tracking)
+        )) / 86400))::int)
+      END AS "previousReactionObservationDays"
+    FROM valid_voice
+  `, [...baseParams(guildId, range), range.days]);
+  const row = result.rows[0] ?? {};
+  const anomalies = (previous = false) => {
+    const field = (suffix: string) => `${previous ? "previousVoice" : "voice"}${suffix}`;
+    return {
+      over24Hours: number(row[field("Over24Hours")]),
+      unclosedOver24Hours: number(row[field("UnclosedOver24Hours")]),
+      future: number(row[field("FutureTimestamp")]),
+      negative: number(row[field("NegativeDuration")]),
+      duplicate: number(row[field("Duplicate")]),
+      overlap: number(row[field("Overlap")]),
+    };
+  };
+  return {
+    voiceTrackingSince: row.voiceTrackingSince ?? null,
+    reactionTrackingSince: row.reactionTrackingSince ?? null,
+    current: {
+      validVoiceSessions: number(row.validVoiceSessions),
+      validVoiceUsers: number(row.validVoiceUsers),
+      validVoiceSeconds: number(row.validVoiceSeconds),
+      voiceAnomalies: anomalies(),
+      reactionEvents: number(row.reactionEvents),
+      reactionObservationDays: number(row.reactionObservationDays),
+    },
+    previous: {
+      validVoiceSessions: number(row.previousValidVoiceSessions),
+      validVoiceUsers: number(row.previousValidVoiceUsers),
+      validVoiceSeconds: number(row.previousValidVoiceSeconds),
+      voiceAnomalies: anomalies(true),
+      reactionEvents: number(row.previousReactionEvents),
+      reactionObservationDays: number(row.previousReactionObservationDays),
+    },
+  };
+}
+
 async function computeCommunityAnalytics(guildId: string, range: AnalyticsRange) {
   const healthV2Release = resolveHealthV2ReleaseConfig();
   const [core, retention, previousRetention, cohorts, channels, topShare, previousTopShare] = await Promise.all([
@@ -598,20 +756,89 @@ async function computeCommunityAnalytics(guildId: string, range: AnalyticsRange)
     FROM tracking
   `, [guildId, range.days, range.startDate, range.endDate, range.timeZone, range.previousStartDate, range.previousEndDate]);
   const coverage = observationResult.rows[0] ?? {};
+  const qualityMetrics = await loadHealthQualityMetrics(guildId, range);
+  const currentQualityGate = createHealthDataQualityGate({
+    observationDays: number(coverage.observationDays),
+    messages: core.messages,
+    activeUsers: core.activeUsers,
+    uniqueAuthors: core.activeUsers,
+    joins: core.joins,
+    leaves: core.leaves,
+    retention: {
+      eligible7: retention.retention7.eligible,
+      sources: retention.sourceQuality,
+    },
+    voice: {
+      trackingSince: qualityMetrics.voiceTrackingSince,
+      observationDays: number(coverage.observationDays),
+      validSessions: qualityMetrics.current.validVoiceSessions,
+      anomalies: qualityMetrics.current.voiceAnomalies,
+    },
+    reaction: {
+      trackingSince: qualityMetrics.reactionTrackingSince,
+      observationDays: qualityMetrics.current.reactionObservationDays,
+      events: qualityMetrics.current.reactionEvents,
+    },
+  });
+  const previousQualityGate = createHealthDataQualityGate({
+    observationDays: number(coverage.previousObservationDays),
+    messages: core.previousMessages,
+    activeUsers: core.previousActiveUsers,
+    uniqueAuthors: core.previousActiveUsers,
+    joins: core.previousJoins,
+    leaves: core.previousLeaves,
+    retention: {
+      eligible7: previousRetention.retention7.eligible,
+      sources: previousRetention.sourceQuality,
+    },
+    voice: {
+      trackingSince: qualityMetrics.voiceTrackingSince,
+      observationDays: number(coverage.previousObservationDays),
+      validSessions: qualityMetrics.previous.validVoiceSessions,
+      anomalies: qualityMetrics.previous.voiceAnomalies,
+    },
+    reaction: {
+      trackingSince: qualityMetrics.reactionTrackingSince,
+      observationDays: qualityMetrics.previous.reactionObservationDays,
+      events: qualityMetrics.previous.reactionEvents,
+    },
+  });
   const healthInput = {
     memberCount: core.memberCount, activeUsers: core.activeUsers, activityUsers: core.activityUsers, messages: core.messages, reactions: core.reactions,
-    retention7: retention.retention7.rate, retention30: retention.retention30.rate, topMemberShare: topShare, uniqueMessageAuthors: core.activeUsers,
-    voiceUsers: coverage.voiceTrackingSince ? core.voiceUsers : null, voiceSeconds: coverage.voiceTrackingSince ? core.voiceSeconds : null, voiceSessions: coverage.voiceTrackingSince ? core.voiceSessions : 0, joins: core.joins, leaves: core.leaves,
+    reactionAvailable: currentQualityGate.sanitization.reactionUsable,
+    retention7: currentQualityGate.sanitization.retentionUsable ? retention.retention7.rate : null,
+    retention30: currentQualityGate.sanitization.retentionUsable ? retention.retention30.rate : null,
+    topMemberShare: topShare, uniqueMessageAuthors: core.activeUsers,
+    voiceUsers: currentQualityGate.sanitization.voiceUsable ? qualityMetrics.current.validVoiceUsers : null,
+    voiceSeconds: currentQualityGate.sanitization.voiceUsable ? qualityMetrics.current.validVoiceSeconds : null,
+    voiceSessions: currentQualityGate.sanitization.voiceUsable ? qualityMetrics.current.validVoiceSessions : 0,
+    joins: core.joins, leaves: core.leaves,
     earlyLeaves: retention.departures.within7Days, observationDays: number(coverage.observationDays),
+    qualityGatePassed: currentQualityGate.passes,
   };
   const previousHealthInput = {
     memberCount: core.previousMemberCount || core.memberCount, activeUsers: core.previousActiveUsers, activityUsers: core.previousActivityUsers, messages: core.previousMessages, reactions: core.previousReactions,
-    retention7: previousRetention.retention7.rate, retention30: previousRetention.retention30.rate, topMemberShare: previousTopShare, uniqueMessageAuthors: core.previousActiveUsers,
-    voiceUsers: coverage.voiceTrackingSince ? core.previousVoiceUsers : null, voiceSeconds: coverage.voiceTrackingSince ? core.previousVoiceSeconds : null, voiceSessions: coverage.voiceTrackingSince ? core.previousVoiceSessions : 0, joins: core.previousJoins, leaves: core.previousLeaves,
+    reactionAvailable: previousQualityGate.sanitization.reactionUsable,
+    retention7: previousQualityGate.sanitization.retentionUsable ? previousRetention.retention7.rate : null,
+    retention30: previousQualityGate.sanitization.retentionUsable ? previousRetention.retention30.rate : null,
+    topMemberShare: previousTopShare, uniqueMessageAuthors: core.previousActiveUsers,
+    voiceUsers: previousQualityGate.sanitization.voiceUsable ? qualityMetrics.previous.validVoiceUsers : null,
+    voiceSeconds: previousQualityGate.sanitization.voiceUsable ? qualityMetrics.previous.validVoiceSeconds : null,
+    voiceSessions: previousQualityGate.sanitization.voiceUsable ? qualityMetrics.previous.validVoiceSessions : 0,
+    joins: core.previousJoins, leaves: core.previousLeaves,
     earlyLeaves: previousRetention.departures.within7Days, observationDays: number(coverage.previousObservationDays),
+    qualityGatePassed: previousQualityGate.passes,
   };
-  const health = calculateHealthScore(healthInput);
-  const previousHealth = calculateHealthScore(previousHealthInput);
+  const rawHealth = calculateHealthScore(healthInput);
+  const rawPreviousHealth = calculateHealthScore(previousHealthInput);
+  const health = {
+    ...rawHealth,
+    dataQuality: attachHealthScoresToQualityGate(currentQualityGate, rawHealth),
+  };
+  const previousHealth = {
+    ...rawPreviousHealth,
+    dataQuality: attachHealthScoresToQualityGate(previousQualityGate, rawPreviousHealth),
+  };
   const topChannel = channels.find((channel) => channel.messages > 0) ?? null;
   const insights = buildInsights({
     messages: { current: core.messages, previous: core.previousMessages },
@@ -637,6 +864,7 @@ async function computeCommunityAnalytics(guildId: string, range: AnalyticsRange)
       isProvisional: health.isProvisional,
       availabilityReason: health.availabilityReason,
       availableCategoryCount: health.availableCategoryCount,
+      dataQuality: health.dataQuality,
     },
   };
   if (healthV2Release.official || healthV2Release.shadowWriteEnabled) {

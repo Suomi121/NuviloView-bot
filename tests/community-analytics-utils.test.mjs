@@ -194,6 +194,19 @@ test("health inputs safely reject non-finite values and zero denominators", () =
   assert.ok(result.provisionalScore === null || Number.isFinite(result.provisionalScore));
 });
 
+test("immature Reaction data is unavailable instead of being scored as zero", () => {
+  const result = calculateHealthScore(healthInput({ reactions: 0, reactionAvailable: false }));
+  assert.equal(result.inputs.reactionRate, null);
+  assert.ok(result.categories.engagement > 0);
+});
+
+test("a failed data quality gate keeps only a provisional Health score", () => {
+  const result = calculateHealthScore(healthInput({ qualityGatePassed: false }));
+  assert.equal(result.score, null);
+  assert.notEqual(result.provisionalScore, null);
+  assert.ok(result.availabilityReasons.includes("data_quality_gate_failed"));
+});
+
 test("Health Score v2 preserves legacy response fields while adding availability metadata", () => {
   const result = calculateHealthScore(healthInput());
   for (const key of ["score", "status", "confidence", "confidenceScore", "categories", "availableWeight", "inputs"]) {

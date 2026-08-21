@@ -23,6 +23,8 @@ test("retention cleanup protects active runtime and unfinished sessions", () => 
   assert.match(source, /stoppedAt.*IS NOT NULL/);
   assert.match(source, /endedAt.*IS NOT NULL/);
   assert.match(source, /status.*<> 'pending'/);
+  assert.match(source, /message-import-job[\s\S]*status.*IN \('cancelled', 'completed', 'failed'\)/);
+  assert.match(source, /message-import-audit[\s\S]*days: 90/);
 });
 
 test("retention cleanup contains no broad destructive statements", () => {

@@ -28,6 +28,13 @@ function input(overrides = {}) {
       observationDays: 30,
       events: 100,
     },
+    messageSources: {
+      available: true,
+      live: 240,
+      historyImport: 60,
+      existing: 0,
+      unknown: 0,
+    },
     ...overrides,
   };
 }
@@ -74,4 +81,15 @@ test("missing categories remain explainable and scores attach without inventing 
   assert.equal(attached.categories.distribution.score, null);
   assert.equal(attached.categories.growth.qualityState, "Unavailable");
   assert.equal(attached.components.reaction.score, null);
+});
+
+test("history import provenance is evidence-only and does not change Health scoring gates", () => {
+  const liveOnly = createHealthDataQualityGate(input({
+    messageSources: { available: true, live: 300, historyImport: 0, existing: 0, unknown: 0 },
+  }));
+  const mixed = createHealthDataQualityGate(input());
+  assert.equal(mixed.evidence.messageSources.historyImport, 60);
+  assert.equal(mixed.evidence.messageSources.historyImportShare, 0.2);
+  assert.deepEqual(mixed.categories, liveOnly.categories);
+  assert.deepEqual(mixed.blockingReasons, liveOnly.blockingReasons);
 });

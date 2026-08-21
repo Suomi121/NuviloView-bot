@@ -7,6 +7,8 @@ NuviloView uses explicit, table-specific retention windows. Cleanup is disabled 
 | api-rate-limit | API throttle buckets | 7 days | None after expiry |
 | recent-activity | Privacy-conscious activity feed | 90 days | None after expiry |
 | discord-message | Searchable message content | 90 days | None after expiry |
+| message-import-job | Completed import jobs and cascading channel checkpoints | 90 days | Queued, preparing, running, pausing, paused, cancelling, and stalled jobs |
+| message-import-audit | Count-only import lifecycle audit events | 90 days | None after expiry |
 | service-heartbeat | Runtime history | 30 days | Running rows and the current unexpired lease owner |
 | moderation-audit | Moderation audit trail | 365 days | Pending operations |
 | daily-active-member | Daily activity facts | 400 days | None after expiry |

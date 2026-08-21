@@ -590,6 +590,9 @@ export const historyImportJob = pgTable("history_import_job", {
 }, (table) => [
   index("history_import_job_guild_requested_idx").on(table.guildId, table.requestedAt),
   index("history_import_job_status_progress_idx").on(table.status, table.lastProgressAt),
+  index("history_import_job_terminal_completed_idx")
+    .on(table.completedAt)
+    .where(sql`${table.status} in ('cancelled', 'completed', 'failed')`),
   uniqueIndex("history_import_job_one_active_per_guild_v2_idx")
     .on(table.guildId)
     .where(sql`${table.status} in ('queued', 'preparing', 'running', 'pausing', 'paused', 'cancelling', 'stalled')`),
@@ -639,6 +642,7 @@ export const messageImportAuditEvent = pgTable("message_import_audit_event", {
 }, (table) => [
   index("message_import_audit_guild_created_idx").on(table.guildId, table.createdAt),
   index("message_import_audit_job_created_idx").on(table.jobId, table.createdAt),
+  index("message_import_audit_created_idx").on(table.createdAt),
 ]);
 
 // Developer-only destructive reset controls. These tables are intentionally

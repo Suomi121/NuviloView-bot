@@ -19,6 +19,9 @@ import {
   attachHealthScoresToQualityGate,
   createHealthDataQualityGate,
 } from "@/lib/health-data-quality.mjs";
+import { getMessageImportConfig } from "@/lib/message-history-import.mjs";
+
+const messageImportConfig = getMessageImportConfig(process.env);
 
 export type AnalyticsRange = {
   startDate: string;
@@ -597,6 +600,47 @@ async function loadHeatmap(guildId: string, range: AnalyticsRange, channelId: st
   return result.rows.map((row) => ({ day: number(row.day), hour: number(row.hour), value: number(row.value) }));
 }
 
+function messageSourceCounts(row: NumericRow, prefix: "current" | "previous") {
+  const live = number(row[`${prefix}LiveMessages`]);
+  const historyImport = number(row[`${prefix}HistoryImportMessages`]);
+  const existing = number(row[`${prefix}ExistingMessages`]);
+  const unknown = number(row[`${prefix}UnknownMessages`]);
+  const total = live + historyImport + existing + unknown;
+  return {
+    available: true,
+    live,
+    historyImport,
+    existing,
+    unknown,
+    total,
+    historyImportShare: total > 0 ? historyImport / total : 0,
+  };
+}
+
+async function loadMessageSourceQuality(guildId: string, range: AnalyticsRange) {
+  const unavailable = { available: false, live: 0, historyImport: 0, existing: 0, unknown: 0, total: 0, historyImportShare: 0 };
+  if (!messageImportConfig.enabled) return { current: unavailable, previous: unavailable };
+  const result = await pool.query<NumericRow>(`
+    SELECT
+      count(*) FILTER (WHERE ${boundsSql("m", "createdAt", "current")} AND m."source" = 'live')::int AS "currentLiveMessages",
+      count(*) FILTER (WHERE ${boundsSql("m", "createdAt", "current")} AND m."source" = 'history_import')::int AS "currentHistoryImportMessages",
+      count(*) FILTER (WHERE ${boundsSql("m", "createdAt", "current")} AND m."source" = 'existing')::int AS "currentExistingMessages",
+      count(*) FILTER (WHERE ${boundsSql("m", "createdAt", "current")} AND m."source" NOT IN ('live', 'history_import', 'existing'))::int AS "currentUnknownMessages",
+      count(*) FILTER (WHERE ${boundsSql("m", "createdAt", "previous")} AND m."source" = 'live')::int AS "previousLiveMessages",
+      count(*) FILTER (WHERE ${boundsSql("m", "createdAt", "previous")} AND m."source" = 'history_import')::int AS "previousHistoryImportMessages",
+      count(*) FILTER (WHERE ${boundsSql("m", "createdAt", "previous")} AND m."source" = 'existing')::int AS "previousExistingMessages",
+      count(*) FILTER (WHERE ${boundsSql("m", "createdAt", "previous")} AND m."source" NOT IN ('live', 'history_import', 'existing'))::int AS "previousUnknownMessages"
+    FROM "discord_message" m
+    WHERE m."guildId" = $1
+      AND ($8::text IS NULL OR m."channelId" = $8)
+      AND ($7::text IS NULL OR m."authorRoleIds" ? $7::text)
+      AND (NOT $9::boolean OR m."authorIsBot" = false)
+      AND ((${boundsSql("m", "createdAt", "current")}) OR (${boundsSql("m", "createdAt", "previous")}))
+  `, baseParams(guildId, range));
+  const row = result.rows[0] ?? {};
+  return { current: messageSourceCounts(row, "current"), previous: messageSourceCounts(row, "previous") };
+}
+
 async function loadHealthQualityMetrics(guildId: string, range: AnalyticsRange) {
   const result = await pool.query<NumericRow>(`
     WITH scoped_voice AS (
@@ -721,8 +765,8 @@ async function loadHealthQualityMetrics(guildId: string, range: AnalyticsRange) 
 
 async function computeCommunityAnalytics(guildId: string, range: AnalyticsRange) {
   const healthV2Release = resolveHealthV2ReleaseConfig();
-  const [core, retention, previousRetention, cohorts, channels, topShare, previousTopShare] = await Promise.all([
-    loadCoreMetrics(guildId, range), loadRetention(guildId, range), loadRetention(guildId, range, true), loadCohorts(guildId, range), loadChannels(guildId, range), loadDistribution(guildId, range), loadDistribution(guildId, range, true),
+  const [core, retention, previousRetention, cohorts, channels, topShare, previousTopShare, messageSourceQuality] = await Promise.all([
+    loadCoreMetrics(guildId, range), loadRetention(guildId, range), loadRetention(guildId, range, true), loadCohorts(guildId, range), loadChannels(guildId, range), loadDistribution(guildId, range), loadDistribution(guildId, range, true), loadMessageSourceQuality(guildId, range),
   ]);
   const roles = await loadRoles(guildId, range, core);
   const observationResult = await pool.query<NumericRow>(`
@@ -768,6 +812,7 @@ async function computeCommunityAnalytics(guildId: string, range: AnalyticsRange)
       eligible7: retention.retention7.eligible,
       sources: retention.sourceQuality,
     },
+    messageSources: messageSourceQuality.current,
     voice: {
       trackingSince: qualityMetrics.voiceTrackingSince,
       observationDays: number(coverage.observationDays),
@@ -791,6 +836,7 @@ async function computeCommunityAnalytics(guildId: string, range: AnalyticsRange)
       eligible7: previousRetention.retention7.eligible,
       sources: previousRetention.sourceQuality,
     },
+    messageSources: messageSourceQuality.previous,
     voice: {
       trackingSince: qualityMetrics.voiceTrackingSince,
       observationDays: number(coverage.previousObservationDays),
@@ -886,6 +932,7 @@ async function computeCommunityAnalytics(guildId: string, range: AnalyticsRange)
       storedMessages: number(coverage.storedMessages), messagesWithChannelId: number(coverage.messagesWithChannelId), messagesWithRoles: number(coverage.messagesWithRoles),
       retentionAvailable: Boolean(coverage.memberTrackingSince),
       roleHistoryMode: "event_time_from_collection",
+      messageSources: messageSourceQuality.current,
     },
     retention: {
       ...retention,

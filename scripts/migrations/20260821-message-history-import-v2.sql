@@ -45,6 +45,10 @@ CREATE INDEX IF NOT EXISTS "history_import_job_guild_requested_idx"
 CREATE INDEX IF NOT EXISTS "history_import_job_status_progress_idx"
   ON "history_import_job" ("status", "lastProgressAt");
 
+CREATE INDEX IF NOT EXISTS "history_import_job_terminal_completed_idx"
+  ON "history_import_job" ("completedAt")
+  WHERE "status" IN ('cancelled', 'completed', 'failed');
+
 CREATE UNIQUE INDEX IF NOT EXISTS "history_import_job_one_active_per_guild_v2_idx"
   ON "history_import_job" ("guildId")
   WHERE "status" IN ('queued', 'preparing', 'running', 'pausing', 'paused', 'cancelling', 'stalled');
@@ -102,3 +106,6 @@ CREATE INDEX IF NOT EXISTS "message_import_audit_guild_created_idx"
 
 CREATE INDEX IF NOT EXISTS "message_import_audit_job_created_idx"
   ON "message_import_audit_event" ("jobId", "createdAt" DESC);
+
+CREATE INDEX IF NOT EXISTS "message_import_audit_created_idx"
+  ON "message_import_audit_event" ("createdAt" DESC);

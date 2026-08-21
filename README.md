@@ -1,5 +1,14 @@
 # NuviloView:OEM
 
+## Message History Import v2
+
+Message History Import v2 adds durable per-channel checkpoints, real progress,
+Pause/Resume/Cancel, stalled recovery, bounded retries, source-aware deletion,
+diagnostics, and Guild-scoped server-side controls. It remains disabled by
+default until its additive migration and test-Guild rehearsal are approved.
+See [docs/message-history-import-v2.md](docs/message-history-import-v2.md) for
+the state model, privacy contract, retention, rollout, and rollback steps.
+
 ## Distributed Bot runtime
 
 Windows、Android / Termux、Render間の同時Discord接続を防ぐPostgreSQL Lease、hostId / instanceId付きheartbeat、Botとは独立した外部Monitorを利用できます。初回は無効で、additive migrationと全Hostの設定を揃えてから有効化します。構成・導入・障害時の挙動は[docs/distributed-runtime.md](docs/distributed-runtime.md)を参照してください。

@@ -4,7 +4,7 @@ NuviloView uses pull-request releases from a feature branch. Direct pushes to `m
 
 ## Versioning
 
-Use semantic versioning. Prepare an `-rc.N` candidate when migrations, authentication, runtime ownership, security controls, or backup behavior changes. The current package version remains `0.1.0`; this readiness branch proposes `0.2.0-rc.1` only after the blocking conditions in the release notes are closed.
+Use semantic versioning. Prepare an `-rc.N` candidate when migrations, authentication, runtime ownership, security controls, or backup behavior changes. The current release candidate is `0.2.0-rc.1`; stable promotion remains blocked until the conditions in the release notes are closed.
 
 ## Candidate checklist
 

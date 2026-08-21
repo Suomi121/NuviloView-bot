@@ -7,22 +7,23 @@ const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.me
 test("CI is read-only and does not deploy or mutate production", () => {
   assert.match(workflow, /permissions:\s*\n\s*contents: read/);
   assert.match(workflow, /GUILD_RESET_ENABLED: "false"/);
-  assert.match(workflow, /SECURITY_AUTO_CONTAINMENT_ENABLED: "false"/);
-  assert.match(workflow, /DISTRIBUTED_SINGLETON_ENABLED: "false"/);
+  assert.match(workflow, /NUVILOVIEW_NUKE_PROTECTION: "false"/);
+  assert.match(workflow, /NUVILOVIEW_DISTRIBUTED_SINGLETON: "false"/);
+  assert.match(workflow, /MESSAGE_HISTORY_IMPORT_V2_ENABLED: "false"/);
   assert.doesNotMatch(workflow, /\b(?:deploy|release|db:migrate|retention:execute)\b/i);
 });
 
 test("CI validates source, migrations, security, tests and build", () => {
   for (const command of [
-    "npm ci",
-    "npm run migration:validate",
-    "npm run migration:drift:static",
-    "npm run security:tokens",
-    "npm run syntax:check",
-    "npm run lint",
-    "npx tsc --noEmit",
-    "npm test",
-    "npm run dependency:audit",
-    "npm run build",
+    "pnpm install --frozen-lockfile",
+    "pnpm run migration:validate",
+    "pnpm run migration:drift:static",
+    "pnpm run security:tokens",
+    "pnpm run syntax:check",
+    "pnpm run lint",
+    "pnpm exec tsc --noEmit",
+    "pnpm test",
+    "pnpm run dependency:audit",
+    "pnpm run build",
   ]) assert.match(workflow, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });

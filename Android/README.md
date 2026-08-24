@@ -48,7 +48,9 @@ chmod +x Android/*.sh
 chmod 600 .env.local
 ```
 
-現行の`discord-bot.mjs`にはまだNeon PrimaryのLegacy domainがあります。そのためBot本体には現在も`DATABASE_URL`、`NUVILOVIEW_CLIENT_ID`、`NUVILOVIEW_BOT_TOKEN`が必要です。一方、Neonが一時的に接続不能でもPreflightは接続テストを連打せず、WorkerのCircuit BreakerとBackoffへ障害を閉じ込めます。SQLite Local-First MessageとBoot supervisorを「Neon接続失敗だけ」で停止させる設計ではありません。
+現行の`discord-bot.mjs`にはまだNeon PrimaryのLegacy domainがありますが、Bot起動に必須なのはDiscordの`NUVILOVIEW_CLIENT_ID`と`NUVILOVIEW_BOT_TOKEN`です。`DATABASE_URL`が未設定またはNeonが到達不能の場合、Botは明示的な`DEGRADED`モードでDiscord Gatewayへ接続し、Cloud-only機能だけを停止します。Legacy Message保存が選択されているGuildでは保存先が`UNAVAILABLE`と表示され、勝手にLocal-Firstへ切り替わりません。
+
+NeonへのQueryは共通Guardを通り、障害検知後は指数Backoff中のネットワークアクセスを抑止します。`Android/status-nuviloview.sh`でRuntime Mode、Neon、Message Storage、Cross-Host Leadershipを確認できます。Distributed Singletonが有効なのにNeon Leaseを確認できない場合だけは、Discord二重接続防止のため従来どおりfail-closedです。
 
 ## Termux:Bootの導入
 

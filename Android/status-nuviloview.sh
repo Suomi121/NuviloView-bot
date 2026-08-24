@@ -19,6 +19,9 @@ WORKER_PID_FILE="$RUNTIME_DIR/sync-worker.pid"
 WORKER_STATE_FILE="$RUNTIME_DIR/sync-worker-runner.state"
 STORAGE_HEALTH_FILE="$RUNTIME_DIR/storage-health.json"
 WAKE_LOCK_MARKER="$RUNTIME_DIR/wake-lock.acquired"
+NEON_RUNTIME_STATUS_PATH="$(nv_get_env_value "$ENV_FILE" NUVILOVIEW_RUNTIME_STATUS_PATH)"
+[[ -n "$NEON_RUNTIME_STATUS_PATH" ]] || NEON_RUNTIME_STATUS_PATH="data/runtime/neon-runtime-health.json"
+[[ "$NEON_RUNTIME_STATUS_PATH" == /* ]] || NEON_RUNTIME_STATUS_PATH="$PROJECT_ROOT/${NEON_RUNTIME_STATUS_PATH#./}"
 
 process_status() {
   local label="$1" pid_file="$2" marker="$3" state_file="${4:-}" pid state=""
@@ -36,6 +39,27 @@ process_status() {
 printf 'NuviloView Termux Runtime\n'
 process_status "Bot Runner" "$BOT_RUNNER_PID_FILE" "run-bot-forever.sh" "$BOT_STATE_FILE"
 process_status "Bot" "$BOT_PID_FILE" "discord-bot.mjs"
+
+if [[ -f "$NEON_RUNTIME_STATUS_PATH" ]] && command -v node >/dev/null 2>&1; then
+  node -e '
+    const fs = require("fs");
+    try {
+      const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const neon = value.neon ?? "UNKNOWN";
+      const configured = value.messageStorageConfiguredMode ?? "UNKNOWN";
+      const messageStorage = value.messageStorage ??
+        (configured === "LEGACY_NEON" && neon !== "AVAILABLE" ? "UNAVAILABLE" : configured);
+      console.log(`Runtime Mode: ${value.runtimeMode ?? "UNKNOWN"}`);
+      console.log(`Neon: ${neon}`);
+      console.log(`Message Storage: ${messageStorage}`);
+      console.log(`Cross-Host Leadership: ${value.crossHostLeadership ?? "UNKNOWN"}`);
+      const degraded = Array.isArray(value.degradedFeatures) ? value.degradedFeatures : [];
+      console.log(`Degraded Features: ${degraded.length ? degraded.join(", ") : "None"}`);
+    } catch { console.log("Runtime Mode: UNKNOWN (invalid runtime status)"); }
+  ' "$NEON_RUNTIME_STATUS_PATH"
+else
+  printf 'Runtime Mode: UNKNOWN\nNeon: UNKNOWN\nMessage Storage: UNKNOWN\nCross-Host Leadership: UNKNOWN\n'
+fi
 
 if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" SYNC_WORKER_ENABLED)"; then
   process_status "Sync Worker Runner" "$WORKER_RUNNER_PID_FILE" "run-sync-worker-forever.sh" "$WORKER_STATE_FILE"

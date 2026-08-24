@@ -12,6 +12,9 @@ RUNTIME_DIR="${NUVILOVIEW_ANDROID_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
 LOG_DIR="${NUVILOVIEW_ANDROID_LOG_DIR:-$SCRIPT_DIR/logs}"
 STATUS_FILE="$RUNTIME_DIR/preflight.status"
 STORAGE_HEALTH_FILE="$RUNTIME_DIR/storage-health.json"
+NEON_RUNTIME_STATUS_PATH="$(nv_get_env_value "$ENV_FILE" NUVILOVIEW_RUNTIME_STATUS_PATH)"
+[[ -n "$NEON_RUNTIME_STATUS_PATH" ]] || NEON_RUNTIME_STATUS_PATH="data/runtime/neon-runtime-health.json"
+[[ "$NEON_RUNTIME_STATUS_PATH" == /* ]] || NEON_RUNTIME_STATUS_PATH="$PROJECT_ROOT/${NEON_RUNTIME_STATUS_PATH#./}"
 BOOT_WRAPPER="${TERMUX_BOOT_DIR:-$HOME/.termux/boot}/nuviloview.sh"
 
 WARNINGS=()
@@ -101,7 +104,16 @@ bot_client_id="$(nv_get_env_value "$ENV_FILE" NUVILOVIEW_CLIENT_ID)"
 database_url="$(nv_get_env_value "$ENV_FILE" DATABASE_URL)"
 [[ -n "$bot_token" ]] || add_warn "bot_token_missing_bot_will_not_start"
 [[ -n "$bot_client_id" ]] || add_warn "bot_client_id_missing_bot_will_not_start"
-[[ -n "$database_url" ]] || add_warn "database_url_missing_legacy_domains_and_worker_unavailable"
+if [[ -n "$database_url" ]]; then
+  add_detail "neon=configured_runtime_probe_deferred"
+else
+  add_warn "neon=not_configured_bot_will_start_degraded"
+fi
+
+if [[ -f "$NEON_RUNTIME_STATUS_PATH" && -n "$NODE_PATH" ]]; then
+  neon_runtime_state="$($NODE_PATH -e 'const fs=require("fs");try{const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String(v.neon||"UNKNOWN"))}catch{process.stdout.write("INVALID")}' "$NEON_RUNTIME_STATUS_PATH")"
+  add_detail "last_runtime_neon=$neon_runtime_state"
+fi
 
 local_enabled="$(nv_get_env_value "$ENV_FILE" LOCAL_STORAGE_ENABLED)"
 local_write_enabled="$(nv_get_env_value "$ENV_FILE" LOCAL_STORAGE_WRITE_ENABLED)"

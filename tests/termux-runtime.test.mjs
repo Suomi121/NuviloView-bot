@@ -62,6 +62,7 @@ test("Preflight defines PASS, WARN, FAIL and local safety gates", () => {
     "message_local_first_requires_writable_local_storage",
     "disk_free_critical",
     "network_route_unavailable",
+    "neon=not_configured_bot_will_start_degraded",
   ]) assert.ok(preflight.includes(expected), `missing ${expected}`);
   assert.doesNotMatch(preflight, /pool\.query|SELECT\s+1/i);
 });
@@ -73,6 +74,9 @@ test("Stop and status cover both processes without exposing env values", () => {
   assert.match(sources["status-nuviloview.sh"], /Circuit:/);
   assert.match(sources["status-nuviloview.sh"], /Pending:/);
   assert.match(sources["status-nuviloview.sh"], /Dead Letter:/);
+  assert.match(sources["status-nuviloview.sh"], /Runtime Mode:/);
+  assert.match(sources["status-nuviloview.sh"], /Neon:/);
+  assert.match(sources["status-nuviloview.sh"], /Cross-Host Leadership:/);
   assert.doesNotMatch(sources["status-nuviloview.sh"], /printf[^\n]*(DATABASE_URL|BOT_TOKEN)/);
 });
 
@@ -117,7 +121,6 @@ test("Preflight warns for optional host gaps and fails flag contradictions", { s
   await writeFile(envFile, [
     "NUVILOVIEW_BOT_TOKEN=test-only-placeholder",
     "NUVILOVIEW_CLIENT_ID=123456789012345678",
-    "DATABASE_URL=postgresql://local-test.invalid/db",
     "LOCAL_STORAGE_ENABLED=false",
     "LOCAL_STORAGE_WRITE_ENABLED=false",
     "LOCAL_MESSAGE_STORAGE_ENABLED=false",
@@ -138,7 +141,8 @@ test("Preflight warns for optional host gaps and fails flag contradictions", { s
     encoding: "utf8",
   });
   assert.equal(warn.status, 0, `${warn.stderr}\n${warn.stdout}`);
-  assert.match(warn.stdout, /Preflight: PASS/);
+  assert.match(warn.stdout, /Preflight: WARN/);
+  assert.match(warn.stdout, /WARN neon=not_configured_bot_will_start_degraded/);
 
   await writeFile(envFile, [
     "LOCAL_STORAGE_ENABLED=false",

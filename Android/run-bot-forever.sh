@@ -389,16 +389,20 @@ validate_configuration() {
   done
 
   if [[ -f "$ENV_FILE" ]]; then
-    # discord-bot.mjs still contains legacy Neon-primary domains, so the Bot
-    # cannot safely claim full offline operation yet. This validation affects
-    # only the Bot runner; boot-start and the independent Worker stay isolated.
-    for name in DATABASE_URL NUVILOVIEW_CLIENT_ID NUVILOVIEW_BOT_TOKEN; do
+    # Neon-backed domains now enter explicit DEGRADED mode when DATABASE_URL is
+    # missing or unreachable. Discord identity remains mandatory; the runner
+    # must not silently invent credentials or enable Local-First flags.
+    for name in NUVILOVIEW_CLIENT_ID NUVILOVIEW_BOT_TOKEN; do
       value="$(get_env_value "$name")"
       if [[ -z "$value" ]]; then
         write_error "Missing Bot runtime environment variable: $name"
         failed=1
       fi
     done
+    if [[ -z "$(get_env_value DATABASE_URL)" ]]; then
+      write_runner_log "DATABASE_URL is not configured; Bot will start in explicit DEGRADED local-only mode."
+      printf 'Warning: DATABASE_URL is not configured; Cloud-only features will be unavailable.\n' >&2
+    fi
     permission_mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)"
     if [[ -n "$permission_mode" && "$permission_mode" != "600" ]]; then
       write_runner_log ".env.local permissions are $permission_mode; chmod 600 is recommended."

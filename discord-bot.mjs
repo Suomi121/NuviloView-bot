@@ -4188,11 +4188,11 @@ async function emitGuildAlert({ guildId, type, severity = "warning", title, body
 
 async function checkGuildAlerts(guild) {
   if (isGuildBlocked(guild.id)) return;
-  const localLastMessageAt = messageRouter.enabled
+  const localLastMessageAt = messageRouter.isLocalFirstGuild(guild.id)
     ? messageRouter.getLastActivityAt(guild.id)
     : null;
   const [activityRows, departureRows, unreadableRows] = await Promise.all([
-    messageRouter.enabled
+    messageRouter.isLocalFirstGuild(guild.id)
       ? Promise.resolve([
           { lastMessageAt: localLastMessageAt == null ? null : new Date(localLastMessageAt) },
         ])
@@ -4363,7 +4363,6 @@ async function recordLegacyMessageCreate(message) {
 }
 
 async function purgeExpiredMessages() {
-  if (messageRouter.enabled) return 0;
   await sql`DELETE FROM "discord_message" WHERE "createdAt" < now() - (${messageRetentionDays} * interval '1 day')`;
   return 1;
 }

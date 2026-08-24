@@ -4,10 +4,14 @@ Status: implemented behind a default-OFF feature flag. Production has not been c
 
 ## Routing
 
-- `LOCAL_MESSAGE_STORAGE_ENABLED=false`: the existing Neon Message path is used.
-- `LOCAL_MESSAGE_STORAGE_ENABLED=true`: Message Create, Update, Delete, Daily Stats,
-  Active Member, and Recent Activity are written to SQLite plus Outbox in one
-  synchronous transaction. No Message write falls back to Neon.
+- `LOCAL_MESSAGE_STORAGE_ENABLED=false`: every Guild uses the existing Neon path.
+- Global ON with an empty `LOCAL_MESSAGE_CANARY_GUILDS`: every Guild still uses
+  the existing Neon path.
+- Global ON with explicit Canary Guild IDs: only those Guilds write Message
+  Create, Update, Delete, Daily Stats, Active Member, and Recent Activity to
+  SQLite plus Outbox in one synchronous transaction. Other Guilds use Legacy.
+- A Canary Message uses exactly one route; there is no Shadow Write or Neon
+  fallback after a local write failure.
 - Reaction, Voice, Member, Inventory, Security, Moderation, History Import, Web,
   OAuth, and Vercel APIs keep their existing storage paths.
 
@@ -17,6 +21,7 @@ Local-first mode also requires:
 LOCAL_STORAGE_ENABLED=true
 LOCAL_STORAGE_WRITE_ENABLED=true
 LOCAL_MESSAGE_STORAGE_ENABLED=true
+LOCAL_MESSAGE_CANARY_GUILDS=1216303889599565875
 ```
 
 The Sync Worker remains independently controlled by
@@ -126,6 +131,9 @@ corepack pnpm test:replica:postgres
 
 Never point this variable at Production. The reviewed rollback proposal is
 [`docs/sql/phase3a-message-replica-rollback.sql`](sql/phase3a-message-replica-rollback.sql).
+The Production review, concurrent-index split, Canary gates, and operational
+runbook are documented in
+[`docs/message-local-first-phase3a-production-readiness.md`](message-local-first-phase3a-production-readiness.md).
 
 ## Production rollout blockers
 

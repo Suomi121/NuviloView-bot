@@ -320,6 +320,6 @@ test("Phase 3A connects only the guarded Message router to discord-bot.mjs", () 
     "utf8",
   );
   assert.match(source, /createMessageDomainRouter/);
-  assert.match(source, /LOCAL_MESSAGE_STORAGE_ENABLED|messageRouter\.enabled/);
+  assert.match(source, /messageRouter\.isLocalFirstGuild/);
   assert.doesNotMatch(source, /messageRouter\.(?:reaction|voice|member)/);
 });

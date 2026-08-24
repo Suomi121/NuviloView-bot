@@ -17,6 +17,8 @@ import {
 } from "../lib/sync/message-neon-replica.mjs";
 import { getSyncWorkerConfig, SyncWorker } from "../lib/sync/worker.mjs";
 
+const TEST_GUILD_ID = "1216303889599565875";
+
 function message(id, overrides = {}) {
   const createdTimestamp = overrides.createdTimestamp ?? 1_700_000_000_000;
   return {
@@ -25,7 +27,7 @@ function message(id, overrides = {}) {
     createdTimestamp,
     createdAt: new Date(createdTimestamp),
     editedTimestamp: overrides.editedTimestamp ?? null,
-    guild: { id: overrides.guildId ?? "guild-1", memberCount: 76 },
+    guild: { id: overrides.guildId ?? TEST_GUILD_ID, memberCount: 76 },
     channel: { id: overrides.channelId ?? "channel-1", name: "general" },
     channelId: overrides.channelId ?? "channel-1",
     author: {
@@ -71,6 +73,7 @@ function harness(t, { initialNow = 1_700_000_100_000, local = true } = {}) {
     LOCAL_STORAGE_WRITE_ENABLED: "true",
     LOCAL_STORAGE_PATH: databasePath,
     LOCAL_MESSAGE_STORAGE_ENABLED: local ? "true" : "false",
+    LOCAL_MESSAGE_CANARY_GUILDS: local ? TEST_GUILD_ID : "",
   };
   const router = createMessageDomainRouter({
     env,
@@ -123,10 +126,10 @@ test("Message Create writes current state, derived analytics, and Outbox atomica
   const h = harness(t);
   const result = await h.router.create(message("100"));
   assert.equal(result.inserted, true);
-  assert.equal(h.storage.messageDomain.getCurrent("guild-1", "100").content, "message-100");
+  assert.equal(h.storage.messageDomain.getCurrent(TEST_GUILD_ID, "100").content, "message-100");
   assert.equal(h.storage.outbox.getMessagePendingCount(), 1);
   assert.deepEqual(
-    h.storage.messageDomain.getDerivedStats("guild-1", "2023-11-14"),
+    h.storage.messageDomain.getDerivedStats(TEST_GUILD_ID, "2023-11-14"),
     {
       messageCount: 1,
       memberCount: 76,
@@ -152,7 +155,7 @@ test("Message and Outbox both roll back when Event ID collides", async (t) => {
     createdAt: input.occurredAt,
   });
   await assert.rejects(h.router.create(message("collision")), /collision/i);
-  assert.equal(h.storage.messageDomain.getCurrent("guild-1", "collision"), null);
+  assert.equal(h.storage.messageDomain.getCurrent(TEST_GUILD_ID, "collision"), null);
   assert.equal(h.storage.messageDomain.getMetrics().messageLocalWriteFailures, 1);
 });
 
@@ -163,7 +166,7 @@ test("duplicate Create is idempotent and does not increment analytics twice", as
   assert.equal(duplicate.inserted, false);
   assert.equal(h.storage.outbox.getMessagePendingCount(), 1);
   assert.equal(
-    h.storage.messageDomain.getDerivedStats("guild-1", "2023-11-14").messageCount,
+    h.storage.messageDomain.getDerivedStats(TEST_GUILD_ID, "2023-11-14").messageCount,
     1,
   );
   assert.equal(h.storage.messageDomain.getMetrics().messageLocalWritesTotal, 1);
@@ -181,7 +184,7 @@ test("Message Update uses edited timestamp plus checksum and deduplicates a repl
   assert.equal(first.inserted, true);
   assert.equal(replay.inserted, false);
   assert.match(first.event.eventId, /^message-update:/);
-  assert.equal(h.storage.messageDomain.getCurrent("guild-1", "edit").content, "edited");
+  assert.equal(h.storage.messageDomain.getCurrent(TEST_GUILD_ID, "edit").content, "edited");
   assert.equal(h.storage.outbox.getMessagePendingCount(), 2);
 });
 
@@ -190,7 +193,7 @@ test("Delete creates a durable Tombstone and preserves Create to Delete ordering
   await h.router.create(message("deleted"));
   h.setNow(1_700_000_020_000);
   const result = await h.router.remove(message("deleted"));
-  const current = h.storage.messageDomain.getCurrent("guild-1", "deleted");
+  const current = h.storage.messageDomain.getCurrent(TEST_GUILD_ID, "deleted");
   assert.equal(result.previous.content, "message-deleted");
   assert.equal(current.eventType, "delete");
   assert.equal(current.content, null);
@@ -212,7 +215,7 @@ test("Create to Update to Delete rejects a late out-of-order Update as current s
     content: "late-old-update",
     editedTimestamp: 1_700_000_025_000,
   }));
-  const current = h.storage.messageDomain.getCurrent("guild-1", "ordered");
+  const current = h.storage.messageDomain.getCurrent(TEST_GUILD_ID, "ordered");
   assert.equal(current.eventType, "delete");
   assert.equal(current.content, null);
   assert.equal(h.storage.outbox.getMessagePendingCount(), 4);
@@ -225,15 +228,15 @@ test("Bulk Delete writes individual Tombstones in one local batch", async (t) =>
   h.setNow(1_700_000_050_000);
   const results = await h.router.removeMany([message("bulk-1"), message("bulk-2")]);
   assert.equal(results.length, 2);
-  assert.equal(h.storage.messageDomain.getCurrent("guild-1", "bulk-1").eventType, "delete");
-  assert.equal(h.storage.messageDomain.getCurrent("guild-1", "bulk-2").eventType, "delete");
+  assert.equal(h.storage.messageDomain.getCurrent(TEST_GUILD_ID, "bulk-1").eventType, "delete");
+  assert.equal(h.storage.messageDomain.getCurrent(TEST_GUILD_ID, "bulk-2").eventType, "delete");
   assert.equal(h.storage.outbox.getMessagePendingCount(), 4);
 });
 
 test("Worker or Neon downtime cannot prevent a Local-First Message save", async (t) => {
   const h = harness(t);
   await h.router.create(message("offline"));
-  assert.equal(h.storage.messageDomain.getCurrent("guild-1", "offline").content, "message-offline");
+  assert.equal(h.storage.messageDomain.getCurrent(TEST_GUILD_ID, "offline").content, "message-offline");
   assert.equal(h.storage.outbox.getMessagePendingCount(), 1);
   assert.equal(h.legacyCalls.create, 0);
 });
@@ -344,7 +347,7 @@ test("Message Neon replica contract converges Create, Update, Delete out of orde
   await adapter.writeBatch([byType.message_update]);
   await adapter.writeBatch([byType.message_create]);
   assert.equal(
-    current.get("message:guild-1:remote-order").event_type,
+    current.get(`message:${TEST_GUILD_ID}:remote-order`).event_type,
     "message_delete",
   );
 });
@@ -353,12 +356,12 @@ test("Feature Flag OFF uses only Legacy Neon and ON uses only Local-First", asyn
   const legacy = harness(t, { local: false });
   await legacy.router.create(message("legacy"));
   assert.equal(legacy.legacyCalls.create, 1);
-  assert.equal(legacy.storage.messageDomain.getCurrent("guild-1", "legacy"), null);
+  assert.equal(legacy.storage.messageDomain.getCurrent(TEST_GUILD_ID, "legacy"), null);
 
   const local = harness(t, { local: true });
   await local.router.create(message("local"));
   assert.equal(local.legacyCalls.create, 0);
-  assert.notEqual(local.storage.messageDomain.getCurrent("guild-1", "local"), null);
+  assert.notEqual(local.storage.messageDomain.getCurrent(TEST_GUILD_ID, "local"), null);
 });
 
 test("Rollback Guard blocks Legacy routing while Message Outbox is pending", async (t) => {
@@ -373,6 +376,7 @@ test("Rollback Guard blocks Legacy routing while Message Outbox is pending", asy
           LOCAL_STORAGE_WRITE_ENABLED: "false",
           LOCAL_STORAGE_PATH: h.databasePath,
           LOCAL_MESSAGE_STORAGE_ENABLED: "false",
+          LOCAL_MESSAGE_CANARY_GUILDS: "",
         },
         cwd: h.directory,
         legacy: {

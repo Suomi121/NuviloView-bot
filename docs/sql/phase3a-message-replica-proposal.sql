@@ -64,13 +64,12 @@ ALTER TABLE "discord_message"
   ADD COLUMN IF NOT EXISTS "sourceRevision" text,
   ADD COLUMN IF NOT EXISTS "sourceSequence" bigint,
   ADD COLUMN IF NOT EXISTS "sourceEventRank" integer;
-CREATE UNIQUE INDEX IF NOT EXISTS discord_message_source_event_unique_idx
-  ON "discord_message" ("sourceEventId") WHERE "sourceEventId" IS NOT NULL;
 
 ALTER TABLE "recent_activity"
   ADD COLUMN IF NOT EXISTS "sourceEventId" text;
-CREATE UNIQUE INDEX IF NOT EXISTS recent_activity_source_event_unique_idx
-  ON "recent_activity" ("sourceEventId") WHERE "sourceEventId" IS NOT NULL;
+
+-- Indexes on the existing Dashboard tables are intentionally created by
+-- phase3a-message-replica-concurrent-indexes.sql after this transaction.
 
 CREATE OR REPLACE FUNCTION sync_message_event_batch(input_events jsonb)
 RETURNS TABLE(event_id text, checksum text)
@@ -80,6 +79,22 @@ AS $$
 BEGIN
   IF jsonb_typeof(input_events) <> 'array' THEN
     RAISE EXCEPTION 'input_events must be a JSON array' USING ERRCODE = '22023';
+  END IF;
+
+  -- Feature routing must remain OFF until both concurrent indexes on existing
+  -- Dashboard tables are ready. Without them, retry-safe Recent Activity and
+  -- Message source materialization cannot be guaranteed.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_index
+    WHERE indexrelid = to_regclass('discord_message_source_event_unique_idx')
+      AND indisvalid AND indisready
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_index
+    WHERE indexrelid = to_regclass('recent_activity_source_event_unique_idx')
+      AND indisvalid AND indisready
+  ) THEN
+    RAISE EXCEPTION 'Phase 3A concurrent indexes are not ready'
+      USING ERRCODE = '55000';
   END IF;
 
   -- Capture the legacy counter once, before the first local event for a day is inserted.

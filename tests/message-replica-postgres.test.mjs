@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import pg from "pg";
+import {
+  checkMessageReplicaSchema,
+  fetchMessageReplicaComparison,
+} from "../lib/message-canary-postgres.mjs";
 import { createLocalStorage } from "../lib/storage/index.mjs";
 import {
   createMessageNeonReplicaAdapter,
@@ -20,11 +24,16 @@ const proposalSql = readFileSync(
   new URL("../docs/sql/phase3a-message-replica-proposal.sql", import.meta.url),
   "utf8",
 );
+const concurrentIndexesSql = readFileSync(
+  new URL("../docs/sql/phase3a-message-replica-concurrent-indexes.sql", import.meta.url),
+  "utf8",
+);
 const rollbackSql = readFileSync(
   new URL("../docs/sql/phase3a-message-replica-rollback.sql", import.meta.url),
   "utf8",
 );
 const baseTime = Date.parse("2026-08-24T00:00:00.000Z");
+const canaryGuildId = "1216303889599565875";
 
 function event(action, messageId, sequence, overrides = {}) {
   const occurredAt = overrides.occurredAt ?? baseTime + sequence * 1_000;
@@ -122,6 +131,15 @@ async function createBaseSchema(client) {
   `);
 }
 
+async function applyConcurrentIndexes(client) {
+  const statements = concurrentIndexesSql
+    .replace(/^\s*--.*$/gm, "")
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+  for (const statement of statements) await client.query(statement);
+}
+
 async function tableCount(client, table, where = "TRUE", values = []) {
   const result = await client.query(`SELECT COUNT(*)::integer AS count FROM ${table} WHERE ${where}`, values);
   return result.rows[0].count;
@@ -154,6 +172,11 @@ test(
 
     await t.test("migration is transactional, repeatable, and schema-compatible", async () => {
       await client.query(proposalSql);
+      await assert.rejects(
+        client.query("SELECT * FROM sync_message_event_batch('[]'::jsonb)"),
+        (error) => error?.code === "55000",
+      );
+      await applyConcurrentIndexes(client);
       const relations = await client.query(`
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = $1
@@ -209,6 +232,7 @@ test(
       assert.equal(functionExists.rows[0].present, true);
 
       await client.query(proposalSql);
+      await applyConcurrentIndexes(client);
       assert.equal(await tableCount(client, "message_event_replica"), 0);
     });
 
@@ -307,12 +331,12 @@ test(
     await t.test("100 creates and three identical deliveries remain idempotent", async () => {
       await client.query(`
         INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "date")
-        VALUES ('guild-daily', 76, 7, '2026-08-24')
+        VALUES ('1216303889599565875', 76, 7, '2026-08-24')
       `);
       const items = Array.from({ length: 100 }, (_, index) => event("create", `daily-${index}`, 1_000 + index, {
         content: `daily-${index}`,
         authorId: "user-bulk",
-        guildId: "guild-daily",
+        guildId: canaryGuildId,
       }));
       const before = queryCount;
       for (let index = 0; index < items.length; index += 25) {
@@ -325,14 +349,29 @@ test(
         }
       }
       assert.equal(firstQueryCount, 4);
-      assert.equal(await tableCount(client, "message_event_replica", "event_id LIKE 'phase3a:guild-daily:daily-%'"), 100);
+      assert.equal(await tableCount(client, "message_event_replica", "event_id LIKE 'phase3a:1216303889599565875:daily-%'"), 100);
       assert.equal(await tableCount(client, '"discord_message"', '"id" LIKE \'daily-%\''), 100);
-      assert.equal(await tableCount(client, '"recent_activity"', '"sourceEventId" LIKE \'phase3a:guild-daily:daily-%\''), 100);
-      assert.equal(await tableCount(client, '"daily_active_member"', '"guildId" = \'guild-daily\' AND "userId" = \'user-bulk\''), 1);
+      assert.equal(await tableCount(client, '"recent_activity"', '"sourceEventId" LIKE \'phase3a:1216303889599565875:daily-%\''), 100);
+      assert.equal(await tableCount(client, '"daily_active_member"', '"guildId" = \'1216303889599565875\' AND "userId" = \'user-bulk\''), 1);
       const stats = await client.query(
-        `SELECT "messageCount" FROM "daily_stats" WHERE "guildId" = 'guild-daily' AND "date" = '2026-08-24'`,
+        `SELECT "messageCount" FROM "daily_stats" WHERE "guildId" = '1216303889599565875' AND "date" = '2026-08-24'`,
       );
       assert.equal(stats.rows[0].messageCount, 107);
+    });
+
+    await t.test("Canary schema and aggregate comparison are ready without Message content", async () => {
+      const execute = (sql, parameters) => client.query(sql, parameters);
+      const schemaStatus = await checkMessageReplicaSchema(execute);
+      assert.equal(schemaStatus.ready, true);
+      const comparison = await fetchMessageReplicaComparison(execute, canaryGuildId);
+      assert.equal(comparison.replicaEventCount, 100);
+      assert.equal(comparison.materializedMessageCount, 100);
+      assert.equal(comparison.tombstoneCount, 0);
+      assert.equal(comparison.recentActivityCount, 100);
+      assert.equal(comparison.expectedActiveMemberCount, 1);
+      assert.equal(comparison.dailyStatsMismatchCount, 0);
+      assert.equal(comparison.activeMemberMissingCount, 0);
+      assert.doesNotMatch(JSON.stringify(comparison), /content/i);
     });
 
     await t.test("Active Member uses the UTC day boundary per Guild", async () => {
@@ -556,6 +595,7 @@ test(
     await t.test("migration rerun preserves data and rollback removes only replica infrastructure", async () => {
       const before = await tableCount(client, "message_event_replica");
       await client.query(proposalSql);
+      await applyConcurrentIndexes(client);
       assert.equal(await tableCount(client, "message_event_replica"), before);
       await client.query(rollbackSql);
       assert.equal((await client.query("SELECT to_regclass('message_event_replica') AS relation")).rows[0].relation, null);

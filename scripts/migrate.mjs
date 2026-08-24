@@ -600,16 +600,6 @@ try {
       END IF;
     END $$
   `);
-  const nukeProtectionMigration = await readFile(
-    new URL("./migrations/20260814-nuke-protection-v1.sql", import.meta.url),
-    "utf8",
-  );
-  await pool.query(nukeProtectionMigration);
-  const securityV1Migration = await readFile(
-    new URL("./migrations/20260821-security-v1.sql", import.meta.url),
-    "utf8",
-  );
-  await pool.query(securityV1Migration);
   const distributedRuntimeMigration = await readFile(
     new URL("./migrations/20260816-distributed-runtime.sql", import.meta.url),
     "utf8",

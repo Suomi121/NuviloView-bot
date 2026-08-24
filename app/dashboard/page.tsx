@@ -22,7 +22,6 @@ import {
   MoreHorizontal,
   Search,
   Settings,
-  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Smartphone,
@@ -103,11 +102,6 @@ const appFeatures = [
     title: "アナリティクス",
     description: "メッセージ・メンバーの推移",
     href: "/dashboard",
-  },
-  {
-    title: "Security",
-    description: "Nuke Protectionとインシデント",
-    href: "/dashboard/security",
   },
   { title: "表示設定", description: "時間帯を変更", href: "/settings" },
   {
@@ -928,11 +922,6 @@ export default function DashboardPage() {
             icon={<Sparkles />}
             label={en ? "Growth insights" : "成長インサイト"}
             onClick={() => setActiveView("insights")}
-          />
-          <NavItem
-            icon={<ShieldAlert />}
-            label="Security"
-            href={`/dashboard/security${guildId ? `?guildId=${encodeURIComponent(guildId)}` : ""}`}
           />
           <NavItem
             icon={<Settings />}

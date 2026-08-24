@@ -65,40 +65,6 @@ To learn more, take a look at the following resources:
 - [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 - [v0 Documentation](https://v0.app/docs) - learn about v0 and how to use it.
 
-## Nuke Protection v1
-
-NuviloView can correlate Discord Guild audit-log events into explainable
-security incidents. Security v1 adds bot-only Channel/Role Anti-Nuke, Webhook
-creation protection, duplicate-message and everyone/here Bot-spam detection,
-bounded incident deduplication, and optional best-effort cleanup/recovery. It
-preserves safe evidence without message content or credentials.
-
-The initial feature flag is intentionally disabled:
-
-```env
-NUVILOVIEW_NUKE_PROTECTION=false
-```
-
-After the additive database migration has completed, set the same flag on the
-Web and Bot hosts. New Guild policies start in **Shadow Mode**. Recommended
-rollout:
-
-1. Shadow Mode — detection, scoring and evidence only.
-2. Alerts — review High/Critical notification volume.
-3. Manual containment — Guild owner explicitly switches the policy to Manual.
-4. Protect / Strict — separately opt in to automatic Kick and Auto Restore only
-   after permissions, snapshots and thresholds have been verified.
-
-Detection needs Discord `VIEW_AUDIT_LOG` and the `GUILD_MODERATION` Gateway
-intent. Manual containment removes only dangerous, non-managed roles below the
-NuviloView Bot role and needs `MANAGE_ROLES`; Guild owners, trusted actors and
-NuviloView itself are protected. Auto Restore additionally needs the matching
-Manage Channels / Roles / Webhooks permissions. Automatic Ban is not
-implemented.
-
-See [Nuke Protection documentation](docs/nuke-protection.md) for the scoring
-formula, authorization model, retention and known limitations.
-
 ## Server backups
 
 `scripts/run-backup-forever.ps1` creates one verified server backup each day

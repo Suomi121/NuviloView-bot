@@ -16,7 +16,6 @@ type ManagedGuild = {
   reason: string | null
   blockedBy: string | null
   blockedAt: string | null
-  nukeProtectionMode: 'off' | 'shadow' | 'active'
 }
 
 type AuditEntry = {
@@ -43,7 +42,6 @@ export default function DeveloperPage() {
   const [auditIntegrity, setAuditIntegrity] = useState<{ valid: boolean; checked: number }>({ valid: true, checked: 0 })
   const [bot, setBot] = useState<{ online: boolean; lastSeenAt: string | null }>({ online: false, lastSeenAt: null })
   const [guildResetAvailable, setGuildResetAvailable] = useState(false)
-  const [nukeProtectionGlobalEnabled, setNukeProtectionGlobalEnabled] = useState(false)
   const [query, setQuery] = useState('')
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [reason, setReason] = useState('')
@@ -71,7 +69,6 @@ export default function DeveloperPage() {
       if (data.auditIntegrity) setAuditIntegrity(data.auditIntegrity)
       setBot(data.bot ?? { online: false, lastSeenAt: null })
       setGuildResetAvailable(data.guildResetAvailable === true)
-      setNukeProtectionGlobalEnabled(data.nukeProtectionGlobalEnabled === true)
       setForbidden(false)
     } catch {
       setMessage('管理データを取得できませんでした。')
@@ -157,11 +154,10 @@ export default function DeveloperPage() {
         <button onClick={() => { setLoading(true); void load() }} className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-bold hover:bg-secondary"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />更新</button>
       </div>
 
-      <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatusCard label="Bot接続状態" value={bot.online ? 'オンライン' : 'オフライン'} detail={bot.lastSeenAt ? `最終記録: ${formatDate(bot.lastSeenAt)}` : '生存記録はまだありません'} tone={bot.online ? 'good' : 'bad'} />
         <StatusCard label="管理対象Guild" value={`${guilds.length}件`} detail="ブロック済みを含む" tone="neutral" />
         <StatusCard label="ブロック済み" value={`${guilds.filter((guild) => Boolean(guild.reason)).length}件`} detail="解除しても操作履歴は残ります" tone="bad" />
-        <StatusCard label="Nuke Protection v2" value={nukeProtectionGlobalEnabled ? 'GLOBAL ENABLED' : 'GLOBAL DISABLED'} detail="Global Kill Switch" tone={nukeProtectionGlobalEnabled ? 'good' : 'bad'} />
       </div>
 
       <DeveloperRuntimePanel />
@@ -186,8 +182,7 @@ function StatusCard({ label, value, detail, tone }: { label: string; value: stri
 
 function GuildRow({ guild, guildResetAvailable, onBlock, onUnblock }: { guild: ManagedGuild; guildResetAvailable: boolean; onBlock: () => void; onUnblock: () => void }) {
   const blocked = Boolean(guild.reason)
-  const nukeTone = guild.nukeProtectionMode === 'off' ? 'bg-rose-500/15 text-rose-400' : guild.nukeProtectionMode === 'shadow' ? 'bg-blue-500/15 text-blue-300' : 'bg-emerald-500/15 text-emerald-400'
-  return <article className="flex flex-col gap-3 rounded-xl border border-border bg-background/45 p-3.5 sm:flex-row sm:items-center"><div className="flex min-w-0 flex-1 items-center gap-3">{guild.iconUrl ? <img src={guild.iconUrl} alt="" className="h-10 w-10 rounded-xl object-cover" /> : <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-primary"><Server className="h-5 w-5" /></span>}<div className="min-w-0"><p className="truncate text-sm font-bold">{guild.name || `Guild ${guild.guildId}`}</p><p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{guild.guildId} · {guild.memberCount?.toLocaleString() ?? '—'} members</p><p className="mt-1 text-[11px] text-muted-foreground">{blocked ? `理由: ${guild.reason}` : guild.isConnected ? `接続中 · 最終確認 ${formatDate(guild.lastSeenAt)}` : 'Botは現在このGuildにいません'}</p></div></div><div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${nukeTone}`}>NUKE {guild.nukeProtectionMode.toUpperCase()}</span><span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${blocked ? 'bg-rose-500/15 text-rose-400' : guild.isConnected ? 'bg-emerald-500/15 text-emerald-400' : 'bg-muted text-muted-foreground'}`}>{blocked ? 'BLOCKED' : guild.isConnected ? 'CONNECTED' : 'OFFLINE'}</span>{!blocked && guild.isConnected && (guildResetAvailable ? <a href={`/developer/guilds/${guild.guildId}/reset`} className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 px-3 py-2 text-xs font-bold text-primary hover:bg-primary/10"><RefreshCcw className="h-3.5 w-3.5" />初期化</a> : <span className="rounded-lg border border-border px-3 py-2 text-xs font-bold text-muted-foreground">初期化 OFF</span>)}{blocked ? <button onClick={onUnblock} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 px-3 py-2 text-xs font-bold text-emerald-400 hover:bg-emerald-500/10"><Unlock className="h-3.5 w-3.5" />解除</button> : <button onClick={onBlock} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"><Ban className="h-3.5 w-3.5" />ブロック</button>}</div></article>
+  return <article className="flex flex-col gap-3 rounded-xl border border-border bg-background/45 p-3.5 sm:flex-row sm:items-center"><div className="flex min-w-0 flex-1 items-center gap-3">{guild.iconUrl ? <img src={guild.iconUrl} alt="" className="h-10 w-10 rounded-xl object-cover" /> : <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-primary"><Server className="h-5 w-5" /></span>}<div className="min-w-0"><p className="truncate text-sm font-bold">{guild.name || `Guild ${guild.guildId}`}</p><p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{guild.guildId} · {guild.memberCount?.toLocaleString() ?? '—'} members</p><p className="mt-1 text-[11px] text-muted-foreground">{blocked ? `理由: ${guild.reason}` : guild.isConnected ? `接続中 · 最終確認 ${formatDate(guild.lastSeenAt)}` : 'Botは現在このGuildにいません'}</p></div></div><div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${blocked ? 'bg-rose-500/15 text-rose-400' : guild.isConnected ? 'bg-emerald-500/15 text-emerald-400' : 'bg-muted text-muted-foreground'}`}>{blocked ? 'BLOCKED' : guild.isConnected ? 'CONNECTED' : 'OFFLINE'}</span>{!blocked && guild.isConnected && (guildResetAvailable ? <a href={`/developer/guilds/${guild.guildId}/reset`} className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 px-3 py-2 text-xs font-bold text-primary hover:bg-primary/10"><RefreshCcw className="h-3.5 w-3.5" />初期化</a> : <span className="rounded-lg border border-border px-3 py-2 text-xs font-bold text-muted-foreground">初期化 OFF</span>)}{blocked ? <button onClick={onUnblock} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 px-3 py-2 text-xs font-bold text-emerald-400 hover:bg-emerald-500/10"><Unlock className="h-3.5 w-3.5" />解除</button> : <button onClick={onBlock} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"><Ban className="h-3.5 w-3.5" />ブロック</button>}</div></article>
 }
 
 function ConfirmDialog({ pending, reason, setReason, saving, onClose, onSubmit }: { pending: PendingAction; reason: string; setReason: (value: string) => void; saving: boolean; onClose: () => void; onSubmit: () => void }) {

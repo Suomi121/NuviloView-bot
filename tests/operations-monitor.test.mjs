@@ -27,7 +27,6 @@ const healthy = () => ({
   db: { latencyMs: 20 },
   api: { configured: true, ok: true, status: 200, latencyMs: 100 },
   backup: { available: true, status: "complete", restoreVerified: true, updatedAt: new Date(now.getTime() - 60_000) },
-  security: { openCritical: 0, recentHigh: 0 },
   analytics: { lastObservedAt: new Date(now.getTime() - 10 * 60_000), guildCount: 8 },
   config,
 });
@@ -58,7 +57,7 @@ test("operations monitor detects DB, API, backup and analytics failures", () => 
   }
 });
 
-test("operations monitor detects recent Discord and Security signals", () => {
+test("operations monitor detects recent Discord signals", () => {
   const input = healthy();
   input.runtime = {
     ...healthyRuntime,
@@ -71,10 +70,9 @@ test("operations monitor detects recent Discord and Security signals", () => {
       },
     },
   };
-  input.security = { openCritical: 1, recentHigh: 3 };
   const result = evaluateOperationsSnapshot(input);
   assert.equal(result.severity, "CRITICAL");
-  for (const code of ["discord_invalid_session", "discord_rate_limited", "security_critical_incident", "security_repeated_high"]) {
+  for (const code of ["discord_invalid_session", "discord_rate_limited"]) {
     assert.ok(result.incidents.some((incident) => incident.code === code), `missing ${code}`);
   }
 });

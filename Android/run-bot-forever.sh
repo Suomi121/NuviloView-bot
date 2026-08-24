@@ -3,12 +3,13 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
-ENV_FILE="$PROJECT_ROOT/.env.local"
+DEFAULT_PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+PROJECT_ROOT="${NUVILOVIEW_PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
+ENV_FILE="${NUVILOVIEW_ENV_FILE:-$PROJECT_ROOT/.env.local}"
 BOT_FILE="$PROJECT_ROOT/discord-bot.mjs"
 TOKEN_CHECK_FILE="$PROJECT_ROOT/scripts/token-leak-check.mjs"
-RUNTIME_DIR="$SCRIPT_DIR/runtime"
-LOG_DIR="$SCRIPT_DIR/logs"
+RUNTIME_DIR="${NUVILOVIEW_ANDROID_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
+LOG_DIR="${NUVILOVIEW_ANDROID_LOG_DIR:-$SCRIPT_DIR/logs}"
 RUNNER_LOG="$LOG_DIR/bot-runner.log"
 BOT_OUTPUT_LOG="$LOG_DIR/bot-output.log"
 TOKEN_CHECK_LOG="$LOG_DIR/token-leak-check.log"
@@ -18,6 +19,8 @@ LOCK_PID_FILE="$LOCK_DIR/pid"
 RUNNER_PID_FILE="$RUNTIME_DIR/runner.pid"
 BOT_PID_FILE="$RUNTIME_DIR/bot.pid"
 STARTED_AT_FILE="$RUNTIME_DIR/started-at"
+STATE_FILE="$RUNTIME_DIR/bot-runner.state"
+CRASH_HISTORY_FILE="$RUNTIME_DIR/bot-crash-history"
 
 MAX_LOG_SIZE_BYTES=$((10 * 1024 * 1024))
 LOG_RETENTION_DAYS=14
@@ -40,6 +43,7 @@ LOCK_ACQUIRED=0
 SESSION_LIMIT_SEEN=0
 SESSION_LIMIT_RESET_AT=""
 BOT_LOGIN_REPORTED=0
+NETWORK_FAILURE_SEEN=0
 NODE_PATH=""
 SECRETS=()
 
@@ -107,6 +111,21 @@ get_env_value() {
       return 0
     fi
   done < "$ENV_FILE"
+}
+
+bounded_integer() {
+  local name="$1" fallback="$2" minimum="$3" maximum="$4" value
+  value="${!name:-}"
+  [[ -n "$value" ]] || value="$(get_env_value "$name")"
+  [[ -n "$value" ]] || value="$fallback"
+  if [[ ! "$value" =~ ^[0-9]+$ ]] || (( value < minimum || value > maximum )); then
+    value="$fallback"
+  fi
+  printf '%s' "$value"
+}
+
+write_state() {
+  printf '%s %s\n' "$1" "$(timestamp)" > "$STATE_FILE"
 }
 
 load_redaction_secrets() {
@@ -265,15 +284,17 @@ release_lock() {
 }
 
 show_status() {
-  local runner_pid bot_pid started latest
+  local runner_pid bot_pid started latest state
   runner_pid="$(read_pid_file "$RUNNER_PID_FILE")"
   bot_pid="$(read_pid_file "$BOT_PID_FILE")"
   started="unknown"
+  state="UNKNOWN"
   [[ -f "$STARTED_AT_FILE" ]] && IFS= read -r started < "$STARTED_AT_FILE"
+  [[ -f "$STATE_FILE" ]] && IFS=' ' read -r state _ < "$STATE_FILE"
   if [[ -n "$runner_pid" ]] && is_runner_process "$runner_pid"; then
-    printf 'Runner: running (PID %s)\n' "$runner_pid"
+    printf 'Runner: running (PID %s, state %s)\n' "$runner_pid" "$state"
   else
-    printf 'Runner: stopped\n'
+    printf 'Runner: stopped (state %s)\n' "$state"
   fi
   if [[ -n "$bot_pid" ]] && is_bot_process "$bot_pid"; then
     printf 'Bot: running (PID %s)\n' "$bot_pid"
@@ -331,7 +352,7 @@ validate_private_storage() {
 validate_configuration() {
   local failed=0 name value node_major permission_mode
 
-  if [[ -z "${TERMUX_VERSION:-}" && "${PREFIX:-}" != *"com.termux"* ]]; then
+  if [[ -z "${TERMUX_VERSION:-}" && "${PREFIX:-}" != *"com.termux"* && "${NUVILOVIEW_ALLOW_NON_TERMUX_TEST:-}" != "1" ]]; then
     write_error "This runner is intended for Android Termux."
     failed=1
   fi
@@ -368,10 +389,13 @@ validate_configuration() {
   done
 
   if [[ -f "$ENV_FILE" ]]; then
+    # discord-bot.mjs still contains legacy Neon-primary domains, so the Bot
+    # cannot safely claim full offline operation yet. This validation affects
+    # only the Bot runner; boot-start and the independent Worker stay isolated.
     for name in DATABASE_URL NUVILOVIEW_CLIENT_ID NUVILOVIEW_BOT_TOKEN; do
       value="$(get_env_value "$name")"
       if [[ -z "$value" ]]; then
-        write_error "Missing required environment variable: $name"
+        write_error "Missing Bot runtime environment variable: $name"
         failed=1
       fi
     done
@@ -431,6 +455,9 @@ record_bot_line() {
   if (( BOT_LOGIN_REPORTED == 0 )) && [[ "$raw_line" == *"bot logged in as"* ]]; then
     BOT_LOGIN_REPORTED=1
     write_runner_log "Bot reported a successful Discord login."
+  fi
+  if [[ "$raw_line" =~ ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ECONNRESET|ECONNREFUSED|getaddrinfo|[Nn]etwork[[:space:]]+unreachable|fetch[[:space:]]+failed ]]; then
+    NETWORK_FAILURE_SEEN=1
   fi
 }
 
@@ -504,11 +531,29 @@ restart_delay() {
   printf '%s' "${RESTART_DELAYS[$index]}"
 }
 
+record_crash_and_count() {
+  local now="$1" window="$2" temporary="$CRASH_HISTORY_FILE.$$" timestamp_value count=0
+  : > "$temporary"
+  if [[ -f "$CRASH_HISTORY_FILE" ]]; then
+    while IFS= read -r timestamp_value; do
+      if [[ "$timestamp_value" =~ ^[0-9]+$ ]] && (( now - timestamp_value <= window )); then
+        printf '%s\n' "$timestamp_value" >> "$temporary"
+        count=$((count + 1))
+      fi
+    done < "$CRASH_HISTORY_FILE"
+  fi
+  printf '%s\n' "$now" >> "$temporary"
+  count=$((count + 1))
+  mv -- "$temporary" "$CRASH_HISTORY_FILE"
+  printf '%s' "$count"
+}
+
 run_bot_once() {
   local bot_output_fd exit_code
   SESSION_LIMIT_SEEN=0
   SESSION_LIMIT_RESET_AT=""
   BOT_LOGIN_REPORTED=0
+  NETWORK_FAILURE_SEEN=0
   write_runner_log "Starting NuviloView Bot with NUVILOVIEW_BOT_TOKEN."
 
   coproc NUVILO_BOT_PROCESS {
@@ -518,6 +563,7 @@ run_bot_once() {
   CURRENT_BOT_PID="$NUVILO_BOT_PROCESS_PID"
   bot_output_fd="${NUVILO_BOT_PROCESS[0]}"
   printf '%s\n' "$CURRENT_BOT_PID" > "$BOT_PID_FILE"
+  write_state "RUNNING"
   write_runner_log "Bot process started with PID $CURRENT_BOT_PID."
 
   while IFS= read -r -u "$bot_output_fd" raw_line || [[ -n "${raw_line:-}" ]]; do
@@ -553,6 +599,7 @@ if ! acquire_lock; then
 fi
 
 if ! validate_configuration; then
+  write_state "INVALID"
   write_error "Runner validation failed. Bot was not started."
   exit 1
 fi
@@ -565,12 +612,14 @@ if (( initial_token_check_status != 0 )); then
 fi
 
 if [[ "$MODE" == "validate" ]]; then
+  write_state "READY"
   write_runner_log "Runner validation passed with required environment variables configured."
   printf 'Validation passed. The Bot was not started.\n'
   exit 0
 fi
 
 printf '%s\n' "$(timestamp)" > "$STARTED_AT_FILE"
+write_state "STARTING"
 write_runner_log "Android Bot runner started in $MODE mode. Runner PID $$; logs retained for $LOG_RETENTION_DAYS days."
 
 consecutive_quick_failures=0
@@ -581,7 +630,8 @@ while (( SHUTDOWN_REQUESTED == 0 )); do
     if [[ "$MODE" == "once" ]]; then
       exit 1
     fi
-    write_runner_log "Configuration became invalid. Retrying validation in 60 seconds."
+    write_state "DEGRADED"
+    write_runner_log "Configuration became invalid. Retrying validation in 60 seconds; the independent Sync Worker is unaffected."
     sleep_interruptibly 60
     continue
   fi
@@ -629,22 +679,47 @@ while (( SHUTDOWN_REQUESTED == 0 )); do
   fi
 
   if (( bot_exit_code == LEASE_LOST_EXIT_CODE || bot_exit_code == LEASE_DATABASE_EXIT_CODE )); then
+    write_state "DEGRADED"
     write_runner_log "Distributed lease safety stopped the Bot with exit code $bot_exit_code. Waiting $LEASE_RECOVERY_DELAY_SECONDS seconds before retrying."
     sleep_interruptibly "$LEASE_RECOVERY_DELAY_SECONDS"
     continue
   fi
 
-  if (( run_seconds >= STABLE_RUN_SECONDS )); then
+  if (( NETWORK_FAILURE_SEEN == 1 )); then
+    delay_seconds="$(bounded_integer BOT_RUNNER_NETWORK_RETRY_SECONDS 60 10 3600)"
+    write_state "DEGRADED"
+    write_runner_log "Network failure detected; waiting $delay_seconds seconds before retrying without counting a crash storm."
+    sleep_interruptibly "$delay_seconds"
+    continue
+  fi
+
+  stable_seconds="$(bounded_integer BOT_RUNNER_STABLE_SECONDS "$STABLE_RUN_SECONDS" 1 86400)"
+  crash_limit="$(bounded_integer BOT_RUNNER_CRASH_LIMIT 5 2 100)"
+  crash_window="$(bounded_integer BOT_RUNNER_CRASH_WINDOW_SECONDS 300 10 86400)"
+  cooldown_seconds="$(bounded_integer BOT_RUNNER_CRASH_COOLDOWN_SECONDS 900 10 86400)"
+  if (( run_seconds >= stable_seconds )); then
     consecutive_quick_failures=0
+    : > "$CRASH_HISTORY_FILE"
     delay_seconds=5
     write_runner_log "The previous run was stable; restart backoff was reset."
   else
     consecutive_quick_failures=$((consecutive_quick_failures + 1))
+    crash_count="$(record_crash_and_count "$(date +%s)" "$crash_window")"
+    if (( crash_count >= crash_limit )); then
+      write_state "COOLDOWN"
+      write_runner_log "Bot crash storm detected ($crash_count crashes in ${crash_window}s); cooling down for ${cooldown_seconds}s."
+      sleep_interruptibly "$cooldown_seconds"
+      : > "$CRASH_HISTORY_FILE"
+      consecutive_quick_failures=0
+      continue
+    fi
     delay_seconds="$(restart_delay "$consecutive_quick_failures")"
   fi
+  write_state "DEGRADED"
   write_runner_log "Restarting in $delay_seconds seconds after quick failure count $consecutive_quick_failures."
   sleep_interruptibly "$delay_seconds"
 done
 
+write_state "STOPPED"
 write_runner_log "Android Bot runner stopped cleanly."
 exit 0

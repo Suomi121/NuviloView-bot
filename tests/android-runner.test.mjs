@@ -5,6 +5,10 @@ import test from "node:test";
 const runner = await readFile(new URL("../Android/run-bot-forever.sh", import.meta.url), "utf8");
 const setup = await readFile(new URL("../Android/setup-termux.sh", import.meta.url), "utf8");
 const boot = await readFile(new URL("../Android/boot-start.sh", import.meta.url), "utf8");
+const workerRunner = await readFile(
+  new URL("../Android/run-sync-worker-forever.sh", import.meta.url),
+  "utf8",
+);
 
 test("Android runner uses the shared Bot and only the current Bot token name", () => {
   assert.match(runner, /discord-bot\.mjs/);
@@ -19,6 +23,9 @@ test("Android runner exposes validation, once, status, stop, and bounded backoff
   assert.match(runner, /RESTART_DELAYS=\(5 15 30 60 120 300 600 900\)/);
   assert.match(runner, /STABLE_RUN_SECONDS=300/);
   assert.match(runner, /LOG_RETENTION_DAYS=14/);
+  assert.match(runner, /BOT_RUNNER_CRASH_LIMIT/);
+  assert.match(runner, /BOT_RUNNER_NETWORK_RETRY_SECONDS/);
+  assert.match(runner, /COOLDOWN/);
 });
 
 test("Android runner includes lock, PID, signal, session-limit, and redaction controls", () => {
@@ -34,6 +41,21 @@ test("Termux setup uses pnpm lockfile and private project-relative paths", () =>
   assert.match(setup, /chmod 600 -- "\$ENV_FILE"/);
   assert.match(setup, /SCRIPT_DIR=/);
   assert.match(boot, /run-bot-forever\.sh/);
+  assert.match(boot, /run-sync-worker-forever\.sh/);
+  assert.match(setup, /packageManager/);
+  assert.match(setup, /pnpm@\$expected_pnpm/);
   assert.match(boot, /termux-wake-lock/);
   assert.doesNotMatch(`${setup}\n${boot}`, /C:\\/);
+});
+
+test("Sync Worker runner remains independent and has bounded recovery", () => {
+  assert.match(workerRunner, /scripts\/run-sync-worker\.mjs/);
+  assert.match(workerRunner, /sync-worker-runner\.pid/);
+  assert.match(workerRunner, /sync-worker\.pid/);
+  assert.match(workerRunner, /RESTART_DELAYS=\(1 2 5 10 30 60\)/);
+  assert.match(workerRunner, /SYNC_RUNNER_CRASH_LIMIT/);
+  assert.match(workerRunner, /SYNC_RUNNER_NETWORK_RETRY_SECONDS/);
+  assert.match(workerRunner, /COOLDOWN/);
+  assert.match(workerRunner, /SYNC_WORKER_ENABLED/);
+  assert.doesNotMatch(workerRunner, /discord-bot\.mjs/);
 });

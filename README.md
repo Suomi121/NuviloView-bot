@@ -13,6 +13,8 @@ the state model, privacy contract, retention, rollout, and rollback steps.
 
 Windows、Android / Termux、Render間の同時Discord接続を防ぐPostgreSQL Lease、hostId / instanceId付きheartbeat、Botとは独立した外部Monitorを利用できます。初回は無効で、additive migrationと全Hostの設定を揃えてから有効化します。構成・導入・障害時の挙動は[docs/distributed-runtime.md](docs/distributed-runtime.md)を参照してください。
 
+AndroidのTermux:Boot、Bot / Sync Worker独立監視、Preflight、停止・状態確認は[Android運用ガイド](Android/README.md)を参照してください。Boot経路にAuto Updateはありません。
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
 
 ## Built with v0

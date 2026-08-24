@@ -42,20 +42,31 @@ if [[ ! "$node_major" =~ ^[0-9]+$ ]] || (( node_major != 24 )); then
   fail "Node.js 24.x is required by the project. Install a matching Termux Node.js package."
 fi
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  printf 'pnpm was not found. Installing pnpm 10 with the available Node.js tooling...\n'
+expected_pnpm="$(sed -nE 's/.*"packageManager"[[:space:]]*:[[:space:]]*"pnpm@([^"]+)".*/\1/p' "$PROJECT_ROOT/package.json" | head -n 1)"
+[[ -n "$expected_pnpm" ]] || fail "package.json does not declare packageManager pnpm version."
+current_pnpm="$(pnpm --version 2>/dev/null || true)"
+if [[ "$current_pnpm" != "$expected_pnpm" ]]; then
+  printf 'Activating the project-declared pnpm %s (current: %s)...\n' "$expected_pnpm" "${current_pnpm:-missing}"
   if command -v corepack >/dev/null 2>&1; then
     corepack enable
-    corepack prepare pnpm@10 --activate
+    corepack prepare "pnpm@$expected_pnpm" --activate
   elif command -v npm >/dev/null 2>&1; then
-    npm install --global pnpm@10
+    npm install --global "pnpm@$expected_pnpm"
   else
-    fail "Neither corepack nor npm is available. Install pnpm 10 and rerun setup."
+    fail "Neither corepack nor npm is available. Install pnpm $expected_pnpm and rerun setup."
   fi
 fi
 
 mkdir -p -- "$RUNTIME_DIR" "$LOG_DIR"
-chmod 700 -- "$SCRIPT_DIR/run-bot-forever.sh" "$SCRIPT_DIR/setup-termux.sh" "$SCRIPT_DIR/boot-start.sh"
+chmod 700 -- \
+  "$SCRIPT_DIR/boot-start.sh" \
+  "$SCRIPT_DIR/install-termux-boot.sh" \
+  "$SCRIPT_DIR/run-bot-forever.sh" \
+  "$SCRIPT_DIR/run-sync-worker-forever.sh" \
+  "$SCRIPT_DIR/setup-termux.sh" \
+  "$SCRIPT_DIR/status-nuviloview.sh" \
+  "$SCRIPT_DIR/stop-nuviloview.sh" \
+  "$SCRIPT_DIR/termux-preflight.sh"
 chmod 700 -- "$RUNTIME_DIR" "$LOG_DIR"
 
 if [[ -f "$ENV_FILE" ]]; then
@@ -71,6 +82,7 @@ pnpm install --filter nuviloview-oem --frozen-lockfile
 
 printf '\nTermux setup completed. Next commands:\n'
 printf '  cd %q\n' "$PROJECT_ROOT"
-printf '  ./Android/run-bot-forever.sh --validate-only\n'
-printf '  ./Android/run-bot-forever.sh --once\n'
-printf '  ./Android/run-bot-forever.sh\n'
+printf '  ./Android/termux-preflight.sh\n'
+printf '  ./Android/install-termux-boot.sh\n'
+printf '  ./Android/boot-start.sh\n'
+printf '  ./Android/status-nuviloview.sh\n'

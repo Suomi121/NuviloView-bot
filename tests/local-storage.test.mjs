@@ -74,12 +74,17 @@ test("SQLite initialization applies the versioned schema exactly once", (t) => {
     "sync_metadata",
     "sync_outbox",
     "sync_dead_letter",
+    "message_event_log",
+    "local_message_daily_stats",
+    "local_message_active_member",
+    "local_message_recent_activity",
+    "message_domain_metrics",
   ]) {
     assert.equal(tables.has(table), true, table);
   }
   assert.equal(
     database.prepare("SELECT COUNT(*) AS count FROM migration_history").get().count,
-    2,
+    3,
   );
   database.close();
 });
@@ -91,7 +96,7 @@ test("WAL, foreign keys, busy timeout, and integrity health are enabled", (t) =>
   assert.equal(status.journalMode, "wal");
   assert.equal(status.foreignKeys, true);
   assert.equal(status.busyTimeoutMs, 5_000);
-  assert.equal(status.schemaVersion, 2);
+  assert.equal(status.schemaVersion, 3);
   assert.equal(status.integrity.ok, true);
 });
 
@@ -309,10 +314,12 @@ test("stable IDs are deterministic and long values are safely bounded", () => {
   assert.match(bounded, /^security:sha256:[a-f0-9]{64}$/);
 });
 
-test("Phase 1 does not connect local storage to discord-bot.mjs", () => {
+test("Phase 3A connects only the guarded Message router to discord-bot.mjs", () => {
   const source = readFileSync(
     new URL("../discord-bot.mjs", import.meta.url),
     "utf8",
   );
-  assert.doesNotMatch(source, /lib\/storage|createLocalStorage|createStorage/);
+  assert.match(source, /createMessageDomainRouter/);
+  assert.match(source, /LOCAL_MESSAGE_STORAGE_ENABLED|messageRouter\.enabled/);
+  assert.doesNotMatch(source, /messageRouter\.(?:reaction|voice|member)/);
 });

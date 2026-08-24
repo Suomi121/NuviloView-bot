@@ -108,6 +108,8 @@ import {
   createMessageHistoryImportRepository,
   createMessageHistoryImportWorker,
 } from "./lib/message-history-import-worker.mjs";
+import { createStorage } from "./lib/storage/index.mjs";
+import { createMessageDomainRouter } from "./lib/message-local-first.mjs";
 
 if (!process.env.DATABASE_URL || !process.env.NUVILOVIEW_BOT_TOKEN) {
   throw new Error(
@@ -127,6 +129,18 @@ const messageRetentionDays = Number.isInteger(
   ? Math.min(Math.max(Number(process.env.MESSAGE_RETENTION_DAYS), 7), 365)
   : 90;
 const messageImportConfig = getMessageImportConfig(process.env);
+const messageStorage = createStorage({ env: process.env });
+const messageRouter = createMessageDomainRouter({
+  env: process.env,
+  storage: messageStorage,
+  legacy: {
+    create: recordLegacyMessageCreate,
+    update: storeMessage,
+    remove: removeLegacyMessage,
+    recordActiveMember,
+  },
+  roleIdsForMessage: (message) => analyticsRoleIds(message.member),
+});
 const libreTranslateUrl = (process.env.LIBRETRANSLATE_URL?.trim() || "http://127.0.0.1:5000").replace(/\/+$/, "");
 const libreTranslateVersion = process.env.LIBRETRANSLATE_VERSION?.trim() || "1.9.6";
 const translationMonthlyLimit = 600_000;
@@ -4174,12 +4188,19 @@ async function emitGuildAlert({ guildId, type, severity = "warning", title, body
 
 async function checkGuildAlerts(guild) {
   if (isGuildBlocked(guild.id)) return;
+  const localLastMessageAt = messageRouter.enabled
+    ? messageRouter.getLastActivityAt(guild.id)
+    : null;
   const [activityRows, departureRows, unreadableRows] = await Promise.all([
-    sql`
-      SELECT MAX("occurredAt") AS "lastMessageAt"
-      FROM "recent_activity"
-      WHERE "guildId" = ${guild.id} AND "type" = 'message'
-    `,
+    messageRouter.enabled
+      ? Promise.resolve([
+          { lastMessageAt: localLastMessageAt == null ? null : new Date(localLastMessageAt) },
+        ])
+      : sql`
+          SELECT MAX("occurredAt") AS "lastMessageAt"
+          FROM "recent_activity"
+          WHERE "guildId" = ${guild.id} AND "type" = 'message'
+        `,
     sql`
       SELECT COUNT(*)::int AS count FROM "recent_activity"
       WHERE "guildId" = ${guild.id} AND "type" = 'member_left'
@@ -4272,7 +4293,11 @@ async function restoreTodayActiveMembers(guild) {
       );
       await Promise.all(
         [...activeUserIds].map((userId) =>
-          recordActiveMember({ guildId: guild.id, userId }),
+          messageRouter.recordActiveMemberObservation({
+            guildId: guild.id,
+            userId,
+            occurredAt: startOfToday.getTime(),
+          }),
         ),
       );
     }),
@@ -4314,8 +4339,33 @@ async function storeMessage(message) {
   `;
 }
 
+async function recordLegacyMessageCreate(message) {
+  await sql`
+    INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "date")
+    VALUES (${message.guild.id}, ${message.guild.memberCount}, 1, CURRENT_DATE)
+    ON CONFLICT ("guildId", "date")
+    DO UPDATE SET
+      "messageCount" = "daily_stats"."messageCount" + 1,
+      "memberCount" = EXCLUDED."memberCount",
+      "updatedAt" = now()
+  `;
+  const channelName = "name" in message.channel ? message.channel.name : null;
+  await Promise.all([
+    recordActivity({
+      guildId: message.guild.id,
+      type: "message",
+      actorName: message.member?.displayName ?? message.author.username,
+      channelName,
+    }),
+    recordActiveMember({ guildId: message.guild.id, userId: message.author.id }),
+    storeMessage(message),
+  ]);
+}
+
 async function purgeExpiredMessages() {
+  if (messageRouter.enabled) return 0;
   await sql`DELETE FROM "discord_message" WHERE "createdAt" < now() - (${messageRetentionDays} * interval '1 day')`;
+  return 1;
 }
 
 const historyImportDelayMs = 250;
@@ -5595,29 +5645,7 @@ client.on("messageCreate", async (message) => {
   trackSpam();
 
   try {
-    await sql`
-      INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "date")
-      VALUES (${message.guild.id}, ${message.guild.memberCount}, 1, CURRENT_DATE)
-      ON CONFLICT ("guildId", "date")
-      DO UPDATE SET
-        "messageCount" = "daily_stats"."messageCount" + 1,
-        "memberCount" = EXCLUDED."memberCount",
-        "updatedAt" = now()
-    `;
-    const channelName = "name" in message.channel ? message.channel.name : null;
-    await Promise.all([
-      recordActivity({
-        guildId: message.guild.id,
-        type: "message",
-        actorName: message.member?.displayName ?? message.author.username,
-        channelName,
-      }),
-      recordActiveMember({
-        guildId: message.guild.id,
-        userId: message.author.id,
-      }),
-      storeMessage(message),
-    ]);
+    await messageRouter.create(message);
   } catch (error) {
     console.error("Failed to count a Discord message:", error);
   }
@@ -5625,7 +5653,14 @@ client.on("messageCreate", async (message) => {
 
 client.on("messageUpdate", async (_before, after) => {
   try {
-    await storeMessage(after.partial ? await after.fetch() : after);
+    const message = after.partial ? await after.fetch() : after;
+    if (
+      !message.guild ||
+      isGuildBlocked(message.guild.id) ||
+      message.author.bot ||
+      !message.content.trim()
+    ) return;
+    await messageRouter.update(message);
   } catch (error) {
     console.error("Failed to update a stored Discord message:", error);
   }
@@ -5723,6 +5758,17 @@ async function rememberDeletedMessageForSnipe(
   scheduleSnipeHistoryCleanup(key);
 }
 
+async function removeLegacyMessage(message) {
+  const rows = await sql`
+    SELECT "authorId", "authorName", "content"
+    FROM "discord_message"
+    WHERE "id" = ${message.id}
+    LIMIT 1
+  `;
+  await sql`DELETE FROM "discord_message" WHERE "id" = ${message.id}`;
+  return rows[0] ?? null;
+}
+
 async function processDeletedMessageForSnipe(
   message,
   auditLogType = AuditLogEvent.MessageDelete,
@@ -5730,14 +5776,8 @@ async function processDeletedMessageForSnipe(
 ) {
   let storedMessage = null;
   try {
-    const rows = await sql`
-      SELECT "authorId", "authorName", "content"
-      FROM "discord_message"
-      WHERE "id" = ${message.id}
-      LIMIT 1
-    `;
-    storedMessage = rows[0] ?? null;
-    await sql`DELETE FROM "discord_message" WHERE "id" = ${message.id}`;
+    const result = await messageRouter.remove(message);
+    storedMessage = result?.previous ?? result ?? null;
   } catch (error) {
     console.error("Failed to remove a deleted Discord message:", error);
   }
@@ -5764,11 +5804,21 @@ client.on("messageDeleteBulk", async (messages) => {
         AuditLogEvent.MessageBulkDelete,
       )
     : null;
-  for (const message of deletedMessages) {
-    await processDeletedMessageForSnipe(
+  let storedMessages = [];
+  try {
+    storedMessages = await messageRouter.removeMany(deletedMessages);
+  } catch (error) {
+    console.error("Failed to persist bulk message tombstones:", error);
+  }
+  for (const [index, message] of deletedMessages.entries()) {
+    const result = storedMessages[index];
+    await rememberDeletedMessageForSnipe(
       message,
+      result?.previous ?? result ?? null,
       AuditLogEvent.MessageBulkDelete,
       bulkDeleter,
+    ).catch((error) =>
+      console.error("Failed to retain a transient Snipe record:", error),
     );
   }
 });
@@ -6034,6 +6084,11 @@ async function shutdown(
       release: releaseLease,
       finalStatus: releaseLease ? "Stopped" : "LeaseLost",
     });
+  }
+  try {
+    messageRouter.close();
+  } catch (error) {
+    console.error("Failed to close local Message storage:", safeErrorText(error));
   }
   process.exit(exitCode);
 }

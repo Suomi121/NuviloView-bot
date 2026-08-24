@@ -20,6 +20,14 @@ export function inspectSyncQueue({ env = process.env, cwd = process.cwd() } = {}
     const circuit = storage.syncMetadata.get("circuit_breaker");
     const metrics = storage.syncMetadata.get("sync_worker_metrics");
     const size = storage.health.getStorageSize();
+    let providers = [];
+    let cloudComplete = null;
+    try {
+      providers = storage.providerDeliveries.getAllProviderStatus();
+      cloudComplete = storage.providerDeliveries.getCloudCompletionSummary();
+    } catch {
+      // A pre-v4 read-only database remains inspectable through legacy fields.
+    }
     return {
       databasePath: config.databasePath,
       pending: counts.pending,
@@ -33,6 +41,8 @@ export function inspectSyncQueue({ env = process.env, cwd = process.cwd() } = {}
       databaseBytes: size.databaseBytes,
       walBytes: size.walBytes,
       totalBytes: size.totalBytes,
+      providers,
+      cloudComplete,
     };
   } finally {
     storage.close();

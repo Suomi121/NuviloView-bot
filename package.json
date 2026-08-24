@@ -20,6 +20,8 @@
     "sync:worker": "node --env-file=.env.local scripts/run-sync-worker.mjs",
     "sync:inspect": "node --env-file=.env.local scripts/inspect-sync-queue.mjs",
     "sync:repair": "node --env-file=.env.local scripts/repair-sync-queue.mjs",
+    "sync:reconcile": "node --env-file=.env.local scripts/reconcile-provider.mjs",
+    "sync:backfill": "node --env-file=.env.local scripts/backfill-provider.mjs",
     "message:canary:check": "node --env-file=.env.local scripts/check-message-canary.mjs",
     "message:canary:compare": "node --env-file=.env.local scripts/check-message-canary.mjs --compare",
     "message:canary:preflight": "node --env-file=.env.local scripts/preflight-message-canary.mjs",
@@ -42,6 +44,7 @@
   "dependencies": {
     "@base-ui/react": "^1.5.0",
     "@neondatabase/serverless": "^1.1.0",
+    "@tursodatabase/serverless": "1.4.0",
     "@vercel/analytics": "1.6.1",
     "better-auth": "^1.6.25",
     "class-variance-authority": "^0.7.1",

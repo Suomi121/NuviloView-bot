@@ -103,7 +103,9 @@ installerは`~/.termux/boot/nuviloview.sh`を冪等に生成します。wrapper�
 ./Android/run-sync-worker-forever.sh --stop
 ```
 
-`SYNC_WORKER_ENABLED=false`ならWorkerは`DISABLED`として正常終了し、Botだけを起動できます。有効時は`SYNC_NEON_REPLICA_ENABLED`、Local Storageのread/write、`DATABASE_URL`が必要です。Neon接続断はWorker内部でretry/circuit openとなり、Bot Runnerを停止しません。
+`SYNC_WORKER_ENABLED=false`ならWorkerは`DISABLED`として正常終了し、Botだけを起動できます。従来Workerを有効にする場合は`SYNC_NEON_REPLICA_ENABLED`、Local Storageのread/write、`DATABASE_URL`が必要です。Neon接続断はWorker内部でretry/circuit openとなり、Bot Runnerを停止しません。
+
+`MULTI_DB_SYNC_ENABLED=true`ではProvider分離Workerへ切り替わります。Supabase、Turso、任意のNeonは別々のCircuit/Retryで動作し、1つのProvider障害で他ProviderやBotを停止しません。必要パッケージとCredentialがないProviderだけが`DEGRADED`になります。実端末へbranchを取得しても、承認済みCanaryまでは`MULTI_DB_SYNC_ENABLED=false`を維持してください。詳細は[`docs/multi-db-sync-v1.md`](../docs/multi-db-sync-v1.md)を参照してください。
 
 ## PreflightとSQLite診断
 

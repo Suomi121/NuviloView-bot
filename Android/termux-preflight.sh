@@ -120,6 +120,7 @@ local_write_enabled="$(nv_get_env_value "$ENV_FILE" LOCAL_STORAGE_WRITE_ENABLED)
 message_local_enabled="$(nv_get_env_value "$ENV_FILE" LOCAL_MESSAGE_STORAGE_ENABLED)"
 worker_enabled="$(nv_get_env_value "$ENV_FILE" SYNC_WORKER_ENABLED)"
 replica_enabled="$(nv_get_env_value "$ENV_FILE" SYNC_NEON_REPLICA_ENABLED)"
+multi_db_enabled="$(nv_get_env_value "$ENV_FILE" MULTI_DB_SYNC_ENABLED)"
 
 if nv_env_enabled "$message_local_enabled" &&
   { ! nv_env_enabled "$local_enabled" || ! nv_env_enabled "$local_write_enabled"; }; then
@@ -128,10 +129,23 @@ fi
 if nv_env_enabled "$worker_enabled"; then
   # Worker-only configuration errors must not prevent an otherwise safe Bot
   # runner from starting. The Worker runner repeats these checks and stays off.
-  nv_env_enabled "$replica_enabled" || add_warn "sync_worker_requires_replica_flag_worker_will_not_start"
   nv_env_enabled "$local_enabled" || add_warn "sync_worker_requires_local_storage_worker_will_not_start"
   nv_env_enabled "$local_write_enabled" || add_warn "sync_worker_requires_writable_local_storage_worker_will_not_start"
-  [[ -n "$database_url" ]] || add_warn "sync_worker_requires_database_url_worker_will_not_start"
+  if nv_env_enabled "$multi_db_enabled"; then
+    if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" SYNC_SUPABASE_ENABLED)"; then
+      [[ -n "$(nv_get_env_value "$ENV_FILE" SUPABASE_DATABASE_URL)" ]] || add_warn "supabase_credentials_missing_provider_degraded"
+    else
+      add_warn "required_supabase_replica_disabled"
+    fi
+    if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" SYNC_TURSO_ENABLED)"; then
+      [[ -n "$(nv_get_env_value "$ENV_FILE" TURSO_DATABASE_URL)" && -n "$(nv_get_env_value "$ENV_FILE" TURSO_AUTH_TOKEN)" ]] || add_warn "turso_credentials_missing_provider_degraded"
+    else
+      add_warn "required_turso_replica_disabled"
+    fi
+  else
+    nv_env_enabled "$replica_enabled" || add_warn "sync_worker_requires_replica_flag_worker_will_not_start"
+    [[ -n "$database_url" ]] || add_warn "sync_worker_requires_database_url_worker_will_not_start"
+  fi
 else
   add_detail "sync_worker=disabled"
 fi

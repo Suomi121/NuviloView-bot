@@ -15,6 +15,13 @@ Windows、Android / Termux、Render間の同時Discord接続を防ぐPostgreSQL 
 
 AndroidのTermux:Boot、Bot / Sync Worker独立監視、Preflight、停止・状態確認は[Android運用ガイド](Android/README.md)を参照してください。Boot経路にAuto Updateはありません。
 
+## Multi-DB Sync v1
+
+SQLiteをBot側の唯一のSource of Truthとして維持し、SupabaseとTursoへ
+独立同期し、Neonを任意の第3Replicaとして扱うProvider分離基盤を利用できます。
+全Flagは既定でOFFです。設計、Cloud Schema、reconciliation、段階的rolloutは
+[Multi-DB Sync v1ガイド](docs/multi-db-sync-v1.md)を参照してください。
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
 
 ## Built with v0

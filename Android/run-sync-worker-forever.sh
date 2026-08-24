@@ -124,7 +124,7 @@ release_lock() {
 }
 
 validate_configuration() {
-  local failed=0 name node_major permission_mode
+  local failed=0 name node_major permission_mode multi_db_enabled
   if ! nv_is_termux; then
     log "This runner is intended for Android Termux."
     failed=1
@@ -153,10 +153,7 @@ validate_configuration() {
     [[ -z "$permission_mode" || "$permission_mode" == "600" ]] || log ".env.local permissions should be 600."
   fi
   if worker_enabled; then
-    nv_env_enabled "$(nv_get_env_value "$ENV_FILE" SYNC_NEON_REPLICA_ENABLED)" || {
-      log "SYNC_NEON_REPLICA_ENABLED must be true while the Worker is enabled."
-      failed=1
-    }
+    multi_db_enabled="$(nv_get_env_value "$ENV_FILE" MULTI_DB_SYNC_ENABLED)"
     nv_env_enabled "$(nv_get_env_value "$ENV_FILE" LOCAL_STORAGE_ENABLED)" || {
       log "LOCAL_STORAGE_ENABLED must be true while the Worker is enabled."
       failed=1
@@ -165,10 +162,33 @@ validate_configuration() {
       log "LOCAL_STORAGE_WRITE_ENABLED must be true while the Worker is enabled."
       failed=1
     }
-    [[ -n "$(nv_get_env_value "$ENV_FILE" DATABASE_URL)" ]] || {
-      log "DATABASE_URL is required only while the Sync Worker is enabled."
-      failed=1
-    }
+    if nv_env_enabled "$multi_db_enabled"; then
+      if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" SYNC_SUPABASE_ENABLED)"; then
+        [[ -n "$(nv_get_env_value "$ENV_FILE" SUPABASE_DATABASE_URL)" ]] ||
+          log "Supabase is enabled without SUPABASE_DATABASE_URL; only that Provider will remain degraded."
+      else
+        log "Required Supabase replica is disabled; Cloud Complete will remain pending."
+      fi
+      if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" SYNC_TURSO_ENABLED)"; then
+        [[ -n "$(nv_get_env_value "$ENV_FILE" TURSO_DATABASE_URL)" && -n "$(nv_get_env_value "$ENV_FILE" TURSO_AUTH_TOKEN)" ]] ||
+          log "Turso is enabled without complete credentials; only that Provider will remain degraded."
+        [[ -f "$PROJECT_ROOT/node_modules/@tursodatabase/serverless/package.json" ]] || {
+          log "Missing @tursodatabase/serverless dependency for enabled Turso Provider."
+          failed=1
+        }
+      else
+        log "Required Turso replica is disabled; Cloud Complete will remain pending."
+      fi
+    else
+      nv_env_enabled "$(nv_get_env_value "$ENV_FILE" SYNC_NEON_REPLICA_ENABLED)" || {
+        log "SYNC_NEON_REPLICA_ENABLED must be true while the legacy Worker is enabled."
+        failed=1
+      }
+      [[ -n "$(nv_get_env_value "$ENV_FILE" DATABASE_URL)" ]] || {
+        log "DATABASE_URL is required only while the legacy Sync Worker is enabled."
+        failed=1
+      }
+    fi
   fi
   (( failed == 0 ))
 }

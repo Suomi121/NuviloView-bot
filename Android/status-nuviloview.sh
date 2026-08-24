@@ -81,6 +81,21 @@ if [[ -f "$metrics_path" ]] && command -v node >/dev/null 2>&1; then
       console.log(`Pending: ${Number(value.pendingCount ?? 0)}`);
       console.log(`Dead Letter: ${Number(value.deadLetterCount ?? 0)}`);
       console.log(`Last Successful Sync: ${value.lastSyncSuccess ?? "Never"}`);
+      if (value.mode === "MULTI_DB_SYNC_V1" && value.providers) {
+        console.log("Cloud Replicas:");
+        for (const providerId of ["supabase", "turso", "neon"]) {
+          const provider = value.providers[providerId];
+          if (!provider) continue;
+          const optional = provider.required ? "" : " (Optional)";
+          console.log(`  ${providerId}: ${provider.healthStatus ?? "UNKNOWN"}${optional}`);
+          console.log(`    Pending: ${Number(provider.pending ?? 0) + Number(provider.retry ?? 0) + Number(provider.processing ?? 0)}`);
+          console.log(`    Dead Letter: ${Number(provider.deadLetter ?? 0)}`);
+          console.log(`    Circuit: ${provider.circuitState ?? "UNKNOWN"}`);
+          console.log(`    Last Sync: ${provider.lastSuccessAt ?? "Never"}`);
+        }
+        const complete = value.cloudComplete ?? {};
+        console.log(`Cloud Complete: ${Number(complete.complete ?? 0)} / ${Number(complete.total ?? 0)}`);
+      }
     } catch { console.log("Sync Health: UNKNOWN (invalid metrics)"); }
   ' "$metrics_path"
 else

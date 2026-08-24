@@ -24,15 +24,15 @@ NEON_RUNTIME_STATUS_PATH="$(nv_get_env_value "$ENV_FILE" NUVILOVIEW_RUNTIME_STAT
 [[ "$NEON_RUNTIME_STATUS_PATH" == /* ]] || NEON_RUNTIME_STATUS_PATH="$PROJECT_ROOT/${NEON_RUNTIME_STATUS_PATH#./}"
 
 process_status() {
-  local label="$1" pid_file="$2" marker="$3" state_file="${4:-}" pid state=""
+  local label="$1" pid_file="$2" marker="$3" state_file="${4:-}" pid state="" state_suffix=""
   pid="$(nv_read_pid "$pid_file")"
   [[ -n "$state_file" ]] && state="$(nv_read_state "$state_file")"
   if [[ -n "$pid" ]] && nv_pid_matches "$pid" "$marker"; then
-    [[ -n "$state" && "$state" != "UNKNOWN" ]] && state=", state $state"
-    printf '%s: RUNNING (PID %s%s)\n' "$label" "$pid" "$state"
+    [[ -n "$state" && "$state" != "UNKNOWN" ]] && state_suffix=", state $state"
+    printf '%s: RUNNING (PID %s%s)\n' "$label" "$pid" "$state_suffix"
   else
-    [[ -n "$state" && "$state" != "UNKNOWN" ]] && state=" ($state)"
-    printf '%s: STOPPED%s\n' "$label" "$state"
+    [[ -n "$state" && "$state" != "UNKNOWN" ]] && state_suffix=" ($state)"
+    printf '%s: STOPPED%s\n' "$label" "$state_suffix"
   fi
 }
 

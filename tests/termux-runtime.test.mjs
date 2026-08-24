@@ -77,7 +77,16 @@ test("Stop and status cover both processes without exposing env values", () => {
   assert.match(sources["status-nuviloview.sh"], /Runtime Mode:/);
   assert.match(sources["status-nuviloview.sh"], /Neon:/);
   assert.match(sources["status-nuviloview.sh"], /Cross-Host Leadership:/);
+  assert.match(sources["status-nuviloview.sh"], /state_suffix/);
+  assert.doesNotMatch(sources["status-nuviloview.sh"], /PID %s%s[^\n]*\$pid[^\n]*\$state"/);
   assert.doesNotMatch(sources["status-nuviloview.sh"], /printf[^\n]*(DATABASE_URL|BOT_TOKEN)/);
+});
+
+test("Bot runner closes the coprocess output pipe during shutdown", () => {
+  const runner = sources["run-bot-forever.sh"];
+  assert.match(runner, /CURRENT_BOT_OUTPUT_FD="\$bot_output_fd"/);
+  assert.match(runner, /exec \{CURRENT_BOT_OUTPUT_FD\}<\&-/);
+  assert.match(runner, /raw_line=""/);
 });
 
 test("Termux:Boot installer creates an idempotent thin wrapper", { skip: !canRunBash }, async (t) => {

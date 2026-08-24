@@ -38,6 +38,7 @@ LEASE_RECOVERY_DELAY_SECONDS=60
 MODE="forever"
 SHUTDOWN_REQUESTED=0
 CURRENT_BOT_PID=""
+CURRENT_BOT_OUTPUT_FD=""
 CURRENT_SLEEP_PID=""
 LOCK_ACQUIRED=0
 SESSION_LIMIT_SEEN=0
@@ -494,6 +495,13 @@ request_shutdown() {
   if [[ -n "$CURRENT_BOT_PID" ]] && is_bot_process "$CURRENT_BOT_PID"; then
     kill -TERM "$CURRENT_BOT_PID" 2>/dev/null || true
   fi
+  # A coprocess can leave the runner blocked in read(2) even after its child
+  # has exited. Closing our read descriptor makes the loop observe EOF and
+  # lets the EXIT trap release the PID/lock files deterministically.
+  if [[ "$CURRENT_BOT_OUTPUT_FD" =~ ^[0-9]+$ ]]; then
+    exec {CURRENT_BOT_OUTPUT_FD}<&- 2>/dev/null || true
+    CURRENT_BOT_OUTPUT_FD=""
+  fi
 }
 
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
@@ -566,13 +574,18 @@ run_bot_once() {
   }
   CURRENT_BOT_PID="$NUVILO_BOT_PROCESS_PID"
   bot_output_fd="${NUVILO_BOT_PROCESS[0]}"
+  CURRENT_BOT_OUTPUT_FD="$bot_output_fd"
   printf '%s\n' "$CURRENT_BOT_PID" > "$BOT_PID_FILE"
   write_state "RUNNING"
   write_runner_log "Bot process started with PID $CURRENT_BOT_PID."
 
   while IFS= read -r -u "$bot_output_fd" raw_line || [[ -n "${raw_line:-}" ]]; do
     record_bot_line "${raw_line:-}"
+    # Bash can preserve the previous value when a later read hits EOF. Clear
+    # it so an unterminated final line is handled once instead of spinning.
+    raw_line=""
   done
+  CURRENT_BOT_OUTPUT_FD=""
   wait "$CURRENT_BOT_PID" 2>/dev/null
   exit_code=$?
   rm -f -- "$BOT_PID_FILE"

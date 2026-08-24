@@ -112,6 +112,10 @@ Read-only reconciliation:
 pnpm sync:reconcile -- --provider=supabase --limit=100
 ```
 
+The report compares the bounded local Event IDs/checksums and remote cursor,
+plus current Snapshot versions/checksums. It never writes Cloud data or changes
+local delivery state.
+
 Backfill defaults to a plan and only queues retained Outbox events:
 
 ```bash

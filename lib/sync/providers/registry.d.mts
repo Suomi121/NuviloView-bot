@@ -16,6 +16,10 @@ export type SyncProvider = {
     snapshotType: string;
     aggregateId: string;
   }): Promise<CloudSnapshot | null>;
+  getSnapshotStates(items: Array<{
+    snapshotType: string;
+    aggregateId: string;
+  }>): Promise<Map<string, { snapshotVersion: number; checksum: string }>>;
   close(): Promise<void>;
 };
 

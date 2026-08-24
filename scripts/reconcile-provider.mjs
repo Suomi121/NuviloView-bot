@@ -62,6 +62,28 @@ export async function reconcileProvider({
           remoteChecksums.get(item.eventId) !== item.checksum,
       )
       .map((item) => item.eventId);
+    const localSnapshots = storage.snapshots.listForReconciliation({ limit });
+    const remoteSnapshots = await provider.getSnapshotStates(localSnapshots);
+    const snapshotMissing = localSnapshots
+      .filter(
+        (item) => !remoteSnapshots.has(`${item.snapshotType}:${item.aggregateId}`),
+      )
+      .map((item) => `${item.snapshotType}:${item.aggregateId}`);
+    const snapshotMismatched = localSnapshots
+      .filter((item) => {
+        const remote = remoteSnapshots.get(`${item.snapshotType}:${item.aggregateId}`);
+        return Boolean(
+          remote &&
+            (remote.snapshotVersion !== item.snapshotVersion ||
+              remote.checksum !== item.checksum),
+        );
+      })
+      .map((item) => ({
+        key: `${item.snapshotType}:${item.aggregateId}`,
+        localVersion: item.snapshotVersion,
+        remoteVersion: remoteSnapshots.get(`${item.snapshotType}:${item.aggregateId}`)
+          ?.snapshotVersion,
+      }));
     return {
       providerId,
       mode: "read_only",
@@ -71,6 +93,11 @@ export async function reconcileProvider({
       missing,
       mismatched,
       match: local.length - missing.length - mismatched.length,
+      snapshotChecked: localSnapshots.length,
+      snapshotMissing,
+      snapshotMismatched,
+      snapshotMatch:
+        localSnapshots.length - snapshotMissing.length - snapshotMismatched.length,
     };
   } finally {
     await registry.close();

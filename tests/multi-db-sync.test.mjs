@@ -575,6 +575,15 @@ test(
     });
     assert.equal(snapshot.snapshotVersion, 2);
     assert.deepEqual(snapshot.payload, { messages: 2 });
+    const snapshotStates = await adapter.getSnapshotStates([
+      { snapshotType: "analytics", aggregateId: "guild:isolated-postgres" },
+      { snapshotType: "analytics", aggregateId: "guild:missing" },
+    ]);
+    assert.deepEqual(snapshotStates.get("analytics:guild:isolated-postgres"), {
+      snapshotVersion: 2,
+      checksum: "postgres-v2",
+    });
+    assert.equal(snapshotStates.has("analytics:guild:missing"), false);
   },
 );
 
@@ -622,6 +631,15 @@ test("Turso adapter uses one transactional batch and rejects conflicts/stale sna
   });
   assert.equal(stored.snapshotVersion, 2);
   assert.deepEqual(stored.payload, { messages: 2 });
+  const snapshotStates = await adapter.getSnapshotStates([
+    { snapshotType: "analytics", aggregateId: "guild:1" },
+    { snapshotType: "analytics", aggregateId: "guild:missing" },
+  ]);
+  assert.deepEqual(snapshotStates.get("analytics:guild:1"), {
+    snapshotVersion: 2,
+    checksum: "checksum-v2",
+  });
+  assert.equal(snapshotStates.has("analytics:guild:missing"), false);
   const schema = await adapter.verifySchema();
   assert.equal(schema.ok, true);
   await client.execute("DROP INDEX analytics_snapshot_generated_idx");
@@ -873,6 +891,8 @@ test("CLI, Termux status, and Cloud schema contracts stay bounded and secret-saf
     "utf8",
   );
   assert.match(reconcile, /mode: "read_only"/);
+  assert.match(reconcile, /getSnapshotStates/);
+  assert.match(reconcile, /snapshotMismatched/);
   assert.match(backfill, /--execute/);
   assert.match(backfill, /--confirm=/);
   assert.doesNotMatch(backfill, /DELETE FROM sync_outbox|DROP TABLE|TRUNCATE/i);

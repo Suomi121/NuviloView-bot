@@ -21,8 +21,35 @@ CREATE INDEX IF NOT EXISTS message_event_replica_message_order_idx
     ((payload->>'sourceSequence')::bigint), event_type
   )
   WHERE event_type <> 'message_active_member';
+CREATE INDEX IF NOT EXISTS message_event_replica_aggregate_order_idx
+  ON message_event_replica (
+    aggregate_id,
+    ((payload->>'sourceSequence')::bigint) DESC,
+    (CASE event_type
+      WHEN 'message_delete' THEN 2
+      WHEN 'message_update' THEN 1
+      ELSE 0
+    END) DESC,
+    (payload->>'revision') DESC
+  )
+  WHERE event_type <> 'message_active_member';
 CREATE INDEX IF NOT EXISTS message_event_replica_occurred_idx
   ON message_event_replica (((payload->>'occurredAt')::bigint));
+
+CREATE TABLE IF NOT EXISTS message_tombstone (
+  "guildId" text NOT NULL,
+  "messageId" text NOT NULL,
+  "deleteEventId" text NOT NULL UNIQUE
+    REFERENCES message_event_replica(event_id) ON DELETE RESTRICT,
+  "deletedAt" timestamptz NOT NULL,
+  "sourceSequence" bigint NOT NULL,
+  "revision" text NOT NULL,
+  "checksum" text NOT NULL,
+  "createdAt" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("guildId", "messageId")
+);
+CREATE INDEX IF NOT EXISTS message_tombstone_deleted_at_idx
+  ON message_tombstone ("deletedAt" DESC);
 
 CREATE TABLE IF NOT EXISTS message_daily_stat_baseline (
   "guildId" text NOT NULL,
@@ -134,7 +161,8 @@ BEGIN
     COALESCE((payload->>'authorIsBot')::boolean, false),
     COALESCE(payload->'authorRoleIds', '[]'::jsonb),
     COALESCE(payload->>'content', ''), 'live', NULL,
-    to_timestamp(((payload->>'occurredAt')::bigint) / 1000.0), now(),
+    to_timestamp(((payload->>'occurredAt')::bigint) / 1000.0),
+    to_timestamp(((payload->>'occurredAt')::bigint) / 1000.0),
     event_id, payload->>'revision', (payload->>'sourceSequence')::bigint,
     CASE event_type WHEN 'message_create' THEN 0 ELSE 1 END
   FROM winner
@@ -149,7 +177,7 @@ BEGIN
     "content" = EXCLUDED."content",
     "source" = EXCLUDED."source",
     "importJobId" = NULL,
-    "updatedAt" = now(),
+    "updatedAt" = EXCLUDED."updatedAt",
     "sourceEventId" = EXCLUDED."sourceEventId",
     "sourceRevision" = EXCLUDED."sourceRevision",
     "sourceSequence" = EXCLUDED."sourceSequence",
@@ -187,6 +215,43 @@ BEGIN
   USING winner
   WHERE winner.event_type = 'message_delete'
     AND message."id" = winner.payload->>'messageId';
+
+  WITH affected AS (
+    SELECT DISTINCT item.aggregate_id
+    FROM jsonb_to_recordset(input_events) AS item(
+      event_id text, event_type text, aggregate_id text, payload jsonb,
+      schema_version integer, checksum text, source_created_at bigint
+    )
+    WHERE item.event_type = 'message_delete'
+  ), winner AS (
+    SELECT DISTINCT ON (replica.payload->>'guildId', replica.payload->>'messageId')
+      replica.*
+    FROM message_event_replica replica
+    JOIN affected USING (aggregate_id)
+    WHERE replica.event_type = 'message_delete'
+    ORDER BY replica.payload->>'guildId', replica.payload->>'messageId',
+      (replica.payload->>'sourceSequence')::bigint DESC,
+      replica.payload->>'revision' DESC
+  )
+  INSERT INTO message_tombstone (
+    "guildId", "messageId", "deleteEventId", "deletedAt",
+    "sourceSequence", "revision", "checksum"
+  )
+  SELECT winner.payload->>'guildId', winner.payload->>'messageId',
+         winner.event_id,
+         to_timestamp(((winner.payload->>'occurredAt')::bigint) / 1000.0),
+         (winner.payload->>'sourceSequence')::bigint,
+         winner.payload->>'revision', winner.checksum
+  FROM winner
+  ON CONFLICT ("guildId", "messageId") DO UPDATE SET
+    "deleteEventId" = EXCLUDED."deleteEventId",
+    "deletedAt" = EXCLUDED."deletedAt",
+    "sourceSequence" = EXCLUDED."sourceSequence",
+    "revision" = EXCLUDED."revision",
+    "checksum" = EXCLUDED."checksum"
+  WHERE EXCLUDED."sourceSequence" > message_tombstone."sourceSequence"
+     OR (EXCLUDED."sourceSequence" = message_tombstone."sourceSequence"
+         AND EXCLUDED."revision" > message_tombstone."revision");
 
   INSERT INTO "daily_active_member" ("guildId", "userId", "date")
   SELECT DISTINCT
@@ -249,7 +314,7 @@ BEGIN
   JOIN jsonb_to_recordset(input_events) AS item(
     event_id text, event_type text, aggregate_id text, payload jsonb,
     schema_version integer, checksum text, source_created_at bigint
-  ) item ON item.event_id = replica.event_id;
+  ) ON item.event_id = replica.event_id;
 END;
 $$;
 

@@ -12,6 +12,7 @@
     "start": "next start",
     "lint": "eslint .",
     "test": "node --test tests/*.test.mjs",
+    "test:replica:postgres": "node --test tests/message-replica-postgres.test.mjs",
     "bot": "node scripts/token-leak-check.mjs && node --env-file=.env.local discord-bot.mjs",
     "bot:control": "powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File scripts/bot-control-ui.ps1",
     "monitor:runtime": "node --env-file=.env.local scripts/monitor-runtime.mjs --watch",

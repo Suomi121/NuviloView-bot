@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
-import { pool } from '@/lib/db'
+import { authStorage } from '@/lib/auth-storage'
 import { getManagedGuilds } from '@/lib/discord'
 import { defaultGuildTheme, type GuildTheme } from '@/lib/guild-theme'
-import { hasJsonBody, isRateLimited, isTrustedMutation } from '@/lib/request-security'
+import { hasJsonBody, isTrustedMutation } from '@/lib/request-security'
 
 const hex = /^#[0-9a-fA-F]{6}$/
 const guildId = /^\d{16,22}$/
@@ -31,8 +31,7 @@ export async function GET(request: Request) {
   const id = new URL(request.url).searchParams.get('guildId') ?? ''
   const session = await sessionAndGuild(request, id)
   if (!session) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  const result = await pool.query<GuildTheme>('SELECT "mode", "primaryColor", "accentColor", "backgroundColor", "cardColor", "radius", "brandName", "logoUrl" FROM "guild_theme" WHERE "userId" = $1 AND "guildId" = $2', [session.user.id, id])
-  const stored = result.rows[0]
+  const stored = await authStorage.settings.getGuildTheme(session.user.id, id)
   return NextResponse.json({ theme: stored ? { ...stored, mode: 'dark', brandName: defaultGuildTheme.brandName, backgroundColor: stored.backgroundColor.toLowerCase() === '#f5f5f8' ? '#111116' : stored.backgroundColor, cardColor: stored.cardColor.toLowerCase() === '#ffffff' ? '#1c1c24' : stored.cardColor } : defaultGuildTheme })
 }
 
@@ -42,11 +41,11 @@ export async function PUT(request: Request) {
   const id = typeof body?.guildId === 'string' ? body.guildId : ''
   const session = await sessionAndGuild(request, id)
   if (!session) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  if (await isRateLimited(request, { scope: 'guild-theme-write', limit: 20, windowSeconds: 60, identity: session.user.id, failClosed: true })) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (await authStorage.rateLimit.isLimited({ scope: 'guild-theme-write', limit: 20, windowSeconds: 60, identity: session.user.id })) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const theme = normalizeTheme(body?.theme)
   if (!theme) return NextResponse.json({ error: 'Invalid theme settings' }, { status: 400 })
-  await pool.query(`INSERT INTO "guild_theme" ("userId", "guildId", "mode", "primaryColor", "accentColor", "backgroundColor", "cardColor", "radius", "brandName", "logoUrl", "updatedAt") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) ON CONFLICT ("userId", "guildId") DO UPDATE SET "mode"=EXCLUDED."mode", "primaryColor"=EXCLUDED."primaryColor", "accentColor"=EXCLUDED."accentColor", "backgroundColor"=EXCLUDED."backgroundColor", "cardColor"=EXCLUDED."cardColor", "radius"=EXCLUDED."radius", "brandName"=EXCLUDED."brandName", "logoUrl"=EXCLUDED."logoUrl", "updatedAt"=now()`, [session.user.id, id, theme.mode, theme.primaryColor, theme.accentColor, theme.backgroundColor, theme.cardColor, theme.radius, theme.brandName, theme.logoUrl])
-  return NextResponse.json({ theme })
+  const stored = await authStorage.settings.upsertGuildTheme(session.user.id, id, theme)
+  return NextResponse.json({ theme: stored })
 }
 
 export async function DELETE(request: Request) {
@@ -54,6 +53,6 @@ export async function DELETE(request: Request) {
   const id = new URL(request.url).searchParams.get('guildId') ?? ''
   const session = await sessionAndGuild(request, id)
   if (!session) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  await pool.query('DELETE FROM "guild_theme" WHERE "userId" = $1 AND "guildId" = $2', [session.user.id, id])
+  await authStorage.settings.deleteGuildTheme(session.user.id, id)
   return NextResponse.json({ theme: defaultGuildTheme })
 }

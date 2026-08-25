@@ -1,7 +1,7 @@
 import 'server-only'
 
 import { auth } from '@/lib/auth'
-import { pool } from '@/lib/db'
+import { authStorage } from '@/lib/auth-storage'
 import { parseDeveloperIds } from '@/lib/guild-reset-utils.mjs'
 
 export type DeveloperAccess = {
@@ -19,14 +19,7 @@ export async function getDeveloperAccess(request: Request): Promise<DeveloperAcc
   const session = await auth.api.getSession({ headers: request.headers })
   if (!session?.user?.id) return null
 
-  const result = await pool.query<{ accountId: string }>(`
-    SELECT "accountId"
-    FROM "account"
-    WHERE "userId" = $1 AND "providerId" = 'discord'
-    ORDER BY "createdAt" DESC
-    LIMIT 1
-  `, [session.user.id])
-  const discordUserId = result.rows[0]?.accountId
+  const discordUserId = await authStorage.guildAccess.getDiscordUserId(session.user.id)
   if (!discordUserId || !developerDiscordIds.has(discordUserId)) return null
 
   return {

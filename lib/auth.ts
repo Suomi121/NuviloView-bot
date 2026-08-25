@@ -1,5 +1,6 @@
 import { betterAuth } from "better-auth"
-import { pool } from "@/lib/db"
+import { authStorage } from "@/lib/auth-storage"
+import { isAuthStorageUnavailableError, safeAuthStorageErrorCode } from "@/lib/auth-storage/postgres"
 
 const discordClientId = process.env.NUVILOVIEW_CLIENT_ID ?? process.env.DISCORD_CLIENT_ID
 const discordClientSecret = process.env.NUVILOVIEW_CLIENT_SECRET ?? process.env.DISCORD_CLIENT_SECRET
@@ -14,7 +15,7 @@ const additionalTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? '')
   .filter(Boolean)
 
 export const auth = betterAuth({
-  database: pool,
+  database: authStorage.pool,
   baseURL,
   // Discord OAuth is the primary sign-in method for NuviloView:OEM.
   // Better Auth 1.x requires a non-null email-shaped identity key even when a
@@ -47,5 +48,16 @@ export const auth = betterAuth({
   advanced: {
     // HTTPS-only session cookies are required outside local development.
     useSecureCookies: process.env.NODE_ENV === 'production',
+  },
+  onAPIError: {
+    // OAuth callback failures land on a small, non-sensitive recovery page.
+    // Better Auth still owns state, nonce, CSRF and redirect validation.
+    errorURL: '/auth-error',
+    onError: (error) => {
+      if (isAuthStorageUnavailableError(error)) authStorage.health.recordFailure(error)
+      // Log only the selected provider and a bounded driver code. Database
+      // URLs, OAuth tokens and raw PostgreSQL error details are never logged.
+      console.error(`[web-auth] request failed provider=${authStorage.provider} code=${safeAuthStorageErrorCode(error)}`)
+    },
   },
 })

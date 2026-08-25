@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
-import { pool } from '@/lib/db'
-import { hasJsonBody, isRateLimited, isTrustedMutation } from '@/lib/request-security'
+import { authStorage } from '@/lib/auth-storage'
+import { hasJsonBody, isTrustedMutation } from '@/lib/request-security'
 
 const fallbackTimeZone = 'Asia/Tokyo'
 const fallbackLanguage = 'ja'
@@ -21,11 +21,8 @@ export async function GET(request: Request) {
   const session = await getSession(request)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const result = await pool.query<{ timeZone: string; language: 'ja' | 'en' }>(
-    'SELECT "timeZone", "language" FROM "user_preference" WHERE "userId" = $1',
-    [session.user.id],
-  )
-  return NextResponse.json({ timeZone: result.rows[0]?.timeZone ?? fallbackTimeZone, language: result.rows[0]?.language ?? fallbackLanguage })
+  const preference = await authStorage.settings.getPreference(session.user.id)
+  return NextResponse.json({ timeZone: preference?.timeZone ?? fallbackTimeZone, language: preference?.language ?? fallbackLanguage })
 }
 
 export async function PATCH(request: Request) {
@@ -33,7 +30,7 @@ export async function PATCH(request: Request) {
   if (!hasJsonBody(request, 2_048)) return NextResponse.json({ error: 'Invalid request format' }, { status: 415 })
   const session = await getSession(request)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (await isRateLimited(request, { scope: 'preference-update', limit: 20, windowSeconds: 60, identity: session.user.id, failClosed: true })) {
+  if (await authStorage.rateLimit.isLimited({ scope: 'preference-update', limit: 20, windowSeconds: 60, identity: session.user.id })) {
     return NextResponse.json({ error: '操作回数が多すぎます。' }, { status: 429 })
   }
 
@@ -42,12 +39,9 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: 'Invalid time zone' }, { status: 400 })
   }
 
-  await pool.query(
-    `INSERT INTO "user_preference" ("userId", "timeZone", "language", "updatedAt")
-     VALUES ($1, $2, $3, now())
-     ON CONFLICT ("userId")
-     DO UPDATE SET "timeZone" = EXCLUDED."timeZone", "language" = EXCLUDED."language", "updatedAt" = now()`,
-    [session.user.id, body.timeZone, body.language],
-  )
+  await authStorage.settings.upsertPreference(session.user.id, {
+    timeZone: body.timeZone,
+    language: body.language,
+  })
   return NextResponse.json({ timeZone: body.timeZone, language: body.language })
 }

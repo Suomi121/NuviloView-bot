@@ -13,7 +13,10 @@ const globalAuthStorage = globalThis as typeof globalThis & {
 function createConfiguredStorage() {
   const config = resolveWebAuthDatabaseConfig()
   return config.provider === 'supabase'
-    ? createSupabaseAuthStorage({ connectionString: config.connectionString })
+    ? createSupabaseAuthStorage({
+        connectionString: config.connectionString,
+        caCertificate: config.caCertificate,
+      })
     // Preserve the current shared Neon Pool when the feature flag is unset.
     // This avoids adding a second connection pool in the default path.
     : createNeonLegacyAuthStorage({ pool: legacyNeonPool })

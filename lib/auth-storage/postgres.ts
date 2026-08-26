@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { Pool, type PoolClient, type QueryResultRow } from 'pg'
+import { Pool, type PoolClient, type PoolConfig, type QueryResultRow } from 'pg'
 import type {
   AuthSessionInput,
   AuthSessionRecord,
@@ -17,6 +17,34 @@ import type {
 type Queryable = Pick<Pool | PoolClient, 'query'>
 
 const healthProbeIntervalMs = 30_000
+const connectionStringSslParameters = ['sslmode', 'sslcert', 'sslkey', 'sslrootcert']
+
+function createPoolConfig(connectionString: string, caCertificate?: string): PoolConfig {
+  const config: PoolConfig = {
+    connectionString,
+    max: 5,
+    connectionTimeoutMillis: 5_000,
+    idleTimeoutMillis: 30_000,
+    allowExitOnIdle: true,
+  }
+  if (!caCertificate) return config
+
+  // node-postgres replaces an explicit `ssl` object when SSL query parameters
+  // are also present in the connection string. Remove only those conflicting
+  // parameters, then verify the Supabase hostname against its published CA.
+  const parsed = new URL(connectionString)
+  for (const parameter of connectionStringSslParameters) {
+    parsed.searchParams.delete(parameter)
+  }
+  return {
+    ...config,
+    connectionString: parsed.toString(),
+    ssl: {
+      ca: caCertificate,
+      rejectUnauthorized: true,
+    },
+  }
+}
 
 export function safeAuthStorageErrorCode(error: unknown) {
   const value = typeof error === 'object' && error !== null && 'code' in error
@@ -97,10 +125,12 @@ async function query<Row extends QueryResultRow>(
 export function createPostgresAuthStorage({
   provider,
   connectionString,
+  caCertificate,
   pool: suppliedPool,
 }: {
   provider: WebAuthDbProvider
   connectionString?: string
+  caCertificate?: string
   pool?: Pool
 }): WebAuthStorage {
   if (!suppliedPool && !connectionString) {
@@ -108,13 +138,7 @@ export function createPostgresAuthStorage({
   }
 
   const ownsPool = !suppliedPool
-  const pool = suppliedPool ?? new Pool({
-    connectionString,
-    max: 5,
-    connectionTimeoutMillis: 5_000,
-    idleTimeoutMillis: 30_000,
-    allowExitOnIdle: true,
-  })
+  const pool = suppliedPool ?? new Pool(createPoolConfig(connectionString as string, caCertificate))
   const health = createHealthMonitor(pool, provider)
   pool.on('error', (error) => health.recordFailure(error))
 

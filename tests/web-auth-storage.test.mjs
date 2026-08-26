@@ -29,9 +29,12 @@ test('Supabase selection never falls back to DATABASE_URL', () => {
     WEB_AUTH_DB_PROVIDER: 'supabase',
     DATABASE_URL: 'postgresql://neon-must-not-be-used',
     WEB_AUTH_SUPABASE_DATABASE_URL: 'postgresql://supabase-only',
+    WEB_AUTH_SUPABASE_CA_CERT: 'supabase-public-ca',
   })
   assert.equal(config.provider, 'supabase')
   assert.equal(config.connectionString, 'postgresql://supabase-only')
+  assert.equal(config.caCertificate, 'supabase-public-ca')
+  assert.doesNotMatch(JSON.stringify(config), /supabase-public-ca/)
 })
 
 test('Supabase can intentionally reuse its server-side replica URL', () => {
@@ -135,11 +138,15 @@ test('Supabase bootstrap contains only reviewed Web Auth and route-security tabl
 
 test('OAuth security settings and friendly unavailable UX remain present', async () => {
   const authSource = await readFile(new URL('../lib/auth.ts', import.meta.url), 'utf8')
+  const loginButton = await readFile(new URL('../components/login-button.tsx', import.meta.url), 'utf8')
   const errorPage = await readFile(new URL('../app/auth-error/page.tsx', import.meta.url), 'utf8')
   assert.match(authSource, /scope:\s*\["identify", "guilds"\]/)
   assert.match(authSource, /trustedOrigins/)
   assert.match(authSource, /useSecureCookies/)
   assert.match(authSource, /errorURL:\s*'\/auth-error'/)
+  assert.match(loginButton, /errorCallbackURL:\s*'\/auth-error'/)
+  assert.match(loginButton, /result\.error/)
+  assert.match(loginButton, /router\.push\('\/auth-error'\)/)
   assert.match(errorPage, /ログインサービスが一時的に利用できません/)
   assert.doesNotMatch(errorPage, /DATABASE_URL|connectionString|stack|error\.message/)
 })

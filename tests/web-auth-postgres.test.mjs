@@ -1,18 +1,22 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { after, before, test } from 'node:test'
-import { Pool } from 'pg'
 
 import { createPostgresAuthStorage } from '../lib/auth-storage/postgres.ts'
 import { resolveWebAuthDatabaseConfig } from '../lib/auth-storage/provider-config.ts'
 
 const testDatabaseUrl = process.env.TEST_WEB_AUTH_DATABASE_URL?.trim()
+const testDatabaseCa = process.env.TEST_WEB_AUTH_DATABASE_CA_CERT?.trim()
 
 if (!testDatabaseUrl) {
   test('Web Auth PostgreSQL integration (set TEST_WEB_AUTH_DATABASE_URL)', { skip: true }, () => {})
 } else {
-  const pool = new Pool({ connectionString: testDatabaseUrl, max: 2 })
-  const storage = createPostgresAuthStorage({ provider: 'supabase', pool })
+  const storage = createPostgresAuthStorage({
+    provider: 'supabase',
+    connectionString: testDatabaseUrl,
+    caCertificate: testDatabaseCa,
+  })
+  const pool = storage.pool
   const userId = 'web-auth-test-user'
   const discordUserId = '123456789012345678'
   const guildId = '223456789012345678'
@@ -31,7 +35,7 @@ if (!testDatabaseUrl) {
       TRUNCATE TABLE "guild_theme", "user_preference", "discord_managed_guild_cache",
         "api_rate_limit", "verification", "session", "account", "user" CASCADE
     `).catch(() => undefined)
-    await pool.end()
+    await storage.close()
   })
 
   test('OAuth user create, existing login and Discord ID lookup are idempotent', async () => {

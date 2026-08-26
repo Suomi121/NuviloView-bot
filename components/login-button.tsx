@@ -3,6 +3,7 @@
 import { DiscordIcon } from '@/components/discord-icon'
 import { signIn, useSession } from '@/lib/auth-client'
 import { useLocale } from '@/components/locale-provider'
+import { useRouter } from 'next/navigation'
 
 type LoginButtonProps = {
   compact?: boolean
@@ -11,6 +12,7 @@ type LoginButtonProps = {
 export function LoginButton({ compact = false }: LoginButtonProps) {
   const { locale } = useLocale()
   const { data: session } = useSession()
+  const router = useRouter()
   const buttonClass = compact
     ? 'inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all hover:-translate-y-0.5 hover:opacity-90'
     : 'group inline-flex items-center gap-3 rounded-xl bg-primary px-7 py-3.5 text-base font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-all hover:-translate-y-0.5 hover:opacity-90 hover:shadow-primary/40'
@@ -23,12 +25,27 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
     )
   }
 
+  const startDiscordSignIn = async () => {
+    const callbackURL = `${window.location.pathname}${window.location.search}${window.location.hash}`
+
+    try {
+      const result = await signIn.social({
+        provider: 'discord',
+        callbackURL: callbackURL === '/' ? '/dashboard' : callbackURL,
+        errorCallbackURL: '/auth-error',
+      })
+
+      if (result.error) router.push('/auth-error')
+    } catch {
+      router.push('/auth-error')
+    }
+  }
+
   return (
     <button
       type="button"
       onClick={() => {
-        const callbackURL = `${window.location.pathname}${window.location.search}${window.location.hash}`
-        void signIn.social({ provider: 'discord', callbackURL: callbackURL === '/' ? '/dashboard' : callbackURL })
+        void startDiscordSignIn()
       }}
       className={buttonClass}
     >

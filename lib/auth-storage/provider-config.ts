@@ -3,6 +3,7 @@ import type { WebAuthDbProvider } from './contract'
 export type WebAuthDatabaseConfig = {
   provider: WebAuthDbProvider
   connectionString: string
+  caCertificate?: string
   toJSON(): { provider: WebAuthDbProvider }
 }
 
@@ -41,6 +42,13 @@ export function resolveWebAuthDatabaseConfig(
   } as WebAuthDatabaseConfig
   Object.defineProperty(config, 'connectionString', {
     value: connectionString,
+    enumerable: false,
+    writable: false,
+  })
+  Object.defineProperty(config, 'caCertificate', {
+    value: provider === 'supabase'
+      ? environment.WEB_AUTH_SUPABASE_CA_CERT?.trim() || undefined
+      : undefined,
     enumerable: false,
     writable: false,
   })

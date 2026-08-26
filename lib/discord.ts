@@ -1,6 +1,6 @@
 import 'server-only'
 
-import { pool } from '@/lib/db'
+import { authStorage } from '@/lib/auth-storage'
 
 type DiscordGuild = {
   id: string
@@ -54,11 +54,7 @@ function normalizeManagedGuilds(value: unknown): ManagedGuild[] {
 }
 
 async function readManagedGuildCache(userId: string) {
-  const result = await pool.query<ManagedGuildCacheRow>(
-    `SELECT "guilds", "updatedAt" FROM "discord_managed_guild_cache" WHERE "userId" = $1`,
-    [userId],
-  )
-  const row = result.rows[0]
+  const row = await authStorage.guildAccess.getManagedGuildCache(userId) as ManagedGuildCacheRow | null
   if (!row) return null
   return {
     guilds: normalizeManagedGuilds(row.guilds),
@@ -67,13 +63,7 @@ async function readManagedGuildCache(userId: string) {
 }
 
 async function writeManagedGuildCache(userId: string, guilds: ManagedGuild[]) {
-  await pool.query(
-    `INSERT INTO "discord_managed_guild_cache" ("userId", "guilds", "updatedAt")
-     VALUES ($1, $2::jsonb, now())
-     ON CONFLICT ("userId") DO UPDATE
-     SET "guilds" = EXCLUDED."guilds", "updatedAt" = now()`,
-    [userId, JSON.stringify(guilds)],
-  )
+  await authStorage.guildAccess.setManagedGuildCache(userId, guilds)
 }
 
 async function refreshDiscordAccessToken(account: DiscordAccount) {
@@ -94,11 +84,11 @@ async function refreshDiscordAccessToken(account: DiscordAccount) {
   const tokens = (await response.json()) as DiscordTokenResponse
   if (!tokens.access_token || !Number.isFinite(tokens.expires_in)) return null
   const accessTokenExpiresAt = new Date(Date.now() + tokens.expires_in * 1000)
-  await pool.query(
-    `UPDATE "account"
-     SET "accessToken" = $1, "refreshToken" = $2, "accessTokenExpiresAt" = $3, "updatedAt" = now()
-     WHERE "id" = $4`,
-    [tokens.access_token, tokens.refresh_token ?? account.refreshToken, accessTokenExpiresAt, account.id],
+  await authStorage.guildAccess.updateDiscordTokens(
+    account.id,
+    tokens.access_token,
+    tokens.refresh_token ?? account.refreshToken,
+    accessTokenExpiresAt,
   )
   return tokens.access_token
 }
@@ -111,14 +101,7 @@ async function fetchDiscordGuilds(accessToken: string) {
 }
 
 async function fetchManagedGuilds(userId: string): Promise<ManagedGuild[]> {
-  const account = await pool.query<DiscordAccount>(
-    `SELECT "id", "accessToken", "refreshToken", "accessTokenExpiresAt" FROM "account"
-     WHERE "userId" = $1 AND "providerId" = 'discord'
-     ORDER BY "createdAt" DESC LIMIT 1`,
-    [userId],
-  )
-
-  const linkedAccount = account.rows[0]
+  const linkedAccount = await authStorage.guildAccess.getDiscordAccount(userId) as DiscordAccount | null
   if (!linkedAccount?.accessToken) return []
 
   const expiresAt = linkedAccount.accessTokenExpiresAt ? new Date(linkedAccount.accessTokenExpiresAt).getTime() : Number.POSITIVE_INFINITY

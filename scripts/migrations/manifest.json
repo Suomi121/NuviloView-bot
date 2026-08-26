@@ -120,6 +120,20 @@
         { "kind": "table", "name": "message_import_audit_event" },
         { "kind": "index", "name": "history_import_job_one_active_per_guild_v2_idx" }
       ]
+    },
+    {
+      "id": "20260822-nuke-protection-mode",
+      "file": "20260822-nuke-protection-mode.sql",
+      "downFile": "20260822-nuke-protection-mode.down.sql",
+      "checksum": "2a70bd222c00b0419e89f8be665e7dfdde7c44a3e2f3354642e257da1fb9f300",
+      "description": "Add explicit per-Guild Off, Shadow, and Active control for Nuke Protection v2.",
+      "risk": "medium",
+      "reversible": true,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        { "kind": "column", "table": "security_policy", "name": "nukeProtectionMode" }
+      ]
     }
   ]
 }

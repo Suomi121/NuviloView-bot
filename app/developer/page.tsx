@@ -154,7 +154,7 @@ export default function DeveloperPage() {
         <button onClick={() => { setLoading(true); void load() }} className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-bold hover:bg-secondary"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />更新</button>
       </div>
 
-      <div className="mt-7 grid gap-4 sm:grid-cols-3">
+      <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatusCard label="Bot接続状態" value={bot.online ? 'オンライン' : 'オフライン'} detail={bot.lastSeenAt ? `最終記録: ${formatDate(bot.lastSeenAt)}` : '生存記録はまだありません'} tone={bot.online ? 'good' : 'bad'} />
         <StatusCard label="管理対象Guild" value={`${guilds.length}件`} detail="ブロック済みを含む" tone="neutral" />
         <StatusCard label="ブロック済み" value={`${guilds.filter((guild) => Boolean(guild.reason)).length}件`} detail="解除しても操作履歴は残ります" tone="bad" />

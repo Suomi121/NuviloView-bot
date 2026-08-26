@@ -20,7 +20,19 @@ const migrationIndexes = new Set([
   ...matches(sqlSource, /\bCONSTRAINT\s+"([^"]+)"\s+UNIQUE\b/gi),
 ]);
 const externallyManagedTables = new Set(["user", "session", "account", "verification"]);
-const retainedLegacyTables = new Set(["guild_public_report"]);
+// These tables remain in already-migrated databases for forensic history and
+// rollback, but the removed protection subsystem no longer exposes active ORM
+// models or bootstrap behavior for them.
+const retainedLegacyTables = new Set([
+  "guild_public_report",
+  "security_policy",
+  "security_trusted_actor",
+  "security_incident",
+  "security_incident_action",
+  "security_snapshot",
+  "security_audit_event",
+  "security_action_request",
+]);
 const constraintBackedSchemaIndexes = new Set([
   "bot_channel_access_guild_channel_unique",
   "guild_channel_registry_guild_channel_unique",

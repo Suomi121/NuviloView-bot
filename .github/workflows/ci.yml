@@ -22,7 +22,6 @@ jobs:
       BETTER_AUTH_URL: http://127.0.0.1:3000
       NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
       GUILD_RESET_ENABLED: "false"
-      NUVILOVIEW_NUKE_PROTECTION: "false"
       NUVILOVIEW_DISTRIBUTED_SINGLETON: "false"
       MESSAGE_HISTORY_IMPORT_V2_ENABLED: "false"
     steps:

@@ -7,7 +7,6 @@ const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.me
 test("CI is read-only and does not deploy or mutate production", () => {
   assert.match(workflow, /permissions:\s*\n\s*contents: read/);
   assert.match(workflow, /GUILD_RESET_ENABLED: "false"/);
-  assert.match(workflow, /NUVILOVIEW_NUKE_PROTECTION: "false"/);
   assert.match(workflow, /NUVILOVIEW_DISTRIBUTED_SINGLETON: "false"/);
   assert.match(workflow, /MESSAGE_HISTORY_IMPORT_V2_ENABLED: "false"/);
   assert.doesNotMatch(workflow, /\b(?:deploy|release|db:migrate|retention:execute)\b/i);

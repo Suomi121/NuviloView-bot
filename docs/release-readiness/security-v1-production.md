@@ -1,3 +1,9 @@
+# ARCHIVED — FEATURE REMOVED
+
+This document is retained only as historical release and incident evidence. The
+feature described below has been removed from the active application and this
+runbook must not be used for a new deployment.
+
 # Security v1 production conditions
 
 Reviewed: 2026-08-21

@@ -13,6 +13,15 @@ the state model, privacy contract, retention, rollout, and rollback steps.
 
 Windows、Android / Termux、Render間の同時Discord接続を防ぐPostgreSQL Lease、hostId / instanceId付きheartbeat、Botとは独立した外部Monitorを利用できます。初回は無効で、additive migrationと全Hostの設定を揃えてから有効化します。構成・導入・障害時の挙動は[docs/distributed-runtime.md](docs/distributed-runtime.md)を参照してください。
 
+AndroidのTermux:Boot、Bot / Sync Worker独立監視、Preflight、停止・状態確認は[Android運用ガイド](Android/README.md)を参照してください。Boot経路にAuto Updateはありません。
+
+## Multi-DB Sync v1
+
+SQLiteをBot側の唯一のSource of Truthとして維持し、SupabaseとTursoへ
+独立同期し、Neonを任意の第3Replicaとして扱うProvider分離基盤を利用できます。
+全Flagは既定でOFFです。設計、Cloud Schema、reconciliation、段階的rolloutは
+[Multi-DB Sync v1ガイド](docs/multi-db-sync-v1.md)を参照してください。
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
 
 ## Built with v0
@@ -64,40 +73,6 @@ To learn more, take a look at the following resources:
 - [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
 - [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 - [v0 Documentation](https://v0.app/docs) - learn about v0 and how to use it.
-
-## Nuke Protection v1
-
-NuviloView can correlate Discord Guild audit-log events into explainable
-security incidents. Security v1 adds bot-only Channel/Role Anti-Nuke, Webhook
-creation protection, duplicate-message and everyone/here Bot-spam detection,
-bounded incident deduplication, and optional best-effort cleanup/recovery. It
-preserves safe evidence without message content or credentials.
-
-The initial feature flag is intentionally disabled:
-
-```env
-NUVILOVIEW_NUKE_PROTECTION=false
-```
-
-After the additive database migration has completed, set the same flag on the
-Web and Bot hosts. New Guild policies start in **Shadow Mode**. Recommended
-rollout:
-
-1. Shadow Mode — detection, scoring and evidence only.
-2. Alerts — review High/Critical notification volume.
-3. Manual containment — Guild owner explicitly switches the policy to Manual.
-4. Protect / Strict — separately opt in to automatic Kick and Auto Restore only
-   after permissions, snapshots and thresholds have been verified.
-
-Detection needs Discord `VIEW_AUDIT_LOG` and the `GUILD_MODERATION` Gateway
-intent. Manual containment removes only dangerous, non-managed roles below the
-NuviloView Bot role and needs `MANAGE_ROLES`; Guild owners, trusted actors and
-NuviloView itself are protected. Auto Restore additionally needs the matching
-Manage Channels / Roles / Webhooks permissions. Automatic Ban is not
-implemented.
-
-See [Nuke Protection documentation](docs/nuke-protection.md) for the scoring
-formula, authorization model, retention and known limitations.
 
 ## Server backups
 

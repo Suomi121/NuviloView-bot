@@ -78,15 +78,6 @@ async function loadSnapshot() {
          LIMIT 500`,
         [config.serviceKey],
       );
-    const security = await client.query(
-        `SELECT
-           COUNT(*) FILTER (WHERE "severity" = 'Critical' AND "status" = 'Open')::int AS "openCritical",
-           COUNT(*) FILTER (
-             WHERE "severity" = 'High'
-               AND "lastDetectedAt" >= CURRENT_TIMESTAMP - INTERVAL '15 minutes'
-           )::int AS "recentHigh"
-         FROM "security_incident"`,
-      );
     const analytics = await client.query(
         `SELECT MAX("checkedAt") AS "lastObservedAt",
                 COUNT(DISTINCT "guildId")::int AS "guildCount"
@@ -103,7 +94,6 @@ async function loadSnapshot() {
       dbNow: clock.rows[0]?.dbNow,
       lease: lease.rows[0] || null,
       heartbeats: heartbeats.rows,
-      security: security.rows[0] || { openCritical: 0, recentHigh: 0 },
       analytics: analytics.rows[0] || { lastObservedAt: null, guildCount: 0 },
       legacyHeartbeat: legacyHeartbeat.rows[0] || null,
       dbLatencyMs,
@@ -188,7 +178,7 @@ async function notify(result, recovered) {
     : `NuviloView operations ${result.severity}`;
   const description = result.incidents.length
     ? result.incidents.map((incident) => `• ${incident.message}`).join("\n").slice(0, 3500)
-    : "Bot, database, API, backup, singleton, Security and Analytics checks are healthy.";
+    : "Bot, database, API, backup, singleton and Analytics checks are healthy.";
   const response = await fetch(webhookUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -232,7 +222,6 @@ async function checkOnce() {
     db,
     api,
     backup,
-    security: snapshot?.security || {},
     analytics: snapshot?.analytics || {},
     config: operationsConfig,
   });

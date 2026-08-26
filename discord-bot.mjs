@@ -30,7 +30,6 @@ import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { createGuildResetService } from "./lib/guild-reset-service.mjs";
 import { getGuildResetConfig, isResetDeveloper, parseIdList } from "./lib/guild-reset-utils.mjs";
-import { createNukeProtectionService } from "./lib/nuke-protection-service.mjs";
 import {
   RUNTIME_EXIT_CODES,
   RuntimeCoordinator,
@@ -109,14 +108,24 @@ import {
   createMessageHistoryImportRepository,
   createMessageHistoryImportWorker,
 } from "./lib/message-history-import-worker.mjs";
+import { createStorage } from "./lib/storage/index.mjs";
+import { createMessageDomainRouter } from "./lib/message-local-first.mjs";
+import {
+  createCloudDatabase,
+  isCloudDatabaseUnavailableError,
+  isTransientCloudDatabaseError,
+} from "./lib/cloud-database.mjs";
 
-if (!process.env.DATABASE_URL || !process.env.NUVILOVIEW_BOT_TOKEN) {
-  throw new Error(
-    "DATABASE_URL and NUVILOVIEW_BOT_TOKEN must be set before starting the bot.",
-  );
+if (!process.env.NUVILOVIEW_BOT_TOKEN) {
+  throw new Error("NUVILOVIEW_BOT_TOKEN must be set before starting the bot.");
 }
 
-const sql = neon(process.env.DATABASE_URL);
+const cloudDatabase = createCloudDatabase({
+  connectionString: process.env.DATABASE_URL?.trim() || null,
+  neonFactory: neon,
+  env: process.env,
+});
+const sql = cloudDatabase.sql;
 const runtimeConfig = getRuntimeConfig(process.env);
 const runtimeIdentity = createRuntimeIdentity(process.env);
 const runtimeRepository = createRuntimeLeaseRepository((text, parameters) =>
@@ -128,6 +137,33 @@ const messageRetentionDays = Number.isInteger(
   ? Math.min(Math.max(Number(process.env.MESSAGE_RETENTION_DAYS), 7), 365)
   : 90;
 const messageImportConfig = getMessageImportConfig(process.env);
+const messageStorage = createStorage({ env: process.env });
+const messageRouter = createMessageDomainRouter({
+  env: process.env,
+  storage: messageStorage,
+  legacy: {
+    create: recordLegacyMessageCreate,
+    update: storeMessage,
+    remove: removeLegacyMessage,
+    recordActiveMember,
+  },
+  roleIdsForMessage: (message) => analyticsRoleIds(message.member),
+});
+const configuredMessageStorageMode = messageRouter.globalEnabled
+  ? messageRouter.config.canaryGuildIds.length > 0
+    ? "LOCAL_FIRST_CANARY"
+    : "LOCAL_FIRST_NO_GUILDS"
+  : "LEGACY_NEON";
+cloudDatabase.updateRuntimeDetails({
+  messageStorageConfiguredMode: configuredMessageStorageMode,
+  localStorage: messageStorage.enabled
+    ? messageStorage.writeEnabled
+      ? "READ_WRITE"
+      : "READ_ONLY"
+    : "DISABLED",
+  crossHostLeadership: runtimeConfig.enabled ? "UNKNOWN" : "DISABLED",
+  degradedFeatures: [],
+});
 const libreTranslateUrl = (process.env.LIBRETRANSLATE_URL?.trim() || "http://127.0.0.1:5000").replace(/\/+$/, "");
 const libreTranslateVersion = process.env.LIBRETRANSLATE_VERSION?.trim() || "1.9.6";
 const translationMonthlyLimit = 600_000;
@@ -218,11 +254,6 @@ const messageHistoryImportWorker = createMessageHistoryImportWorker({
 const channelAccessSnapshots = new Map();
 const analyticsInventorySnapshots = new Map();
 const guildResetConfig = getGuildResetConfig();
-const nukeProtectionService = createNukeProtectionService({
-  client,
-  sql,
-  environment: process.env,
-});
 let runtimeCoordinator = null;
 const runtimeOperationalMetrics = {
   discordReadyAt: null,
@@ -238,11 +269,18 @@ const runtimeOperationalMetrics = {
   disconnectCount: 0,
   reconnectCount: 0,
   rateLimitCount: 0,
+  cloudState: cloudDatabase.getStatus().neon,
+  messagePersistence:
+    configuredMessageStorageMode === "LEGACY_NEON" ? "UNKNOWN" : "LOCAL_FIRST",
 };
+const degradedCloudFeatures = new Set();
 
 function updateRuntimeOperationalMetrics(values) {
   Object.assign(runtimeOperationalMetrics, values);
-  if (runtimeCoordinator) void runtimeCoordinator.recordNow();
+  refreshCloudRuntimeStatus();
+  if (runtimeCoordinator && cloudDatabase.canQuery()) {
+    void runtimeCoordinator.recordNow();
+  }
 }
 
 let lastPresenceGuildCount = null;
@@ -652,6 +690,81 @@ function safeErrorText(error) {
     .replaceAll(process.env.NUVILOVIEW_BOT_TOKEN ?? "", "[REDACTED]")
     .replace(/(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,})/g, "[REDACTED]")
     .slice(0, 1_500);
+}
+
+function refreshCloudRuntimeStatus(values = {}) {
+  const cloudStatus = cloudDatabase.getStatus();
+  runtimeOperationalMetrics.cloudState = cloudStatus.neon;
+  runtimeOperationalMetrics.messagePersistence =
+    configuredMessageStorageMode === "LEGACY_NEON"
+      ? cloudDatabase.isAvailable()
+        ? "LEGACY_NEON"
+        : "UNAVAILABLE"
+      : "LOCAL_FIRST";
+  cloudDatabase.updateRuntimeDetails({
+    messageStorageConfiguredMode: configuredMessageStorageMode,
+    messageStorage: runtimeOperationalMetrics.messagePersistence,
+    crossHostLeadership: runtimeCoordinator
+      ? runtimeCoordinator.leaseState
+      : runtimeConfig.enabled
+        ? "UNKNOWN"
+        : "DISABLED",
+    degradedFeatures: [...degradedCloudFeatures].sort(),
+    discordReady: client.isReady(),
+    guildCount: client.isReady() ? getAvailableBotGuilds().length : 0,
+    ...values,
+  });
+}
+
+function markCloudFeatureDegraded(feature) {
+  const key = String(feature);
+  if (degradedCloudFeatures.has(key)) return;
+  degradedCloudFeatures.add(key);
+  refreshCloudRuntimeStatus();
+}
+
+function markCloudFeatureRecovered(feature) {
+  if (!degradedCloudFeatures.delete(String(feature))) return;
+  refreshCloudRuntimeStatus();
+}
+
+function logCloudAwareError(feature, label, error) {
+  if (
+    isCloudDatabaseUnavailableError(error) ||
+    (!cloudDatabase.isAvailable() && isTransientCloudDatabaseError(error))
+  ) {
+    markCloudFeatureDegraded(feature);
+    if (cloudDatabase.shouldLogFeature(feature)) {
+      console.warn(`${label}: Cloud database unavailable; feature is degraded.`);
+    }
+    return;
+  }
+  console.error(`${label}:`, error);
+}
+
+function localConfigPolicy(cacheKey) {
+  if (!messageStorage.enabled) return null;
+  try {
+    return messageStorage.config.getLastKnownGuildPolicy(cacheKey);
+  } catch (error) {
+    logCloudAwareError("local_config_cache", "Failed to read local config cache", error);
+    return null;
+  }
+}
+
+function saveLocalConfigPolicy(cacheKey, policy, sourceUpdatedAt = Date.now()) {
+  if (!messageStorage.enabled || !messageStorage.writeEnabled) return null;
+  try {
+    return messageStorage.config.setLastKnownGuildPolicy({
+      guildId: cacheKey,
+      version: Date.now(),
+      policy,
+      sourceUpdatedAt,
+    });
+  } catch (error) {
+    logCloudAwareError("local_config_cache", "Failed to update local config cache", error);
+    return null;
+  }
 }
 
 async function reportOperationalAlert(title, error) {
@@ -1299,10 +1412,58 @@ function isGuildBlocked(guildId) {
   return blockedGuildIds.has(guildId);
 }
 
-async function loadBlockedGuilds() {
-  const rows = await sql`SELECT "guildId" FROM "bot_guild_blocklist"`;
+const blockedGuildCacheKey = "runtime:blocked-guilds";
+let blockedGuildCacheLoaded = false;
+
+function applyBlockedGuildRows(rows, source, cachedAt = null) {
   blockedGuildIds.clear();
-  for (const row of rows) blockedGuildIds.add(row.guildId);
+  for (const row of rows) {
+    const guildId = String(row?.guildId ?? "").trim();
+    if (/^\d{17,20}$/.test(guildId)) blockedGuildIds.add(guildId);
+  }
+  blockedGuildCacheLoaded = true;
+  refreshCloudRuntimeStatus({
+    blockedGuildConfig: {
+      source,
+      count: blockedGuildIds.size,
+      cachedAt,
+      ageMs: cachedAt == null ? null : Math.max(0, Date.now() - cachedAt),
+    },
+  });
+}
+
+async function loadBlockedGuilds() {
+  if (cloudDatabase.canQuery()) {
+    try {
+      const rows = await sql`SELECT "guildId" FROM "bot_guild_blocklist"`;
+      applyBlockedGuildRows(rows, "NEON", Date.now());
+      saveLocalConfigPolicy(blockedGuildCacheKey, {
+        guildIds: [...blockedGuildIds].sort(),
+        sourceVersion: 1,
+      });
+      markCloudFeatureRecovered("blocked_guilds");
+      return { source: "NEON", count: blockedGuildIds.size };
+    } catch (error) {
+      logCloudAwareError("blocked_guilds", "Failed to refresh blocked Guilds", error);
+    }
+  }
+
+  if (!blockedGuildCacheLoaded) {
+    const cached = localConfigPolicy(blockedGuildCacheKey);
+    const guildIds = Array.isArray(cached?.policy?.guildIds)
+      ? cached.policy.guildIds.map((guildId) => ({ guildId }))
+      : [];
+    applyBlockedGuildRows(
+      guildIds,
+      cached ? "LOCAL_LAST_KNOWN_GOOD" : "SAFE_DEFAULT_EMPTY",
+      cached?.cachedAt ?? null,
+    );
+  }
+  markCloudFeatureDegraded("blocked_guilds");
+  return {
+    source: blockedGuildIds.size > 0 ? "LOCAL_LAST_KNOWN_GOOD" : "DEGRADED",
+    count: blockedGuildIds.size,
+  };
 }
 
 async function recordBlockAudit({ guildId, action, reason = null, performedBy, performedByName = null, source = "bot_command" }) {
@@ -1561,17 +1722,37 @@ function clearGuildReactionRoleRules(guildId) {
   }
 }
 
-async function loadReactionRoleRules(guildId = null) {
-  const rows = guildId
-    ? await sql`
-        SELECT "id", "guildId", "channelId", "messageId", "emojiKey", "emojiDisplay", "roleIds"
-        FROM "reaction_role_rule"
-        WHERE "guildId" = ${guildId}
-      `
-    : await sql`
-        SELECT "id", "guildId", "channelId", "messageId", "emojiKey", "emojiDisplay", "roleIds"
-        FROM "reaction_role_rule"
-      `;
+function reactionRoleCacheKey(guildId) {
+  return `runtime:reaction-roles:${guildId}`;
+}
+
+function reactionRoleRowsForGuild(guildId) {
+  const prefix = `${guildId}:`;
+  return [...reactionRoleRules.entries()]
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, rule]) => ({ ...rule }))
+    .sort((left, right) =>
+      `${left.messageId}:${left.emojiKey}`.localeCompare(`${right.messageId}:${right.emojiKey}`),
+    );
+}
+
+function cacheReactionRoleRules(guildId) {
+  return saveLocalConfigPolicy(reactionRoleCacheKey(guildId), {
+    rows: reactionRoleRowsForGuild(guildId),
+    sourceVersion: 1,
+  });
+}
+
+function cachedReactionRoleRows(guildId) {
+  const cached = localConfigPolicy(reactionRoleCacheKey(guildId));
+  return {
+    rows: Array.isArray(cached?.policy?.rows) ? cached.policy.rows : [],
+    cachedAt: cached?.cachedAt ?? null,
+    found: Boolean(cached),
+  };
+}
+
+function applyReactionRoleRows(rows, guildId = null) {
   if (guildId) clearGuildReactionRoleRules(guildId);
   else reactionRoleRules.clear();
   for (const row of rows) {
@@ -1590,6 +1771,63 @@ async function loadReactionRoleRules(guildId = null) {
       },
     );
   }
+}
+
+async function loadReactionRoleRules(guildId = null) {
+  if (cloudDatabase.canQuery()) {
+    try {
+      const rows = guildId
+        ? await sql`
+            SELECT "id", "guildId", "channelId", "messageId", "emojiKey", "emojiDisplay", "roleIds"
+            FROM "reaction_role_rule"
+            WHERE "guildId" = ${guildId}
+          `
+        : await sql`
+            SELECT "id", "guildId", "channelId", "messageId", "emojiKey", "emojiDisplay", "roleIds"
+            FROM "reaction_role_rule"
+          `;
+      applyReactionRoleRows(rows, guildId);
+      const guildIds = guildId
+        ? [guildId]
+        : [...new Set([
+            ...client.guilds.cache.keys(),
+            ...rows.map((row) => String(row.guildId)),
+          ])];
+      for (const id of guildIds) cacheReactionRoleRules(id);
+      markCloudFeatureRecovered("reaction_roles");
+      refreshCloudRuntimeStatus({
+        reactionRoleConfig: { source: "NEON", count: reactionRoleRules.size },
+      });
+      return { source: "NEON", count: reactionRoleRules.size };
+    } catch (error) {
+      logCloudAwareError("reaction_roles", "Failed to refresh reaction roles", error);
+    }
+  }
+
+  const guildIds = guildId ? [guildId] : [...client.guilds.cache.keys()];
+  const cachedRows = [];
+  let latestCachedAt = null;
+  let cacheCount = 0;
+  for (const id of guildIds) {
+    const cached = cachedReactionRoleRows(id);
+    if (cached.found) cacheCount += 1;
+    cachedRows.push(...cached.rows);
+    if (cached.cachedAt != null) latestCachedAt = Math.max(latestCachedAt ?? 0, cached.cachedAt);
+  }
+  applyReactionRoleRows(cachedRows, guildId);
+  markCloudFeatureDegraded("reaction_roles");
+  refreshCloudRuntimeStatus({
+    reactionRoleConfig: {
+      source: cacheCount > 0 ? "LOCAL_LAST_KNOWN_GOOD" : "DISABLED_NO_CACHE",
+      count: reactionRoleRules.size,
+      cachedAt: latestCachedAt,
+      ageMs: latestCachedAt == null ? null : Math.max(0, Date.now() - latestCachedAt),
+    },
+  });
+  return {
+    source: cacheCount > 0 ? "LOCAL_LAST_KNOWN_GOOD" : "DISABLED_NO_CACHE",
+    count: reactionRoleRules.size,
+  };
 }
 
 function getReactionRoleSafetyError(role, guild, botMember) {
@@ -1625,6 +1863,15 @@ async function handleSetRollCommand(interaction) {
   const guild = interaction.guild;
   const subcommand = interaction.options.getSubcommand(true);
   const selectedChannel = interaction.options.getChannel("channel");
+  if (!cloudDatabase.isAvailable()) {
+    markCloudFeatureDegraded("reaction_role_management");
+    await interaction.reply({
+      content:
+        "現在Cloud DBへ接続できないため、リアクションロール設定の閲覧・変更は一時停止中です。最後に取得済みの設定によるロール付与・解除は継続します。",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
 
   if (subcommand === "list") {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -1695,6 +1942,7 @@ async function handleSetRollCommand(interaction) {
       RETURNING "id"
     `;
     reactionRoleRules.delete(reactionRoleRuleKey(guild.id, messageId, parsedEmoji.key));
+    cacheReactionRoleRules(guild.id);
     await interaction.editReply(
       rows.length
         ? `✅ ${parsedEmoji.display} のリアクションロール設定を削除しました。すでに付与済みのロールは変更しません。`
@@ -1774,6 +2022,7 @@ async function handleSetRollCommand(interaction) {
       roleIds,
     },
   );
+  cacheReactionRoleRules(guild.id);
   const link = `https://discord.com/channels/${guild.id}/${selectedChannel.id}/${messageId}`;
   await interaction.editReply({
     content:
@@ -2508,11 +2757,13 @@ async function handlePrefixPing(message, invocation) {
 
   const databaseStartedAt = Date.now();
   let databaseConnected = false;
-  try {
-    await sql`SELECT 1 AS "connected"`;
-    databaseConnected = true;
-  } catch (error) {
-    console.warn("Ping command could not reach NeonDB:", safeErrorText(error));
+  if (cloudDatabase.canQuery()) {
+    try {
+      await sql`SELECT 1 AS "connected"`;
+      databaseConnected = true;
+    } catch (error) {
+      logCloudAwareError("ping", "Ping command could not reach NeonDB", error);
+    }
   }
   const databaseLatencyMs = Date.now() - databaseStartedAt;
   const gatewayConnected = client.isReady();
@@ -3932,6 +4183,21 @@ async function updateMemberCount(guild) {
 async function recordBotHeartbeat() {
   if (!client.isReady()) return;
   const guildCount = getAvailableBotGuilds().length;
+  const wasAvailable = cloudDatabase.isAvailable();
+  refreshCloudRuntimeStatus({ guildCount });
+  if (!cloudDatabase.isAvailable()) {
+    await cloudDatabase.probe();
+    refreshCloudRuntimeStatus({ guildCount });
+  }
+  if (!cloudDatabase.isAvailable()) {
+    markCloudFeatureDegraded("cloud_heartbeat");
+    return false;
+  }
+  if (!wasAvailable) {
+    await Promise.allSettled([loadBlockedGuilds(), loadReactionRoleRules()]);
+    markCloudFeatureRecovered("legacy_analytics");
+    console.info("[Runtime] Neon connectivity recovered; Cloud features are resuming.");
+  }
   if (runtimeCoordinator) {
     runtimeCoordinator.setStatus("Running", "Owned");
     await runtimeCoordinator.recordNow();
@@ -3945,6 +4211,8 @@ async function recordBotHeartbeat() {
       "guildCount" = EXCLUDED."guildCount",
       "stoppedAt" = NULL
   `;
+  markCloudFeatureRecovered("cloud_heartbeat");
+  return true;
 }
 
 async function syncChannelAccess(guild) {
@@ -4180,12 +4448,19 @@ async function emitGuildAlert({ guildId, type, severity = "warning", title, body
 
 async function checkGuildAlerts(guild) {
   if (isGuildBlocked(guild.id)) return;
+  const localLastMessageAt = messageRouter.isLocalFirstGuild(guild.id)
+    ? messageRouter.getLastActivityAt(guild.id)
+    : null;
   const [activityRows, departureRows, unreadableRows] = await Promise.all([
-    sql`
-      SELECT MAX("occurredAt") AS "lastMessageAt"
-      FROM "recent_activity"
-      WHERE "guildId" = ${guild.id} AND "type" = 'message'
-    `,
+    messageRouter.isLocalFirstGuild(guild.id)
+      ? Promise.resolve([
+          { lastMessageAt: localLastMessageAt == null ? null : new Date(localLastMessageAt) },
+        ])
+      : sql`
+          SELECT MAX("occurredAt") AS "lastMessageAt"
+          FROM "recent_activity"
+          WHERE "guildId" = ${guild.id} AND "type" = 'message'
+        `,
     sql`
       SELECT COUNT(*)::int AS count FROM "recent_activity"
       WHERE "guildId" = ${guild.id} AND "type" = 'member_left'
@@ -4278,7 +4553,11 @@ async function restoreTodayActiveMembers(guild) {
       );
       await Promise.all(
         [...activeUserIds].map((userId) =>
-          recordActiveMember({ guildId: guild.id, userId }),
+          messageRouter.recordActiveMemberObservation({
+            guildId: guild.id,
+            userId,
+            occurredAt: startOfToday.getTime(),
+          }),
         ),
       );
     }),
@@ -4320,8 +4599,32 @@ async function storeMessage(message) {
   `;
 }
 
+async function recordLegacyMessageCreate(message) {
+  await sql`
+    INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "date")
+    VALUES (${message.guild.id}, ${message.guild.memberCount}, 1, CURRENT_DATE)
+    ON CONFLICT ("guildId", "date")
+    DO UPDATE SET
+      "messageCount" = "daily_stats"."messageCount" + 1,
+      "memberCount" = EXCLUDED."memberCount",
+      "updatedAt" = now()
+  `;
+  const channelName = "name" in message.channel ? message.channel.name : null;
+  await Promise.all([
+    recordActivity({
+      guildId: message.guild.id,
+      type: "message",
+      actorName: message.member?.displayName ?? message.author.username,
+      channelName,
+    }),
+    recordActiveMember({ guildId: message.guild.id, userId: message.author.id }),
+    storeMessage(message),
+  ]);
+}
+
 async function purgeExpiredMessages() {
   await sql`DELETE FROM "discord_message" WHERE "createdAt" < now() - (${messageRetentionDays} * interval '1 day')`;
+  return 1;
 }
 
 const historyImportDelayMs = 250;
@@ -4514,6 +4817,14 @@ client.once("clientReady", async () => {
     await Promise.allSettled(
       client.guilds.cache.map((guild) => leaveBlockedGuild(guild, "startup")),
     );
+    if (!cloudDatabase.isAvailable()) {
+      markCloudFeatureDegraded("legacy_analytics");
+      refreshCloudRuntimeStatus();
+      console.warn(
+        "[Runtime] Discord is connected in DEGRADED mode; Neon-only startup sync is paused.",
+      );
+      return;
+    }
     await Promise.allSettled(client.guilds.cache.map(syncGuildRegistry));
     const initialAnalyticsResults = await Promise.allSettled(
       client.guilds.cache.map((guild) => syncAnalyticsInventory(guild, { fetchMembers: true })),
@@ -4526,8 +4837,6 @@ client.once("clientReady", async () => {
     await Promise.allSettled(client.guilds.cache.map(checkGuildAlerts));
     await Promise.allSettled(client.guilds.cache.map(syncServerVoiceSession));
     await Promise.allSettled(client.guilds.cache.map(syncCurrentVoiceSessions));
-    await Promise.allSettled(client.guilds.cache.map((guild) => nukeProtectionService.diagnoseGuild(guild)));
-    await Promise.allSettled(client.guilds.cache.map((guild) => nukeProtectionService.ensureDailySnapshot(guild)));
     updateRuntimeOperationalMetrics(
       initialAnalyticsResults.some((result) => result.status === "rejected")
         ? { lastAnalyticsFailureAt: new Date().toISOString() }
@@ -4536,28 +4845,32 @@ client.once("clientReady", async () => {
     await purgeExpiredMessages();
     void pollHistoryImportJobs();
     void pollGuildResetRequests();
-    void nukeProtectionService.pollActionRequests();
   } catch (error) {
     updateRuntimeOperationalMetrics({ lastAnalyticsFailureAt: new Date().toISOString() });
-    console.error("Initial member sync failed:", error);
+    logCloudAwareError("startup_sync", "Initial member sync failed", error);
   }
 });
 
 client.on("guildCreate", (guild) =>
   void (async () => {
     updateBotPresence();
-    await syncGuildRegistry(guild);
     if (await leaveBlockedGuild(guild, "re-invite")) return;
     await Promise.allSettled([
       syncGuildCommands(guild.id),
+      loadReactionRoleRules(guild.id),
+    ]);
+    if (!cloudDatabase.isAvailable()) {
+      markCloudFeatureDegraded("guild_registry");
+      return;
+    }
+    await syncGuildRegistry(guild);
+    await Promise.allSettled([
       updateMemberCount(guild),
       restoreTodayActiveMembers(guild),
       syncChannelAccess(guild),
       syncAnalyticsInventory(guild, { fetchMembers: true }),
       syncServerVoiceSession(guild),
       syncCurrentVoiceSessions(guild),
-      nukeProtectionService.diagnoseGuild(guild),
-      nukeProtectionService.ensureDailySnapshot(guild),
       loadReactionRoleRules(guild.id),
     ]);
   })(),
@@ -4568,9 +4881,8 @@ client.on("guildDelete", (guild) => {
   channelAccessSnapshots.delete(guild.id);
   analyticsInventorySnapshots.delete(guild.id);
   clearGuildReactionRoleRules(guild.id);
-  nukeProtectionService.clearGuild(guild.id);
   void markGuildDisconnected(guild.id).catch((error) =>
-    console.error("Failed to mark removed guild as disconnected:", error),
+    logCloudAwareError("guild_registry", "Failed to mark removed guild as disconnected", error),
   );
 });
 
@@ -5567,7 +5879,6 @@ client.on("messageCreate", async (message) => {
   };
 
   if (message.author.bot) {
-    await nukeProtectionService.handleBotMessage(message);
     trackSpam();
     return;
   }
@@ -5608,39 +5919,24 @@ client.on("messageCreate", async (message) => {
   trackSpam();
 
   try {
-    await sql`
-      INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "date")
-      VALUES (${message.guild.id}, ${message.guild.memberCount}, 1, CURRENT_DATE)
-      ON CONFLICT ("guildId", "date")
-      DO UPDATE SET
-        "messageCount" = "daily_stats"."messageCount" + 1,
-        "memberCount" = EXCLUDED."memberCount",
-        "updatedAt" = now()
-    `;
-    const channelName = "name" in message.channel ? message.channel.name : null;
-    await Promise.all([
-      recordActivity({
-        guildId: message.guild.id,
-        type: "message",
-        actorName: message.member?.displayName ?? message.author.username,
-        channelName,
-      }),
-      recordActiveMember({
-        guildId: message.guild.id,
-        userId: message.author.id,
-      }),
-      storeMessage(message),
-    ]);
+    await messageRouter.create(message);
   } catch (error) {
-    console.error("Failed to count a Discord message:", error);
+    logCloudAwareError("message_persistence", "Failed to count a Discord message", error);
   }
 });
 
 client.on("messageUpdate", async (_before, after) => {
   try {
-    await storeMessage(after.partial ? await after.fetch() : after);
+    const message = after.partial ? await after.fetch() : after;
+    if (
+      !message.guild ||
+      isGuildBlocked(message.guild.id) ||
+      message.author.bot ||
+      !message.content.trim()
+    ) return;
+    await messageRouter.update(message);
   } catch (error) {
-    console.error("Failed to update a stored Discord message:", error);
+    logCloudAwareError("message_persistence", "Failed to update a stored Discord message", error);
   }
 });
 
@@ -5736,6 +6032,17 @@ async function rememberDeletedMessageForSnipe(
   scheduleSnipeHistoryCleanup(key);
 }
 
+async function removeLegacyMessage(message) {
+  const rows = await sql`
+    SELECT "authorId", "authorName", "content"
+    FROM "discord_message"
+    WHERE "id" = ${message.id}
+    LIMIT 1
+  `;
+  await sql`DELETE FROM "discord_message" WHERE "id" = ${message.id}`;
+  return rows[0] ?? null;
+}
+
 async function processDeletedMessageForSnipe(
   message,
   auditLogType = AuditLogEvent.MessageDelete,
@@ -5743,16 +6050,10 @@ async function processDeletedMessageForSnipe(
 ) {
   let storedMessage = null;
   try {
-    const rows = await sql`
-      SELECT "authorId", "authorName", "content"
-      FROM "discord_message"
-      WHERE "id" = ${message.id}
-      LIMIT 1
-    `;
-    storedMessage = rows[0] ?? null;
-    await sql`DELETE FROM "discord_message" WHERE "id" = ${message.id}`;
+    const result = await messageRouter.remove(message);
+    storedMessage = result?.previous ?? result ?? null;
   } catch (error) {
-    console.error("Failed to remove a deleted Discord message:", error);
+    logCloudAwareError("message_persistence", "Failed to remove a deleted Discord message", error);
   }
   await rememberDeletedMessageForSnipe(
     message,
@@ -5777,11 +6078,21 @@ client.on("messageDeleteBulk", async (messages) => {
         AuditLogEvent.MessageBulkDelete,
       )
     : null;
-  for (const message of deletedMessages) {
-    await processDeletedMessageForSnipe(
+  let storedMessages = [];
+  try {
+    storedMessages = await messageRouter.removeMany(deletedMessages);
+  } catch (error) {
+    logCloudAwareError("message_persistence", "Failed to persist bulk message tombstones", error);
+  }
+  for (const [index, message] of deletedMessages.entries()) {
+    const result = storedMessages[index];
+    await rememberDeletedMessageForSnipe(
       message,
+      result?.previous ?? result ?? null,
       AuditLogEvent.MessageBulkDelete,
       bulkDeleter,
+    ).catch((error) =>
+      console.error("Failed to retain a transient Snipe record:", error),
     );
   }
 });
@@ -5815,7 +6126,7 @@ client.on("messageReactionAdd", async (reaction, user) => {
       VALUES (${guild.id}, ${reaction.message.channelId ?? null}, ${reaction.message.id}, ${user.id}, ${reaction.message.author?.id ?? null}, ${user.bot}, ${JSON.stringify(analyticsRoleIds(reactor))}::jsonb, now())
     `;
   } catch (error) {
-    console.error("Failed to count a Discord reaction:", error);
+    logCloudAwareError("reaction_analytics", "Failed to count a Discord reaction", error);
   }
 });
 
@@ -5829,10 +6140,10 @@ client.on("voiceStateUpdate", (oldState, newState) => {
   if (oldState.channelId === newState.channelId) return;
   if (isGuildBlocked(newState.guild.id)) return;
   void updateVoiceAnalytics(oldState, newState).catch((error) =>
-    console.error("Failed to sync member voice analytics:", error),
+    logCloudAwareError("voice_analytics", "Failed to sync member voice analytics", error),
   );
   void syncServerVoiceSession(newState.guild).catch((error) =>
-    console.error("Failed to sync server voice activity:", error),
+    logCloudAwareError("voice_analytics", "Failed to sync server voice activity", error),
   );
 });
 
@@ -5851,7 +6162,9 @@ client.on(
       recordGuildMemberEvent(member, "join"),
       syncAnalyticsInventory(member.guild),
       syncGuildRegistry(member.guild),
-    ])
+    ]).catch((error) =>
+      logCloudAwareError("member_analytics", "Failed to sync member join analytics", error),
+    )
     );
   },
 );
@@ -5871,7 +6184,9 @@ client.on(
       syncAnalyticsInventory(member.guild),
       syncGuildRegistry(member.guild),
       syncServerVoiceSession(member.guild),
-    ])
+    ]).catch((error) =>
+      logCloudAwareError("member_analytics", "Failed to sync member leave analytics", error),
+    )
     );
   },
 );
@@ -5917,16 +6232,6 @@ client.rest.on("rateLimited", (rateLimit) => {
   );
 });
 
-client.on("guildAuditLogEntryCreate", (entry, guild) => {
-  if (isGuildBlocked(guild.id)) return;
-  void nukeProtectionService.handleAuditLogEntry(entry, guild);
-});
-
-client.on("webhookUpdate", (channel) => {
-  if (!channel?.guild || isGuildBlocked(channel.guild.id)) return;
-  void nukeProtectionService.handleWebhookUpdate(channel);
-});
-
 for (const eventName of ["channelCreate", "channelDelete", "channelUpdate", "roleCreate", "roleDelete", "roleUpdate"]) {
   client.on(eventName, (...args) => {
     const subject = args.at(-1) ?? args[0];
@@ -5938,7 +6243,11 @@ for (const eventName of ["channelCreate", "channelDelete", "channelUpdate", "rol
     ]).then((results) => {
       for (const result of results) {
         if (result.status === "rejected") {
-          console.error(`Failed to refresh Bot inventory after ${eventName}:`, result.reason);
+          logCloudAwareError(
+            "guild_inventory",
+            `Failed to refresh Bot inventory after ${eventName}`,
+            result.reason,
+          );
         }
       }
     });
@@ -5952,11 +6261,11 @@ client.on("guildMemberUpdate", (before, after) => {
     [...before.roles.cache.keys()].some((roleId) => !after.roles.cache.has(roleId));
   if (!rolesChanged) return;
   void syncAnalyticsInventory(after.guild).catch((error) =>
-    console.error("Failed to refresh role analytics after member update:", error),
+    logCloudAwareError("guild_inventory", "Failed to refresh role analytics after member update", error),
   );
   if (after.id === client.user?.id) {
     void syncChannelAccess(after.guild).catch((error) =>
-      console.error("Failed to refresh channel permissions after Bot role update:", error),
+      logCloudAwareError("channel_access", "Failed to refresh channel permissions after Bot role update", error),
     );
   }
 });
@@ -5969,6 +6278,10 @@ process.on("unhandledRejection", (error) => {
 setInterval(
   () => {
     void (async () => {
+      if (!cloudDatabase.isAvailable()) {
+        markCloudFeatureDegraded("legacy_analytics");
+        return;
+      }
       const results = await Promise.allSettled(
         client.guilds.cache.map(async (guild) => {
           await updateMemberCount(guild);
@@ -5976,7 +6289,6 @@ setInterval(
           await syncAnalyticsInventory(guild);
           await syncGuildRegistry(guild);
           await checkGuildAlerts(guild);
-          await nukeProtectionService.diagnoseGuild(guild);
         }),
       );
       const failed = results.filter((result) => result.status === "rejected").length;
@@ -5992,52 +6304,39 @@ setInterval(
 
 setInterval(() => {
   void recordBotHeartbeat().catch((error) =>
-    console.error("Failed to record Bot heartbeat:", error),
+    logCloudAwareError("cloud_heartbeat", "Failed to record Bot heartbeat", error),
   );
 }, 60 * 1000);
 
 setInterval(() => {
   void enforceBlockedGuilds().catch((error) =>
-    console.error("Failed to refresh the blocked guild list:", error),
+    logCloudAwareError("blocked_guilds", "Failed to refresh the blocked guild list", error),
   );
 }, 15 * 1000);
 
 setInterval(
   () => {
+    if (!cloudDatabase.isAvailable()) return;
     void purgeExpiredMessages().catch((error) =>
-      console.error("Failed to purge expired messages:", error),
+      logCloudAwareError("message_retention", "Failed to purge expired messages", error),
     );
   },
   12 * 60 * 60 * 1000,
 );
 
 setInterval(() => {
+  if (!cloudDatabase.isAvailable()) return;
   void pollHistoryImportJobs().catch((error) =>
-    console.error("Failed to poll history import jobs:", error),
+    logCloudAwareError("history_import", "Failed to poll history import jobs", error),
   );
 }, 60 * 1000);
 
 setInterval(() => {
+  if (!cloudDatabase.isAvailable()) return;
   void pollGuildResetRequests().catch((error) =>
-    console.error("Failed to poll Guild reset requests:", error),
+    logCloudAwareError("guild_reset", "Failed to poll Guild reset requests", error),
   );
 }, 5 * 1000);
-
-setInterval(() => {
-  void nukeProtectionService.pollActionRequests();
-}, 5 * 1000);
-
-setInterval(() => {
-  void Promise.allSettled(
-    client.guilds.cache.map((guild) => nukeProtectionService.ensureDailySnapshot(guild)),
-  );
-}, 60 * 60 * 1000);
-
-setInterval(() => {
-  void nukeProtectionService.purgeExpiredSecurityData().catch((error) =>
-    console.error("Failed to purge expired Nuke Protection data:", error),
-  );
-}, 12 * 60 * 60 * 1000);
 
 setInterval(() => {
   const now = Date.now();
@@ -6058,7 +6357,7 @@ async function shutdown(
   if (localStopWatcher) clearInterval(localStopWatcher);
   console.log(`${signal} received. Disconnecting NuviloChan Bot...`);
   client.destroy();
-  if (releaseLease) {
+  if (releaseLease && cloudDatabase.isAvailable()) {
     try {
       await sql`
         UPDATE "bot_heartbeat"
@@ -6066,14 +6365,19 @@ async function shutdown(
         WHERE "id" = ${botHeartbeatId}
       `;
     } catch (error) {
-      console.error("Failed to mark Bot as stopped:", error);
+      logCloudAwareError("cloud_heartbeat", "Failed to mark Bot as stopped", error);
     }
   }
-  if (runtimeCoordinator) {
+  if (runtimeCoordinator && cloudDatabase.isAvailable()) {
     await runtimeCoordinator.stop({
       release: releaseLease,
       finalStatus: releaseLease ? "Stopped" : "LeaseLost",
     });
+  }
+  try {
+    messageRouter.close();
+  } catch (error) {
+    console.error("Failed to close local Message storage:", safeErrorText(error));
   }
   process.exit(exitCode);
 }
@@ -6090,6 +6394,11 @@ if (localStopFile && isAbsolute(localStopFile)) {
 }
 
 async function startBot() {
+  const cloudAvailable = await cloudDatabase.probe({ force: true });
+  refreshCloudRuntimeStatus({
+    startupCloudProbe: cloudAvailable ? "PASS" : "DEGRADED",
+  });
+
   if (runtimeConfig.enabled) {
     const configurationErrors = validateRuntimeConfig(runtimeConfig, runtimeIdentity);
     if (configurationErrors.length) {
@@ -6097,6 +6406,13 @@ async function startBot() {
         console.error(`[Singleton] configuration invalid: ${error}`);
       }
       return RUNTIME_EXIT_CODES.CONFIGURATION_INVALID;
+    }
+    if (!cloudAvailable) {
+      refreshCloudRuntimeStatus({ crossHostLeadership: "UNKNOWN_FAIL_CLOSED" });
+      console.error(
+        "[Singleton] Neon is unavailable and cross-host ownership cannot be proven; Discord login remains fail-closed.",
+      );
+      return RUNTIME_EXIT_CODES.DATABASE_UNAVAILABLE;
     }
 
     runtimeCoordinator = new RuntimeCoordinator({
@@ -6134,6 +6450,7 @@ async function startBot() {
 
     try {
       await runtimeCoordinator.start();
+      refreshCloudRuntimeStatus({ crossHostLeadership: "AVAILABLE" });
     } catch (error) {
       console.error("[Singleton] failed to start lease heartbeat", error);
       await runtimeCoordinator.stop();
@@ -6143,12 +6460,15 @@ async function startBot() {
 
   try {
     await client.login(process.env.NUVILOVIEW_BOT_TOKEN);
+    refreshCloudRuntimeStatus();
     return null;
   } catch (error) {
     updateRuntimeOperationalMetrics({ lastDiscordLoginFailureAt: new Date().toISOString() });
     runtimeCoordinator?.setStatus("Error", runtimeCoordinator.leaseState);
-    await runtimeCoordinator?.recordNow({ status: "Error" });
-    await runtimeCoordinator?.stop();
+    if (cloudDatabase.isAvailable()) {
+      await runtimeCoordinator?.recordNow({ status: "Error" });
+      await runtimeCoordinator?.stop();
+    }
     throw error;
   }
 }

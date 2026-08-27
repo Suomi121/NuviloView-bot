@@ -234,7 +234,13 @@ export function MessageHistoryImportPanel({ guilds, locale }: { guilds: Guild[];
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error ?? "Delete failed");
       setDeleteConfirmation("");
-      setMessage(en ? `${formatCount(data.deletedCount)} imported messages deleted.` : `履歴取り込み由来の${formatCount(data.deletedCount)}件を削除しました。`);
+      setMessage(data.deletionQueued
+        ? (en
+          ? "Imported-history deletion was queued. The Bot will process it locally."
+          : "履歴取り込みデータの削除を受け付けました。Botがローカルで安全に処理します。")
+        : (en
+          ? `${formatCount(data.deletedCount)} imported messages deleted.`
+          : `履歴取り込み由来の${formatCount(data.deletedCount)}件を削除しました。`));
       await load(true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : (en ? "Delete failed." : "削除に失敗しました。"));

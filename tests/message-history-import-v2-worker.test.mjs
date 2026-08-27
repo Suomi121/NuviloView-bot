@@ -33,7 +33,7 @@ function createFakeRepository({
   return {
     state,
     async recoverStale() { return staleJobs; },
-    async claimNext() { return { id: 7, guildId: "123456789012345678", days: 0, version: 2 }; },
+    async claimNext() { return { id: 7, guildId: "123456789012345678", days: 0, version: 3 }; },
     async audit(event) { state.events.push(event); },
     async heartbeat() {},
     async control(jobId, channelId) { return control(jobId, channelId, state); },
@@ -69,7 +69,15 @@ function createDiscordClient(fetchByChannel) {
   return { guilds: { cache: new Map([["123456789012345678", guild]]), fetch: async () => guild } };
 }
 
-const config = { enabled: true, maxRetries: 2, stallSeconds: 120, batchSize: 100, maxPagesPerChannel: 100 };
+const config = {
+  enabled: true,
+  sqliteFirstEnabled: true,
+  isSqliteFirstGuild: (guildId) => guildId === "123456789012345678",
+  maxRetries: 2,
+  stallSeconds: 120,
+  batchSize: 100,
+  maxPagesPerChannel: 100,
+};
 const identity = { hostId: "test-host", instanceId: "test-instance" };
 const logger = { info() {}, warn() {} };
 
@@ -183,7 +191,7 @@ test("worker skips only the selected channel and continues the job", async () =>
 test("stale recovery emits only safe lifecycle audit information", async () => {
   const repository = createFakeRepository({
     channels: [],
-    staleJobs: [{ id: 19, guildId: "123456789012345678", version: 2 }],
+    staleJobs: [{ id: 19, guildId: "123456789012345678", version: 3 }],
   });
   const client = createDiscordClient({});
   const worker = createMessageHistoryImportWorker({ repository, discordClient: client, config, identity, logger, sleep: async () => {} });
@@ -197,9 +205,10 @@ test("stale recovery emits only safe lifecycle audit information", async () => {
   });
 });
 
-test("worker SQL keeps message insert and checkpoint update in one statement", async () => {
+test("worker uses SQLite saveBatch and never directly inserts Cloud raw messages", async () => {
   const source = await readFile(new URL("../lib/message-history-import-worker.mjs", import.meta.url), "utf8");
-  assert.match(source, /WITH gate AS[\s\S]*inserted AS[\s\S]*channel_update AS[\s\S]*UPDATE "history_import_job"/);
-  assert.match(source, /ON CONFLICT \("id"\) DO NOTHING/);
+  assert.match(source, /requireLocal\(guildId\)\.saveBatch/);
+  assert.match(source, /WITH gate AS[\s\S]*channel_update AS[\s\S]*UPDATE "history_import_job"/);
+  assert.doesNotMatch(source, /INSERT INTO "discord_message"/);
   assert.doesNotMatch(source, /Promise\.all\([^)]*processChannel/);
 });

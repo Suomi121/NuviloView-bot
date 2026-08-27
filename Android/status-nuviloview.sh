@@ -40,6 +40,24 @@ printf 'NuviloView Termux Runtime\n'
 process_status "Bot Runner" "$BOT_RUNNER_PID_FILE" "run-bot-forever.sh" "$BOT_STATE_FILE"
 process_status "Bot" "$BOT_PID_FILE" "discord-bot.mjs"
 
+if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" MESSAGE_HISTORY_IMPORT_V2_ENABLED)"; then
+  history_guilds="$(nv_get_env_value "$ENV_FILE" MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_GUILD_IDS)"
+  history_guild_count=0
+  if [[ -n "$history_guilds" ]]; then
+    IFS=',' read -r -a history_guild_list <<< "$history_guilds"
+    for configured_guild in "${history_guild_list[@]}"; do
+      [[ -n "$(nv_trim_value "$configured_guild")" ]] && history_guild_count=$((history_guild_count + 1))
+    done
+  fi
+  if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_ENABLED)"; then
+    printf 'Message History Import: SQLITE_FIRST_V3 (%s Guilds)\n' "$history_guild_count"
+  else
+    printf 'Message History Import: UNSAFE CONFIGURATION (SQLite-first disabled)\n'
+  fi
+else
+  printf 'Message History Import: DISABLED\n'
+fi
+
 if [[ -f "$NEON_RUNTIME_STATUS_PATH" ]] && command -v node >/dev/null 2>&1; then
   node -e '
     const fs = require("fs");

@@ -38,6 +38,11 @@ test("UI separates state reset from exact-confirmation imported-data deletion", 
   assert.match(panel, /Live data is never selected/);
 });
 
+test("queued local deletion is not falsely reported as an immediate deletion", () => {
+  assert.match(panel, /data\.deletionQueued/);
+  assert.match(panel, /Botがローカルで安全に処理します/);
+});
+
 test("terminal jobs can start a new import while active jobs cannot", () => {
   assert.match(panel, /canStartNew = !job \|\| \["cancelled", "completed", "failed"\]\.includes\(job\.status\)/);
   assert.match(panel, /disabled=\{!guilds\.length \|\| importActive/);

@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { pool } from "@/lib/db";
 import { getManagedGuilds } from "@/lib/discord";
 import {
+  MESSAGE_IMPORT_VERSION,
   getMessageImportConfig,
   isDiscordSnowflake,
   parseImportedDataDeletion,
@@ -72,10 +73,11 @@ async function writeAudit(
     safeErrorCode?: string | null;
   },
 ) {
-  await client.query(
+  const result = await client.query(
     `INSERT INTO "message_import_audit_event"
       ("jobId", "guildId", "channelId", "eventType", "actorId", "counts", "safeErrorCode")
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+     RETURNING "id"`,
     [
       input.jobId ?? null,
       input.guildId,
@@ -86,6 +88,7 @@ async function writeAudit(
       input.safeErrorCode ?? null,
     ],
   );
+  return result.rows[0] as { id: number };
 }
 
 async function loadJobForUpdate(client: PoolClient, guildId: string, jobId: number) {
@@ -135,7 +138,11 @@ export async function GET(request: Request) {
   const authorization = await authorizeGuildRequest(request, guildId);
   if (authorization.response) return authorization.response;
 
-  if (!messageImportConfig.enabled) {
+  if (
+    !messageImportConfig.enabled ||
+    !messageImportConfig.sqliteFirstEnabled ||
+    !messageImportConfig.isSqliteFirstGuild(guildId)
+  ) {
     const result = await pool.query(
       `SELECT "id", "days", "mode", "status", "processedMessages", "failedChannels", "requestedAt", "startedAt", "completedAt", "error"
        FROM "history_import_job" WHERE "guildId" = $1 ORDER BY "requestedAt" DESC LIMIT 1`,
@@ -165,8 +172,18 @@ export async function GET(request: Request) {
         [guildId],
       ),
       pool.query(
-        `SELECT count(*)::int AS count FROM "discord_message"
-         WHERE "guildId" = $1 AND "source" = 'history_import'`,
+        `SELECT GREATEST(
+           COALESCE((
+             SELECT SUM("insertedMessages") FROM "history_import_job"
+             WHERE "guildId" = $1 AND "version" >= 3
+           ), 0) - COALESCE((
+             SELECT SUM(("counts" ->> 'deletedMessages')::integer)
+             FROM "message_import_audit_event"
+             WHERE "guildId" = $1
+               AND "eventType" = 'IMPORTED_HISTORY_DATA_DELETED'
+           ), 0),
+           0
+         )::int AS count`,
         [guildId],
       ),
     ]);
@@ -215,22 +232,12 @@ export async function GET(request: Request) {
       },
     });
   } catch (error) {
-    console.error("Failed to read Message History Import v2 state:", error);
+    console.error("Failed to read Message History Import v3 state:", error);
     return invalidRequest("Unable to load import state", 500);
   }
 }
 
-async function createLegacyJob(guildId: string, userId: string, days: number, mode: string) {
-  const result = await pool.query(
-    `INSERT INTO "history_import_job" ("guildId", "requestedBy", "days", "mode")
-     VALUES ($1, $2, $3, $4)
-     RETURNING "id", "days", "mode", "status", "processedMessages", "failedChannels", "requestedAt"`,
-    [guildId, userId, days, mode],
-  );
-  return result.rows[0];
-}
-
-async function mutateV2Job(
+async function mutateV3Job(
   input: { action: string; guildId: string; jobId?: number; channelId?: string; days?: number; mode?: string },
   userId: string,
 ) {
@@ -239,9 +246,9 @@ async function mutateV2Job(
       const result = await client.query(
         `INSERT INTO "history_import_job"
           ("guildId", "requestedBy", "days", "mode", "version", "source", "status", "updatedAt")
-         VALUES ($1, $2, $3, $4, 2, 'history_import', 'queued', CURRENT_TIMESTAMP)
+         VALUES ($1, $2, $3, $4, $5, 'history_import', 'queued', CURRENT_TIMESTAMP)
          RETURNING ${safeJobSelect()}`,
-        [input.guildId, userId, input.days, input.mode],
+        [input.guildId, userId, input.days, input.mode, MESSAGE_IMPORT_VERSION],
       );
       const job = result.rows[0];
       await writeAudit(client, { jobId: job.id, guildId: input.guildId, eventType: "IMPORT_JOB_QUEUED", actorId: userId });
@@ -440,12 +447,14 @@ export async function POST(request: Request) {
   if (limited) return invalidRequest("Too many import requests. Please wait and try again.", 429);
 
   try {
-    if (!messageImportConfig.enabled) {
-      if (input.action !== "start") return invalidRequest("Message History Import v2 is disabled", 503);
-      const job = await createLegacyJob(input.guildId, authorization.userId, input.days as number, input.mode ?? "standard");
-      return NextResponse.json({ featureEnabled: false, job }, { status: 201 });
+    if (
+      !messageImportConfig.enabled ||
+      !messageImportConfig.sqliteFirstEnabled ||
+      !messageImportConfig.isSqliteFirstGuild(input.guildId)
+    ) {
+      return invalidRequest("Message History Import v3 is disabled for this Guild", 503);
     }
-    const job = await mutateV2Job(input, authorization.userId);
+    const job = await mutateV3Job(input, authorization.userId);
     return NextResponse.json({ featureEnabled: true, job }, { status: input.action === "start" ? 201 : 200 });
   } catch (error) {
     if ((error as { code?: string }).code === "23505") {
@@ -460,13 +469,17 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   if (!isTrustedMutation(request) || !hasJsonBody(request, 1_024)) return invalidRequest();
-  if (!messageImportConfig.enabled) return invalidRequest("Message History Import v2 is disabled", 503);
   const body = await request.json().catch(() => null);
   const parsed = parseImportedDataDeletion(body);
   if (!parsed.ok) return invalidRequest(parsed.error);
   const deletion = parsed.value as { guildId: string; confirmation: string };
   const authorization = await authorizeGuildRequest(request, deletion.guildId);
   if (authorization.response) return authorization.response;
+  if (
+    !messageImportConfig.enabled ||
+    !messageImportConfig.sqliteFirstEnabled ||
+    !messageImportConfig.isSqliteFirstGuild(deletion.guildId)
+  ) return invalidRequest("Message History Import v3 is disabled for this Guild", 503);
   if (await isRateLimited(request, {
     scope: `history-import-delete-${deletion.guildId}`,
     limit: 3,
@@ -476,7 +489,7 @@ export async function DELETE(request: Request) {
   })) return invalidRequest("Too many delete requests. Please wait and try again.", 429);
 
   try {
-    const deletedCount = await withTransaction(async (client) => {
+    const requestId = await withTransaction(async (client) => {
       const active = await client.query(
         `SELECT "id" FROM "history_import_job"
          WHERE "guildId" = $1
@@ -490,24 +503,18 @@ export async function DELETE(request: Request) {
           safeMessage: "Cancel the active import before deleting imported history data",
         });
       }
-      const result = await client.query(
-        `WITH deleted AS (
-           DELETE FROM "discord_message"
-           WHERE "guildId" = $1 AND "source" = 'history_import'
-           RETURNING 1
-         ) SELECT count(*)::int AS count FROM deleted`,
-        [deletion.guildId],
-      );
-      const count = result.rows[0]?.count ?? 0;
-      await writeAudit(client, {
+      const audit = await writeAudit(client, {
         guildId: deletion.guildId,
-        eventType: "IMPORTED_HISTORY_DATA_DELETED",
+        eventType: "IMPORTED_HISTORY_DATA_DELETE_REQUESTED",
         actorId: authorization.userId,
-        counts: { deletedMessages: count },
+        counts: { schemaVersion: 3 },
       });
-      return count;
+      return audit.id;
     });
-    return NextResponse.json({ deletedCount });
+    return NextResponse.json(
+      { deletionQueued: true, requestId, deletedCount: 0 },
+      { status: 202 },
+    );
   } catch (error) {
     const safeError = error as { status?: number; safeMessage?: string };
     if (safeError.status && safeError.safeMessage) return invalidRequest(safeError.safeMessage, safeError.status);

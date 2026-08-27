@@ -135,6 +135,18 @@ function fakeProvider(id, { required, failures = 0 } = {}) {
   };
 }
 
+function tursoFetchError(code = null) {
+  const transport = new Error(code ? `transport ${code}` : "transport unavailable");
+  if (code) transport.code = code;
+  const fetchError = new TypeError("fetch failed");
+  if (code) fetchError.cause = transport;
+  const error = new Error("fetch failed");
+  error.name = "LibsqlError";
+  error.code = "EXECUTE_ERROR";
+  error.cause = fetchError;
+  return error;
+}
+
 function registry(providers) {
   const byId = new Map(providers.map((provider) => [provider.id, provider]));
   return {
@@ -346,6 +358,127 @@ test("Turso failure does not stop Supabase delivery", async (t) => {
     "retry",
   );
   assert.equal(storage.outbox.getByEventId("event:turso-offline").status, "pending");
+});
+
+test("Nested libSQL and Undici transport errors are transient without weakening permanent errors", () => {
+  for (const code of [
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_SOCKET",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_BODY_TIMEOUT",
+  ]) {
+    assert.deepEqual(classifySyncError(tursoFetchError(code)), {
+      kind: "transient",
+      retryable: true,
+      affectsCircuit: true,
+    });
+  }
+
+  assert.deepEqual(classifySyncError(tursoFetchError()), {
+    kind: "transient",
+    retryable: true,
+    affectsCircuit: true,
+  });
+  assert.deepEqual(classifySyncError(new TypeError("fetch failed")), {
+    kind: "permanent",
+    retryable: false,
+    affectsCircuit: false,
+  });
+  assert.deepEqual(classifySyncError("network unavailable"), {
+    kind: "transient",
+    retryable: true,
+    affectsCircuit: true,
+  });
+
+  for (const error of [
+    Object.assign(new Error("Unauthorized"), { status: 401 }),
+    Object.assign(new Error("invalid token"), { code: "AUTH_ERROR" }),
+    Object.assign(new Error("malformed SQL"), { code: "SQL_PARSE_ERROR" }),
+    Object.assign(new Error("schema mismatch"), { code: "SYNC_SCHEMA_MISMATCH" }),
+    Object.assign(new Error("constraint violation"), { code: "23514" }),
+    Object.assign(new Error("invalid payload"), { code: "SYNC_INVALID_PAYLOAD" }),
+  ]) {
+    assert.deepEqual(classifySyncError(error), {
+      kind: "permanent",
+      retryable: false,
+      affectsCircuit: false,
+    });
+  }
+
+  assert.deepEqual(
+    classifySyncError(Object.assign(new Error("connection refused"), {
+      code: "ECONNREFUSED",
+    })),
+    { kind: "transient", retryable: true, affectsCircuit: true },
+  );
+});
+
+test("Nested Turso fetch failure retries, opens its Circuit, and recovers without DLQ", async (t) => {
+  let now = 30_000;
+  const env = {
+    ...baseEnv,
+    SYNC_PROVIDER_BATCH_MIN: "1",
+    SYNC_PROVIDER_BATCH_MAX: "1",
+    SYNC_BATCH_GROWTH_STEP: "1",
+    SYNC_CIRCUIT_HALF_OPEN_BATCH: "1",
+    SYNC_RETRY_BASE_MS: "100",
+    SYNC_RETRY_MAX_MS: "100",
+    SYNC_RETRY_JITTER_RATIO: "0",
+  };
+  const storage = createStorage(env, { now: () => now });
+  t.after(() => storage.close());
+  storage.outbox.enqueue(envelope("event:turso-fetch-recovery", now));
+
+  const supabase = fakeProvider("supabase", { required: true });
+  const turso = fakeProvider("turso", { required: true });
+  let tursoAvailable = false;
+  let observedRecoveryState = null;
+  let worker;
+  turso.pushEvents = async (items) => {
+    turso.state.eventCalls += 1;
+    if (!tursoAvailable) throw tursoFetchError("ECONNRESET");
+    observedRecoveryState = worker.status.providers.turso.circuit.state;
+    return {
+      succeededEventIds: items.map((item) => item.eventId),
+      failed: [],
+      queryCount: 1,
+    };
+  };
+  worker = new MultiProviderSyncWorker({
+    storage,
+    registry: registry([supabase, turso]),
+    config: getMultiDbSyncConfig(env),
+    now: () => now,
+    random: () => 0.5,
+    snapshotWriter: async () => {},
+  });
+
+  await worker.processOnce();
+  assert.equal(storage.providerDeliveries.get("event:turso-fetch-recovery", "supabase").status, "synced");
+  assert.equal(storage.providerDeliveries.get("event:turso-fetch-recovery", "turso").status, "retry");
+  assert.equal(storage.providerDeliveries.getProviderStatus("turso").deadLetter, 0);
+  assert.equal(worker.status.providers.turso.circuit.state, "OPEN");
+  assert.equal(worker.status.providers.supabase.circuit.state, "CLOSED");
+
+  now += 500;
+  await worker.processOnce();
+  assert.equal(turso.state.eventCalls, 1, "OPEN Circuit must issue zero Turso queries");
+
+  now += 501;
+  tursoAvailable = true;
+  await worker.processOnce();
+  assert.equal(observedRecoveryState, "HALF_OPEN");
+  assert.equal(worker.status.providers.turso.circuit.state, "CLOSED");
+  assert.equal(storage.providerDeliveries.get("event:turso-fetch-recovery", "turso").status, "synced");
+  assert.equal(storage.providerDeliveries.getProviderStatus("turso").deadLetter, 0);
+  assert.equal(storage.outbox.getByEventId("event:turso-fetch-recovery").status, "synced");
 });
 
 test("Missing Provider credentials create only a degraded Provider, never an implicit pool", async () => {

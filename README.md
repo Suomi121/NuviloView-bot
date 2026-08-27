@@ -22,6 +22,13 @@ SQLiteをBot側の唯一のSource of Truthとして維持し、SupabaseとTurso�
 全Flagは既定でOFFです。設計、Cloud Schema、reconciliation、段階的rolloutは
 [Multi-DB Sync v1ガイド](docs/multi-db-sync-v1.md)を参照してください。
 
+## Analytics Compaction v2
+
+明示したCanary Guildでは、Message Raw EventをSQLiteだけに保持し、15分周期の
+Current / Daily / Channel Daily / User Daily ProjectionだけをSupabase・Tursoへ
+同期できます。既定値はOFFです。送信削減指標、Web countdown、History Importの
+既知blockerは[Analytics Compaction v2](docs/analytics-compaction-v2.md)を参照してください。
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
 
 ## Built with v0

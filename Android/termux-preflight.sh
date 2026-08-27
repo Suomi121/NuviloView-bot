@@ -118,13 +118,40 @@ fi
 local_enabled="$(nv_get_env_value "$ENV_FILE" LOCAL_STORAGE_ENABLED)"
 local_write_enabled="$(nv_get_env_value "$ENV_FILE" LOCAL_STORAGE_WRITE_ENABLED)"
 message_local_enabled="$(nv_get_env_value "$ENV_FILE" LOCAL_MESSAGE_STORAGE_ENABLED)"
+message_canary_guilds="$(nv_get_env_value "$ENV_FILE" LOCAL_MESSAGE_CANARY_GUILDS)"
 worker_enabled="$(nv_get_env_value "$ENV_FILE" SYNC_WORKER_ENABLED)"
 replica_enabled="$(nv_get_env_value "$ENV_FILE" SYNC_NEON_REPLICA_ENABLED)"
 multi_db_enabled="$(nv_get_env_value "$ENV_FILE" MULTI_DB_SYNC_ENABLED)"
+compaction_enabled="$(nv_get_env_value "$ENV_FILE" ANALYTICS_COMPACTION_ENABLED)"
+compaction_guilds="$(nv_get_env_value "$ENV_FILE" ANALYTICS_COMPACTION_GUILD_IDS)"
+snapshot_enabled="$(nv_get_env_value "$ENV_FILE" SYNC_SNAPSHOT_ENABLED)"
 
 if nv_env_enabled "$message_local_enabled" &&
   { ! nv_env_enabled "$local_enabled" || ! nv_env_enabled "$local_write_enabled"; }; then
   add_fail "message_local_first_requires_writable_local_storage"
+fi
+
+if nv_env_enabled "$compaction_enabled"; then
+  [[ -n "$compaction_guilds" ]] || add_fail "analytics_compaction_guild_list_empty"
+  nv_env_enabled "$message_local_enabled" || add_fail "analytics_compaction_requires_message_local_first"
+  nv_env_enabled "$local_enabled" || add_fail "analytics_compaction_requires_local_storage"
+  nv_env_enabled "$local_write_enabled" || add_fail "analytics_compaction_requires_local_writes"
+  nv_env_enabled "$worker_enabled" || add_fail "analytics_compaction_requires_sync_worker"
+  nv_env_enabled "$multi_db_enabled" || add_fail "analytics_compaction_requires_multi_db"
+  nv_env_enabled "$snapshot_enabled" || add_fail "analytics_compaction_requires_snapshots"
+  IFS=',' read -r -a compaction_guild_list <<< "$compaction_guilds"
+  for configured_guild in "${compaction_guild_list[@]}"; do
+    configured_guild="$(nv_trim_value "$configured_guild")"
+    [[ "$configured_guild" =~ ^[0-9]{16,22}$ ]] || {
+      add_fail "analytics_compaction_guild_id_invalid"
+      continue
+    }
+    case ",${message_canary_guilds//[[:space:]]/}," in
+      *",$configured_guild,"*) ;;
+      *) add_fail "analytics_compaction_guild_not_message_canary" ;;
+    esac
+  done
+  add_detail "analytics_compaction=canary_projection_v2"
 fi
 if nv_env_enabled "$worker_enabled"; then
   # Worker-only configuration errors must not prevent an otherwise safe Bot

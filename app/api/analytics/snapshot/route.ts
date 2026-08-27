@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { createCloudReadRouter } from "@/lib/sync/cloud-read-router.mjs";
 import { getMultiDbSyncConfig } from "@/lib/sync/multi-config.mjs";
+import { analyticsCurrentProjectionKey } from "@/lib/sync/analytics-compaction.mjs";
 import { createProviderRegistry } from "@/lib/sync/providers/registry.mjs";
 import { isAuthorizedGuild } from "@/lib/community-analytics-utils.mjs";
 import { getManagedGuilds } from "@/lib/discord";
@@ -54,12 +55,44 @@ export async function GET(request: Request) {
   const registry = await createProviderRegistry({ config });
   try {
     const router = createCloudReadRouter({ registry });
-    const snapshot = await router.readSnapshot({
-      snapshotType,
-      aggregateId: guildId,
-      maxAgeMs,
-    });
-    return NextResponse.json(snapshot, {
+    let snapshot;
+    if (snapshotType === "analytics") {
+      try {
+        snapshot = await router.readSnapshot({
+          snapshotType,
+          aggregateId: analyticsCurrentProjectionKey(guildId),
+          maxAgeMs,
+        });
+      } catch {
+        // Compatibility fallback while individual Guilds move to Projection v2.
+        snapshot = await router.readSnapshot({
+          snapshotType,
+          aggregateId: guildId,
+          maxAgeMs,
+        });
+      }
+    } else {
+      snapshot = await router.readSnapshot({
+        snapshotType,
+        aggregateId: guildId,
+        maxAgeMs,
+      });
+    }
+    const intervalMs = config.analyticsCompaction.intervalMs;
+    const at = Date.now();
+    const payload = snapshot.payload as Record<string, unknown>;
+    const sourceNextUpdateAt = Number(payload?.nextUpdateAt ?? 0);
+    const nextUpdateAt = sourceNextUpdateAt > at
+      ? sourceNextUpdateAt
+      : at + intervalMs;
+    return NextResponse.json({
+      ...snapshot,
+      refreshSchedule: {
+        lastUpdatedAt: Number(payload?.lastUpdatedAt ?? snapshot.generatedAt),
+        nextUpdateAt,
+        intervalMs,
+      },
+    }, {
       headers: { "Cache-Control": "private, max-age=15, must-revalidate" },
     });
   } catch {

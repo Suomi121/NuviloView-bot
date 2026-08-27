@@ -110,6 +110,7 @@ import {
 } from "./lib/message-history-import-worker.mjs";
 import { createStorage } from "./lib/storage/index.mjs";
 import { createMessageDomainRouter } from "./lib/message-local-first.mjs";
+import { createEventDomainRouter } from "./lib/event-local-first.mjs";
 import {
   createCloudDatabase,
   isCloudDatabaseUnavailableError,
@@ -149,6 +150,17 @@ const messageRouter = createMessageDomainRouter({
   },
   roleIdsForMessage: (message) => analyticsRoleIds(message.member),
 });
+const eventRouter = createEventDomainRouter({
+  env: process.env,
+  storage: messageStorage,
+  legacy: {
+    reaction: recordLegacyReaction,
+    voice: recordLegacyVoiceChange,
+    member: recordLegacyMemberEvent,
+    reconcileVoice: reconcileLegacyVoiceGuild,
+    syncMembers: syncLegacyMemberGuild,
+  },
+});
 const configuredMessageStorageMode = messageRouter.globalEnabled
   ? messageRouter.config.canaryGuildIds.length > 0
     ? "LOCAL_FIRST_CANARY"
@@ -162,6 +174,9 @@ cloudDatabase.updateRuntimeDetails({
       : "READ_ONLY"
     : "DISABLED",
   crossHostLeadership: runtimeConfig.enabled ? "UNKNOWN" : "DISABLED",
+  eventStorageConfiguredMode: eventRouter.enabled
+    ? `LOCAL_FIRST_CANARY:${eventRouter.config.guildIds.length}`
+    : "LEGACY_CLOUD",
   degradedFeatures: [],
 });
 const libreTranslateUrl = (process.env.LIBRETRANSLATE_URL?.trim() || "http://127.0.0.1:5000").replace(/\/+$/, "");
@@ -4193,8 +4208,78 @@ async function handleClearCommand(interaction) {
   }
 }
 
+async function recordLegacyReaction(reaction, user, action) {
+  if (action !== "add") return null;
+  const guild = reaction.message.guild;
+  const reactor =
+    guild.members.cache.get(user.id) ??
+    (await guild.members.fetch(user.id).catch(() => null));
+  await sql`
+    INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "reactionCount", "date")
+    VALUES (${guild.id}, ${guild.memberCount}, 0, 1, CURRENT_DATE)
+    ON CONFLICT ("guildId", "date")
+    DO UPDATE SET
+      "reactionCount" = "daily_stats"."reactionCount" + 1,
+      "memberCount" = EXCLUDED."memberCount",
+      "updatedAt" = now()
+  `;
+  await sql`
+    INSERT INTO "discord_reaction_event" ("guildId", "channelId", "messageId", "reactorId", "recipientId", "reactorIsBot", "reactorRoleIds", "occurredAt")
+    VALUES (${guild.id}, ${reaction.message.channelId ?? null}, ${reaction.message.id}, ${user.id}, ${reaction.message.author?.id ?? null}, ${user.bot}, ${JSON.stringify(analyticsRoleIds(reactor))}::jsonb, now())
+  `;
+  return true;
+}
+
+async function recordLegacyVoiceChange(oldState, newState) {
+  await updateVoiceAnalytics(oldState, newState);
+  await syncServerVoiceSession(newState.guild);
+}
+
+async function recordLegacyMemberEvent(member, eventType) {
+  if (eventType === "update") return true;
+  await Promise.all([
+    updateMemberCount(member.guild),
+    recordActivity({
+      guildId: member.guild.id,
+      type: eventType === "join" ? "member_joined" : "member_left",
+      actorName:
+        eventType === "join" ? member.displayName : member.user.username,
+    }),
+    recordGuildMemberEvent(member, eventType),
+  ]);
+  return true;
+}
+
+async function syncLegacyMemberGuild(guild, { fetchMembers = true } = {}) {
+  if (fetchMembers) await guild.members.fetch();
+  for (const member of guild.members.cache.values()) {
+    await recordGuildMemberEvent(member, "join", "discord_sync");
+  }
+  return guild.members.cache.size;
+}
+
+async function reconcileLegacyVoiceGuild(guild) {
+  await syncServerVoiceSession(guild);
+  await syncCurrentVoiceSessions(guild);
+}
+
+async function syncMemberEventCloudSummaries(guild) {
+  if (eventRouter.isLocalFirstGuild("member", guild.id)) return null;
+  return Promise.all([
+    syncAnalyticsInventory(guild),
+    syncGuildRegistry(guild),
+  ]);
+}
+
+async function reconcileVoiceAfterMemberRemoval(guild) {
+  return eventRouter.isLocalFirstGuild("voice", guild.id)
+    ? eventRouter.reconcileVoiceGuild(guild)
+    : syncServerVoiceSession(guild);
+}
+
 async function updateMemberCount(guild) {
   if (isGuildBlocked(guild.id)) return;
+  if (eventRouter.isLocalFirstGuild("member", guild.id)) return;
   await sql`
     INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "date")
     VALUES (${guild.id}, ${guild.memberCount}, 0, CURRENT_DATE)
@@ -4413,7 +4498,7 @@ async function syncAnalyticsInventory(guild, { fetchMembers = false } = {}) {
     `;
     analyticsInventorySnapshots.set(guild.id, inventorySnapshot);
   }
-  if (fetchMembers) {
+  if (fetchMembers && !eventRouter.isLocalFirstGuild("member", guild.id)) {
     for (const member of guild.members.cache.values()) {
       await recordGuildMemberEvent(member, "join", "discord_sync");
     }
@@ -4422,6 +4507,7 @@ async function syncAnalyticsInventory(guild, { fetchMembers = false } = {}) {
 
 async function updateVoiceAnalytics(oldState, newState) {
   const guild = newState.guild;
+  if (eventRouter.isLocalFirstGuild("voice", guild.id)) return;
   const member = newState.member ?? oldState.member;
   if (!member || member.user.bot || isGuildBlocked(guild.id)) return;
   if (oldState.channelId) {
@@ -4440,6 +4526,7 @@ async function updateVoiceAnalytics(oldState, newState) {
 }
 
 async function syncCurrentVoiceSessions(guild) {
+  if (eventRouter.isLocalFirstGuild("voice", guild.id)) return;
   await sql`
     UPDATE "voice_session" SET "endedAt" = now()
     WHERE "guildId" = ${guild.id} AND "endedAt" IS NULL
@@ -4682,6 +4769,7 @@ function hasHumanVoiceActivity(guild) {
 // any voice channel. Moving channels or adding members does not split it.
 async function syncServerVoiceSession(guild) {
   if (isGuildBlocked(guild.id)) return;
+  if (eventRouter.isLocalFirstGuild("voice", guild.id)) return;
   if (hasHumanVoiceActivity(guild)) {
     await sql`
       INSERT INTO "voice_server_session" ("guildId")
@@ -4718,6 +4806,22 @@ client.once("clientReady", async () => {
     await Promise.allSettled(
       client.guilds.cache.map((guild) => leaveBlockedGuild(guild, "startup")),
     );
+    const localEventRecovery = await Promise.allSettled(
+      client.guilds.cache.map(async (guild) => {
+        const results = [];
+        if (eventRouter.isLocalFirstGuild("voice", guild.id)) {
+          results.push(await eventRouter.reconcileVoiceGuild(guild));
+        }
+        if (eventRouter.isLocalFirstGuild("member", guild.id)) {
+          results.push(await eventRouter.syncMemberGuild(guild, { fetchMembers: true }));
+        }
+        return results;
+      }),
+    );
+    if (localEventRecovery.some((result) => result.status === "rejected")) {
+      updateRuntimeOperationalMetrics({ lastAnalyticsFailureAt: new Date().toISOString() });
+      console.warn("[Runtime] One or more local Event recovery operations failed.");
+    }
     if (!cloudDatabase.isAvailable()) {
       markCloudFeatureDegraded("legacy_analytics");
       refreshCloudRuntimeStatus();
@@ -4759,6 +4863,14 @@ client.on("guildCreate", (guild) =>
     await Promise.allSettled([
       syncGuildCommands(guild.id),
       loadReactionRoleRules(guild.id),
+    ]);
+    await Promise.allSettled([
+      eventRouter.isLocalFirstGuild("voice", guild.id)
+        ? eventRouter.reconcileVoiceGuild(guild)
+        : Promise.resolve(null),
+      eventRouter.isLocalFirstGuild("member", guild.id)
+        ? eventRouter.syncMemberGuild(guild, { fetchMembers: true })
+        : Promise.resolve(null),
     ]);
     if (!cloudDatabase.isAvailable()) {
       markCloudFeatureDegraded("guild_registry");
@@ -6011,21 +6123,7 @@ client.on("messageReactionAdd", async (reaction, user) => {
   try {
     if (reaction.partial) await reaction.fetch();
     if (reaction.message.partial) await reaction.message.fetch();
-    const guild = reaction.message.guild;
-    const reactor = guild.members.cache.get(user.id) ?? await guild.members.fetch(user.id).catch(() => null);
-    await sql`
-      INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "reactionCount", "date")
-      VALUES (${guild.id}, ${guild.memberCount}, 0, 1, CURRENT_DATE)
-      ON CONFLICT ("guildId", "date")
-      DO UPDATE SET
-        "reactionCount" = "daily_stats"."reactionCount" + 1,
-        "memberCount" = EXCLUDED."memberCount",
-        "updatedAt" = now()
-    `;
-    await sql`
-      INSERT INTO "discord_reaction_event" ("guildId", "channelId", "messageId", "reactorId", "recipientId", "reactorIsBot", "reactorRoleIds", "occurredAt")
-      VALUES (${guild.id}, ${reaction.message.channelId ?? null}, ${reaction.message.id}, ${user.id}, ${reaction.message.author?.id ?? null}, ${user.bot}, ${JSON.stringify(analyticsRoleIds(reactor))}::jsonb, now())
-    `;
+    await eventRouter.reaction(reaction, user, "add");
   } catch (error) {
     logCloudAwareError("reaction_analytics", "Failed to count a Discord reaction", error);
   }
@@ -6035,16 +6133,25 @@ client.on("messageReactionRemove", async (reaction, user) => {
   await applyReactionRoleChange(reaction, user, false).catch((error) =>
     console.error("Failed to remove a reaction role:", error),
   );
+  if (
+    user.bot ||
+    !reaction.message.guild ||
+    isGuildBlocked(reaction.message.guild.id)
+  ) return;
+  try {
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
+    await eventRouter.reaction(reaction, user, "remove");
+  } catch (error) {
+    logCloudAwareError("reaction_analytics", "Failed to remove a Discord reaction", error);
+  }
 });
 
 client.on("voiceStateUpdate", (oldState, newState) => {
   if (oldState.channelId === newState.channelId) return;
   if (isGuildBlocked(newState.guild.id)) return;
-  void updateVoiceAnalytics(oldState, newState).catch((error) =>
+  void eventRouter.voice(oldState, newState).catch((error) =>
     logCloudAwareError("voice_analytics", "Failed to sync member voice analytics", error),
-  );
-  void syncServerVoiceSession(newState.guild).catch((error) =>
-    logCloudAwareError("voice_analytics", "Failed to sync server voice activity", error),
   );
 });
 
@@ -6052,20 +6159,11 @@ client.on(
   "guildMemberAdd",
   (member) => {
     if (isGuildBlocked(member.guild.id)) return;
-    return (
     void Promise.all([
-      updateMemberCount(member.guild),
-      recordActivity({
-        guildId: member.guild.id,
-        type: "member_joined",
-        actorName: member.displayName,
-      }),
-      recordGuildMemberEvent(member, "join"),
-      syncAnalyticsInventory(member.guild),
-      syncGuildRegistry(member.guild),
+      eventRouter.member(member, "join"),
+      syncMemberEventCloudSummaries(member.guild),
     ]).catch((error) =>
       logCloudAwareError("member_analytics", "Failed to sync member join analytics", error),
-    )
     );
   },
 );
@@ -6073,21 +6171,12 @@ client.on(
   "guildMemberRemove",
   (member) => {
     if (isGuildBlocked(member.guild.id)) return;
-    return (
     void Promise.all([
-      updateMemberCount(member.guild),
-      recordActivity({
-        guildId: member.guild.id,
-        type: "member_left",
-        actorName: member.user.username,
-      }),
-      recordGuildMemberEvent(member, "leave"),
-      syncAnalyticsInventory(member.guild),
-      syncGuildRegistry(member.guild),
-      syncServerVoiceSession(member.guild),
+      eventRouter.member(member, "leave"),
+      syncMemberEventCloudSummaries(member.guild),
+      reconcileVoiceAfterMemberRemoval(member.guild),
     ]).catch((error) =>
       logCloudAwareError("member_analytics", "Failed to sync member leave analytics", error),
-    )
     );
   },
 );
@@ -6161,7 +6250,10 @@ client.on("guildMemberUpdate", (before, after) => {
     before.roles.cache.size !== after.roles.cache.size ||
     [...before.roles.cache.keys()].some((roleId) => !after.roles.cache.has(roleId));
   if (!rolesChanged) return;
-  void syncAnalyticsInventory(after.guild).catch((error) =>
+  void eventRouter.member(after, "update", before).catch((error) =>
+    logCloudAwareError("member_analytics", "Failed to record member role update", error),
+  );
+  void syncMemberEventCloudSummaries(after.guild).catch((error) =>
     logCloudAwareError("guild_inventory", "Failed to refresh role analytics after member update", error),
   );
   if (after.id === client.user?.id) {

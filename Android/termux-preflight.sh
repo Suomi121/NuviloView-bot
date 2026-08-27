@@ -128,6 +128,8 @@ snapshot_enabled="$(nv_get_env_value "$ENV_FILE" SYNC_SNAPSHOT_ENABLED)"
 history_import_enabled="$(nv_get_env_value "$ENV_FILE" MESSAGE_HISTORY_IMPORT_V2_ENABLED)"
 history_sqlite_first_enabled="$(nv_get_env_value "$ENV_FILE" MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_ENABLED)"
 history_sqlite_first_guilds="$(nv_get_env_value "$ENV_FILE" MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_GUILD_IDS)"
+event_local_first_enabled="$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_ENABLED)"
+event_local_first_guilds="$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_GUILD_IDS)"
 
 if nv_env_enabled "$message_local_enabled" &&
   { ! nv_env_enabled "$local_enabled" || ! nv_env_enabled "$local_write_enabled"; }; then
@@ -183,6 +185,27 @@ if nv_env_enabled "$history_import_enabled"; then
   add_detail "message_history_import=sqlite_first_v3"
 else
   add_detail "message_history_import=disabled"
+fi
+if nv_env_enabled "$event_local_first_enabled"; then
+  nv_env_enabled "$local_enabled" || add_fail "event_local_first_requires_local_storage"
+  nv_env_enabled "$local_write_enabled" || add_fail "event_local_first_requires_local_writes"
+  nv_env_enabled "$compaction_enabled" || add_fail "event_local_first_requires_analytics_compaction"
+  [[ -n "$event_local_first_guilds" ]] || add_fail "event_local_first_guild_list_empty"
+  IFS=',' read -r -a event_guild_list <<< "$event_local_first_guilds"
+  for configured_guild in "${event_guild_list[@]}"; do
+    configured_guild="$(nv_trim_value "$configured_guild")"
+    [[ "$configured_guild" =~ ^[0-9]{16,22}$ ]] || {
+      add_fail "event_local_first_guild_id_invalid"
+      continue
+    }
+    case ",${compaction_guilds//[[:space:]]/}," in
+      *",$configured_guild,"*) ;;
+      *) add_fail "event_local_first_guild_not_compaction_canary" ;;
+    esac
+  done
+  add_detail "event_local_first=reaction_voice_member_v1"
+else
+  add_detail "event_local_first=disabled"
 fi
 if nv_env_enabled "$worker_enabled"; then
   # Worker-only configuration errors must not prevent an otherwise safe Bot

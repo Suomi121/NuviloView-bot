@@ -89,12 +89,16 @@ test("SQLite initialization applies the versioned schema exactly once", (t) => {
     "history_import_local_channel",
     "history_import_local_batch",
     "history_import_local_deletion",
+    "local_reaction_state",
+    "local_voice_session",
+    "local_member_state",
+    "local_member_guild_state",
   ]) {
     assert.equal(tables.has(table), true, table);
   }
   assert.equal(
     database.prepare("SELECT COUNT(*) AS count FROM migration_history").get().count,
-    6,
+    7,
   );
   database.close();
 });
@@ -106,7 +110,7 @@ test("WAL, foreign keys, busy timeout, and integrity health are enabled", (t) =>
   assert.equal(status.journalMode, "wal");
   assert.equal(status.foreignKeys, true);
   assert.equal(status.busyTimeoutMs, 5_000);
-  assert.equal(status.schemaVersion, 6);
+  assert.equal(status.schemaVersion, 7);
   assert.equal(status.integrity.ok, true);
 });
 

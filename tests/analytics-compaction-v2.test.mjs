@@ -285,7 +285,7 @@ test("dirty state survives restart and transient Cloud failure catches up withou
   });
   assert.equal(service.refreshDue({ at }).changed, 4);
   assert.equal(
-    storage.syncMetadata.get(`analytics_compaction_bootstrap_v2:${guildId}`).state,
+    storage.syncMetadata.get(`analytics_compaction_bootstrap_v3:${guildId}`).state,
     "complete",
   );
   storage.close();

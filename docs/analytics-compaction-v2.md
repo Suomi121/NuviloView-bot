@@ -14,9 +14,9 @@ only IDs listed in `ANALYTICS_COMPACTION_GUILD_IDS` are eligible.
 | --- | --- | --- |
 | Message Local-First create/update/delete | Raw event | SQLite only for enabled Canary Guilds |
 | Message active-member observation | Raw/derived event | SQLite only for enabled Canary Guilds |
-| Reaction analytics event | Legacy direct Cloud write | Out of scope for the prohibited full Reaction Local-First migration |
-| Voice session event | Legacy direct Cloud write | Out of scope for the prohibited full Voice Local-First migration |
-| Member lifecycle event | Legacy direct Cloud write | Out of scope for the prohibited full Member Local-First migration |
+| Reaction analytics event | Raw event | SQLite-only for Event Local-First Guilds; projected as counts, unique reactors, reacted messages, and bounded top reactions |
+| Voice session event | Raw event/state | SQLite-only for Event Local-First Guilds; projected as seconds/minutes, sessions, unique members, concurrency, and bounded channel totals |
+| Member lifecycle event | Raw event/state | SQLite-only for Event Local-First Guilds; projected as joins, leaves, delta, and the observed current count |
 | `local_message_daily_stats` and active-member rows | Local summary | Source for projections; not copied directly |
 | `analytics_snapshot` | Snapshot | Provider UPSERT only when the semantic checksum changes |
 | Guild/runtime/sync status snapshots | Snapshot/control | Existing bounded snapshot path retained |
@@ -32,9 +32,11 @@ projection table. Its `aggregate_id` identifies one of these bounded buckets:
 - `v2:guild:{guildId}:channel:{channelId}:daily:{YYYY-MM-DD}`
 - `v2:guild:{guildId}:user:{userId}:daily:{YYYY-MM-DD}`
 
-Each payload contains counts and timestamps only. Raw message content is never
-included. Supabase and Turso receive the same semantic checksum and version;
-Neon remains optional compatibility storage.
+Projection payload schema v3 extends the original Message projection with
+Reaction, Voice, and Member summaries. Each payload contains bounded counts,
+identifiers, and timestamps only. Raw message content and raw Discord events
+are never included. Supabase and Turso receive the same semantic checksum and
+version; Neon remains optional compatibility storage.
 
 ## Scheduling and Web refresh
 

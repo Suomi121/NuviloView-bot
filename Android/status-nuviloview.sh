@@ -58,6 +58,30 @@ else
   printf 'Message History Import: DISABLED\n'
 fi
 
+if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_ENABLED)"; then
+  event_guilds="$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_GUILD_IDS)"
+  event_reaction_enabled="$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_REACTION_ENABLED)"
+  event_voice_enabled="$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_VOICE_ENABLED)"
+  event_member_enabled="$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_MEMBER_ENABLED)"
+  [[ -n "$event_reaction_enabled" ]] || event_reaction_enabled=true
+  [[ -n "$event_voice_enabled" ]] || event_voice_enabled=true
+  [[ -n "$event_member_enabled" ]] || event_member_enabled=true
+  event_guild_count=0
+  if [[ -n "$event_guilds" ]]; then
+    IFS=',' read -r -a event_guild_list <<< "$event_guilds"
+    for configured_guild in "${event_guild_list[@]}"; do
+      [[ -n "$(nv_trim_value "$configured_guild")" ]] && event_guild_count=$((event_guild_count + 1))
+    done
+  fi
+  printf 'Event Local-First: ENABLED (%s Guilds; Reaction=%s Voice=%s Member=%s)\n' \
+    "$event_guild_count" \
+    "$event_reaction_enabled" \
+    "$event_voice_enabled" \
+    "$event_member_enabled"
+else
+  printf 'Event Local-First: DISABLED\n'
+fi
+
 if [[ -f "$NEON_RUNTIME_STATUS_PATH" ]] && command -v node >/dev/null 2>&1; then
   node -e '
     const fs = require("fs");

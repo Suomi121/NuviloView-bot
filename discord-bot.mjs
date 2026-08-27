@@ -237,8 +237,33 @@ const commandSyncAttempts = new Map();
 const botServersAttempts = new Map();
 const guildCommandSyncAttempts = new Map();
 const blockedGuildIds = new Set();
-const messageHistoryImportRepository = createMessageHistoryImportRepository((text, parameters) =>
-  sql.query(text, parameters),
+if (messageImportConfig.enabled) {
+  const invalidHistoryGuilds = messageImportConfig.sqliteFirstGuildIds.filter(
+    (guildId) =>
+      !messageRouter.config.canaryGuildIds.includes(guildId) ||
+      !messageRouter.compaction.isEnabledForGuild(guildId),
+  );
+  if (
+    !messageImportConfig.sqliteFirstEnabled ||
+    messageImportConfig.sqliteFirstGuildIds.length === 0 ||
+    !messageStorage.enabled ||
+    !messageStorage.writeEnabled ||
+    invalidHistoryGuilds.length > 0
+  ) {
+    const error = new Error(
+      "Message History Import v3 requires writable SQLite, Message Local-First, and Analytics Compaction for every configured Guild.",
+    );
+    error.code = "HISTORY_IMPORT_SQLITE_FIRST_UNSAFE_CONFIGURATION";
+    throw error;
+  }
+}
+const messageHistoryImportRepository = createMessageHistoryImportRepository(
+  (text, parameters) => sql.query(text, parameters),
+  {
+    storage: messageStorage,
+    config: messageImportConfig,
+    logger: console,
+  },
 );
 const messageHistoryImportWorker = createMessageHistoryImportWorker({
   repository: messageHistoryImportRepository,
@@ -4627,137 +4652,13 @@ async function purgeExpiredMessages() {
   return 1;
 }
 
-const historyImportDelayMs = 250;
-
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function updateLegacyHistoryImportJob(id, fields) {
-  await sql`
-    UPDATE "history_import_job"
-    SET "processedMessages" = ${fields.processedMessages}, "failedChannels" = ${fields.failedChannels}
-    WHERE "id" = ${id}
-  `;
-}
-
-async function claimLegacyHistoryImportJob() {
-  const jobs = await sql`
-    WITH candidate AS (
-      SELECT "id"
-      FROM "history_import_job"
-      WHERE "status" = 'queued'
-      ORDER BY "requestedAt" ASC
-      FOR UPDATE SKIP LOCKED
-      LIMIT 1
-    )
-    UPDATE "history_import_job" AS job
-    SET "status" = 'running', "startedAt" = now(), "error" = NULL
-    FROM candidate
-    WHERE job."id" = candidate."id"
-    RETURNING job."id", job."guildId", job."days", job."mode"
-  `;
-  return jobs[0] ?? null;
-}
-
-// Discord only exposes historical messages per channel. Voice-state events are
-// deliberately not reconstructed here: they are accurate only from Bot uptime.
-async function processLegacyHistoryImportJob(job) {
-  let processedMessages = 0;
-  let failedChannels = 0;
-  try {
-    if (isGuildBlocked(job.guildId)) {
-      await sql`DELETE FROM "history_import_job" WHERE "id" = ${job.id}`;
-      return;
-    }
-    const guild =
-      client.guilds.cache.get(job.guildId) ??
-      (await client.guilds.fetch(job.guildId));
-    if (!guild) throw new Error("Bot is not available in this server.");
-    // A zero-day job means every message Discord still makes available.
-    const cutoff = job.days === 0
-      ? new Date(0)
-      : new Date(Date.now() - job.days * 24 * 60 * 60 * 1000);
-    const channels = await guild.channels.fetch();
-    const textChannels = [...channels.values()].filter(
-      (channel) => channel?.isTextBased?.() && "messages" in channel,
-    );
-
-    const workerCount =
-      job.mode === "developer" ? Math.min(3, textChannels.length) : 1;
-    let nextChannelIndex = 0;
-    const importChannel = async (channel) => {
-      try {
-        let before;
-        let reachedCutoff = false;
-        while (!reachedCutoff) {
-          if (isGuildBlocked(job.guildId)) return;
-          const messages = await channel.messages.fetch({
-            limit: 100,
-            ...(before ? { before } : {}),
-          });
-          if (messages.size === 0) break;
-          for (const message of messages.values()) {
-            if (message.createdAt < cutoff) {
-              reachedCutoff = true;
-              break;
-            }
-            if (!message.author.bot && message.content.trim()) {
-              await storeMessage(message);
-              processedMessages += 1;
-            }
-          }
-          before = messages.last()?.id;
-          await updateLegacyHistoryImportJob(job.id, {
-            processedMessages,
-            failedChannels,
-          });
-          if (!before || messages.size < 100) break;
-          await delay(historyImportDelayMs);
-        }
-      } catch (error) {
-        failedChannels += 1;
-        console.warn(
-          `History import skipped channel ${channel?.id ?? "unknown"}:`,
-          error.message,
-        );
-        await updateLegacyHistoryImportJob(job.id, {
-          processedMessages,
-          failedChannels,
-        });
-      }
-    };
-    const worker = async () => {
-      while (nextChannelIndex < textChannels.length) {
-        const channel = textChannels[nextChannelIndex];
-        nextChannelIndex += 1;
-        await importChannel(channel);
-      }
-    };
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    await sql`
-      UPDATE "history_import_job"
-      SET "status" = 'completed', "processedMessages" = ${processedMessages}, "failedChannels" = ${failedChannels}, "completedAt" = now()
-      WHERE "id" = ${job.id}
-    `;
-  } catch (error) {
-    console.error("History import failed:", error);
-    await sql`
-      UPDATE "history_import_job"
-      SET "status" = 'failed', "processedMessages" = ${processedMessages}, "failedChannels" = ${failedChannels}, "completedAt" = now(), "error" = ${String(error.message ?? "Unknown error").slice(0, 500)}
-      WHERE "id" = ${job.id}
-    `;
-  }
-}
-
-async function pollLegacyHistoryImportJobs() {
-  const job = await claimLegacyHistoryImportJob();
-  if (job) await processLegacyHistoryImportJob(job);
-}
-
 async function pollHistoryImportJobs() {
-  if (messageImportConfig.enabled) return messageHistoryImportWorker.poll();
-  return pollLegacyHistoryImportJobs();
+  if (!messageImportConfig.enabled) return null;
+  return messageHistoryImportWorker.poll();
 }
 
 let guildResetRequestPolling = false;

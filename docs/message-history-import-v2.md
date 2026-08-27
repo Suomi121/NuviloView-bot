@@ -1,79 +1,124 @@
-# Message History Import v2
+# Message History Import SQLite-First v3
 
-Message History Import v2 is a durable, Guild-scoped Discord message backfill. The dashboard creates and controls a database Job; the persistent Discord Bot fetches one channel at a time and commits each Discord page together with its checkpoint. A Web request never performs the long-running import.
+Message History Import v3 is a Guild-scoped Discord message backfill whose raw
+source of truth is the Bot host's SQLite database. The dashboard keeps only the
+bounded control metadata needed to request and observe work. A Web request never
+performs the long-running import and History Import never inserts raw messages
+into Cloud `discord_message`.
 
 The feature is staged off by default:
 
 ```env
 MESSAGE_HISTORY_IMPORT_V2_ENABLED=false
+MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_ENABLED=false
+MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_GUILD_IDS=
 MESSAGE_HISTORY_IMPORT_STALL_SECONDS=120
 MESSAGE_HISTORY_IMPORT_MAX_RETRIES=5
 MESSAGE_HISTORY_IMPORT_MAX_PAGES_PER_CHANNEL=50000
 ```
 
-The same `MESSAGE_HISTORY_IMPORT_V2_ENABLED` value must be used by the Web and Bot only after the additive migration is applied. The v2 Worker processes only `version = 2` Jobs. While the flag is off, the existing importer remains compatible with the old schema.
+Despite the retained compatibility flag name, newly created Jobs use schema
+version 3. Enabling it requires writable local storage, Message Local-First, and
+Analytics Compaction for every Guild listed in
+`MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_GUILD_IDS`. Startup and Termux preflight
+reject an unsafe combination.
 
-## State and control contract
+## Data flow and transaction boundary
 
-Job states are `queued`, `preparing`, `running`, `pausing`, `paused`, `cancelling`, `cancelled`, `completed`, `failed`, and `stalled`. A partial unique index permits only one active Job per Guild.
+For every Discord page (up to 100 messages), one SQLite transaction performs:
 
-- Pause and Cancel set durable request flags. The Worker acts only before or after a fetch/save batch; it never kills the Bot process.
-- Resume changes a paused or stalled Job back to queued and preserves the last committed `before` message checkpoint.
-- Retry changes only a failed channel back to pending.
-- Skip changes only the selected channel. A running channel is skipped at the next batch boundary.
-- Restart recovery changes a Job with a stale progress/heartbeat timestamp to `stalled`; it does not delete or silently restart it.
+1. stable message-create insert or duplicate classification;
+2. provenance and live-priority enforcement;
+3. local projection dirty tracking;
+4. channel checkpoint and counters update;
+5. Job counters update;
+6. stable batch receipt insert.
 
-Each page uses Discord's maximum 100-message fetch. Fetching is sequential and relies on discord.js for Discord rate limits. Retryable Discord/network/database errors use bounded delays of 1, 5, 15, 30, and 60 seconds. Permission failures are not retried indefinitely. Pagination has a configurable hard page ceiling.
+The receipt key combines Job, channel progress, and the requested `before`
+Snowflake. Replaying a page after a crash returns the existing receipt, so the
+checkpoint can be repaired without increasing counts twice.
 
-## Data and privacy
+Raw content remains in `message_event_log` / `message_events`. Cloud replicas
+receive only deterministic Current, Guild Daily, Channel Daily, and User Daily
+Analytics snapshots when their semantic checksum changes. Projection payloads
+do not contain message content.
 
-`discord_message.id` remains the stable Discord Snowflake primary key. History inserts use `ON CONFLICT DO NOTHING`; duplicate messages are counted rather than rewritten. A later live Gateway event for the same message changes its provenance to `live`, ensuring live data cannot be selected by history-data deletion.
+## Control plane
 
-Provenance values are:
+PostgreSQL `history_import_job`, `history_import_channel_progress`, and
+count-only audit rows remain the minimal Web control plane for Start, Pause,
+Resume, Cancel, Retry, Skip, Reset, and history-deletion requests. SQLite keeps
+the authoritative local Job state, per-channel checkpoint, retry state,
+heartbeat, batch receipts, and raw rows.
 
-- `existing`: rows created before provenance could be known safely;
-- `live`: realtime Gateway collection;
-- `history_import`: v2 history import.
+A Cloud metadata write that fails after the SQLite commit is logged as deferred;
+it does not discard or re-send raw data to Cloud. A resumed Job may fetch a page
+again, but the stable local receipt makes that replay idempotent.
 
-Message content was already stored by NuviloView for message search. v2 does not add content to Job, checkpoint, audit, diagnostic, or application logs. Those records contain only IDs, counters, timestamps, lifecycle events, host identity, and safe error codes. Tokens, database URLs, authorization headers, raw Discord responses, and message content are excluded.
+## Provenance and duplicate rules
 
-Health Score formulas are unchanged. When the feature flag is enabled, Analytics exposes live/existing/history-import message counts and the imported share as Data Quality evidence so later calibration can decide how to treat historical activity.
+The local source rank is:
 
-## Reset safety
+- `history_import` (0)
+- `existing` (1)
+- `live` (2)
 
-`Reset import state` clears the selected Job's checkpoints, counters, flags, and safe errors. It does not delete `discord_message` or any other Analytics table. A running/preparing/pausing/cancelling Job must be cancelled first.
+Discord message ID is the stable identity. An imported message already present
+as `existing` or `live` is counted as a duplicate and does not overwrite it. A
+later live create for an imported row promotes its event/current row to `live`,
+clears the import Job ID, and does not increment Analytics counts again.
 
-`Delete imported history data` is a separate Danger Zone action. It requires:
+Fetched, eligible, inserted, and duplicate counters remain distinct. Analytics
+counts only newly inserted create events.
 
-1. signed-in server-side Guild management authorization;
-2. trusted Origin, bounded JSON body, and rate limiting;
-3. no active Job for that Guild;
-4. the exact phrase `RESET IMPORTED DATA`;
-5. `guildId = requested Guild` and `source = 'history_import'` in the deletion predicate.
+## State, retry, and restart
 
-Rows marked `live` or `existing`, Job history, and other Guilds are not selected. The UI previews the affected row count before confirmation.
+Job states remain `queued`, `preparing`, `running`, `pausing`, `paused`,
+`cancelling`, `cancelled`, `completed`, `failed`, and `stalled`.
 
-## Authorization and diagnostics
+- Pause and Cancel are honored only at batch boundaries.
+- Resume preserves the SQLite checkpoint and resets the Cloud channel for safe
+  replay.
+- Retry targets only a failed channel.
+- Discord/network failures use bounded retry and do not create Cloud raw writes.
+- SQLite Job, checkpoint, duplicate counters, dirty state, and receipts survive
+  graceful close and reopen.
 
-GET, Start, Pause, Resume, Cancel, Reset, Retry, Skip, and Delete all repeat authentication and Guild authorization in the API. Job and channel SQL predicates bind both the Job ID and Guild ID, preventing cross-Guild reuse.
+## Imported-history deletion
 
-The dashboard reports actual channels completed/total, fetched, inserted, duplicate and failed counts, current channel, messages per second, Worker heartbeat, last Discord response, last database write, and last progress. It does not invent a message total or ETA.
+The API requires signed-in Guild authorization, trusted origin, rate limiting,
+no active Job, and the exact phrase `RESET IMPORTED DATA`. It queues a control
+request; the Bot executes an atomic local deletion where both conditions match:
 
-## Retention
+```text
+guild_id = requested Guild
+source = history_import
+```
 
-Terminal Jobs (`cancelled`, `completed`, `failed`) and their cascading channel checkpoints are eligible for bounded cleanup after 90 days. Count-only import audit events are also eligible after 90 days. Active, paused, and stalled Jobs are excluded. Cleanup remains dry-run by default and is never invoked by application startup.
+`live` and `existing` rows are not selected. A previously promoted live row is
+therefore preserved. Derived local message state is rebuilt, affected Analytics
+buckets are marked dirty, and only compacted summaries are updated in Cloud.
+The deletion request ID is stored locally so replay is idempotent.
+
+## Privacy and logging
+
+Message content is not stored in Job, checkpoint, batch receipt, audit,
+diagnostic, or application logs. These contain IDs, counters, timestamps,
+lifecycle state, host identity, and safe error codes only. Tokens, database
+URLs, authorization headers, and raw Discord responses must not be logged.
 
 ## Rollout and rollback
 
-1. Keep the flag false on every host.
-2. Validate and apply `20260821-message-history-import-v2.sql` in a separately approved maintenance step.
-3. Confirm migration journal/drift and take a verified backup.
-4. Deploy the compatible Web and Bot code with the flag still false.
-5. Enable v2 for a developer/test Guild environment, then one Guild, then several Guilds.
-6. Verify Start, checkpoint, Pause, Resume, Cancel, stalled recovery, history-only deletion, and live-data protection against real Discord data before general availability.
+1. Deploy code with both History flags false.
+2. Confirm local migration 6, SQLite WAL/quick-check, Message Local-First, and
+   Analytics Compaction for one Canary Guild.
+3. Add only that Guild to the SQLite-first Guild list, then enable the two
+   History flags on the Bot/Web control plane.
+4. Rehearse small import, Pause/Resume, restart, duplicate handling, projection
+   checksums, and history-only deletion.
+5. Expand the Guild list only after Pending/Retry/DLQ return to zero.
 
-Application rollback starts by setting the flag false on both Web and Bot and restoring the previous application build. The additive columns, tables, and indexes can remain in place. Do not roll back by dropping tables or deleting migration journal records.
-
-## Current release condition
-
-Local tests, type checking, lint, build, migration validation, and secret scanning can verify the implementation contract. A real Discord API import and an isolated migrated PostgreSQL integration rehearsal are still required before this feature can be marked generally ready.
+Rollback sets `MESSAGE_HISTORY_IMPORT_V2_ENABLED=false` and
+`MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_ENABLED=false`. Existing SQLite rows and
+the additive local schema stay intact. Do not enable the removed PostgreSQL raw
+write path and do not dual-write.

@@ -28,13 +28,21 @@ test("state reset removes checkpoints but does not delete Analytics messages", (
   assert.doesNotMatch(resetBlock, /DELETE FROM "discord_message"/);
 });
 
-test("dangerous deletion is Guild-scoped and can only remove history_import rows", () => {
+test("dangerous deletion queues a Guild-scoped local deletion request without raw Cloud DELETE", () => {
   const deleteHandler = route.slice(route.indexOf("export async function DELETE"));
   assert.match(deleteHandler, /parseImportedDataDeletion/);
   assert.match(deleteHandler, /Cancel the active import before deleting imported history data/);
-  assert.match(deleteHandler, /WHERE "guildId" = \$1 AND "source" = 'history_import'/);
-  assert.doesNotMatch(deleteHandler, /"source" = 'live'/);
+  assert.match(deleteHandler, /IMPORTED_HISTORY_DATA_DELETE_REQUESTED/);
+  assert.match(deleteHandler, /requestId/);
+  assert.doesNotMatch(deleteHandler, /DELETE FROM "discord_message"/);
   assert.doesNotMatch(deleteHandler, /DELETE FROM "history_import_job"/);
+});
+
+test("SQLite-first enablement is enforced per Guild for read, mutation, and deletion", () => {
+  assert.match(route, /messageImportConfig\.sqliteFirstEnabled/);
+  assert.match(route, /messageImportConfig\.isSqliteFirstGuild\(guildId\)/);
+  assert.match(route, /messageImportConfig\.isSqliteFirstGuild\(input\.guildId\)/);
+  assert.match(route, /messageImportConfig\.isSqliteFirstGuild\(deletion\.guildId\)/);
 });
 
 test("API responses expose safe errors but never legacy raw errors in v2 selection", () => {

@@ -60,6 +60,9 @@ test("Preflight defines PASS, WARN, FAIL and local safety gates", () => {
     "FAIL",
     "node_sqlite_unavailable",
     "message_local_first_requires_writable_local_storage",
+    "history_import_requires_sqlite_first",
+    "history_import_guild_not_message_canary",
+    "history_import_guild_not_compaction_canary",
     "disk_free_critical",
     "network_route_unavailable",
     "neon=not_configured_bot_will_start_degraded",
@@ -77,6 +80,7 @@ test("Stop and status cover both processes without exposing env values", () => {
   assert.match(sources["status-nuviloview.sh"], /Runtime Mode:/);
   assert.match(sources["status-nuviloview.sh"], /Neon:/);
   assert.match(sources["status-nuviloview.sh"], /Cross-Host Leadership:/);
+  assert.match(sources["status-nuviloview.sh"], /Message History Import:/);
   assert.match(sources["status-nuviloview.sh"], /state_suffix/);
   assert.doesNotMatch(sources["status-nuviloview.sh"], /PID %s%s[^\n]*\$pid[^\n]*\$state"/);
   assert.doesNotMatch(sources["status-nuviloview.sh"], /printf[^\n]*(DATABASE_URL|BOT_TOKEN)/);

@@ -16,8 +16,22 @@ import {
   withBoundedImportRetry,
 } from "../lib/message-history-import.mjs";
 
-test("v2 is feature flagged off by default with bounded configuration", () => {
-  assert.deepEqual(getMessageImportConfig({}), { enabled: false, maxRetries: 5, stallSeconds: 120, batchSize: 100, maxPagesPerChannel: 50_000 });
+test("v3 is feature flagged off by default with bounded SQLite-first configuration", () => {
+  const defaults = getMessageImportConfig({});
+  assert.equal(defaults.enabled, false);
+  assert.equal(defaults.sqliteFirstEnabled, false);
+  assert.deepEqual(defaults.sqliteFirstGuildIds, []);
+  assert.equal(defaults.isSqliteFirstGuild("123456789012345678"), false);
+  assert.equal(defaults.maxRetries, 5);
+  assert.equal(defaults.stallSeconds, 120);
+  assert.equal(defaults.batchSize, 100);
+  assert.equal(defaults.maxPagesPerChannel, 50_000);
+  const enabled = getMessageImportConfig({
+    MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_ENABLED: "true",
+    MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_GUILD_IDS: "123456789012345678, 123456789012345678",
+  });
+  assert.deepEqual(enabled.sqliteFirstGuildIds, ["123456789012345678"]);
+  assert.equal(enabled.isSqliteFirstGuild("123456789012345678"), true);
   assert.equal(getMessageImportConfig({ MESSAGE_HISTORY_IMPORT_MAX_RETRIES: "99", MESSAGE_HISTORY_IMPORT_STALL_SECONDS: "1" }).maxRetries, 8);
   assert.equal(getMessageImportConfig({ MESSAGE_HISTORY_IMPORT_MAX_RETRIES: "99", MESSAGE_HISTORY_IMPORT_STALL_SECONDS: "1" }).stallSeconds, 60);
 });

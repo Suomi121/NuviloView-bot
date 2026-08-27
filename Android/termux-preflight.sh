@@ -125,6 +125,9 @@ multi_db_enabled="$(nv_get_env_value "$ENV_FILE" MULTI_DB_SYNC_ENABLED)"
 compaction_enabled="$(nv_get_env_value "$ENV_FILE" ANALYTICS_COMPACTION_ENABLED)"
 compaction_guilds="$(nv_get_env_value "$ENV_FILE" ANALYTICS_COMPACTION_GUILD_IDS)"
 snapshot_enabled="$(nv_get_env_value "$ENV_FILE" SYNC_SNAPSHOT_ENABLED)"
+history_import_enabled="$(nv_get_env_value "$ENV_FILE" MESSAGE_HISTORY_IMPORT_V2_ENABLED)"
+history_sqlite_first_enabled="$(nv_get_env_value "$ENV_FILE" MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_ENABLED)"
+history_sqlite_first_guilds="$(nv_get_env_value "$ENV_FILE" MESSAGE_HISTORY_IMPORT_SQLITE_FIRST_GUILD_IDS)"
 
 if nv_env_enabled "$message_local_enabled" &&
   { ! nv_env_enabled "$local_enabled" || ! nv_env_enabled "$local_write_enabled"; }; then
@@ -152,6 +155,34 @@ if nv_env_enabled "$compaction_enabled"; then
     esac
   done
   add_detail "analytics_compaction=canary_projection_v2"
+fi
+
+if nv_env_enabled "$history_import_enabled"; then
+  nv_env_enabled "$history_sqlite_first_enabled" || add_fail "history_import_requires_sqlite_first"
+  nv_env_enabled "$local_enabled" || add_fail "history_import_requires_local_storage"
+  nv_env_enabled "$local_write_enabled" || add_fail "history_import_requires_local_writes"
+  nv_env_enabled "$message_local_enabled" || add_fail "history_import_requires_message_local_first"
+  nv_env_enabled "$compaction_enabled" || add_fail "history_import_requires_analytics_compaction"
+  [[ -n "$history_sqlite_first_guilds" ]] || add_fail "history_import_sqlite_first_guild_list_empty"
+  IFS=',' read -r -a history_guild_list <<< "$history_sqlite_first_guilds"
+  for configured_guild in "${history_guild_list[@]}"; do
+    configured_guild="$(nv_trim_value "$configured_guild")"
+    [[ "$configured_guild" =~ ^[0-9]{16,22}$ ]] || {
+      add_fail "history_import_guild_id_invalid"
+      continue
+    }
+    case ",${message_canary_guilds//[[:space:]]/}," in
+      *",$configured_guild,"*) ;;
+      *) add_fail "history_import_guild_not_message_canary" ;;
+    esac
+    case ",${compaction_guilds//[[:space:]]/}," in
+      *",$configured_guild,"*) ;;
+      *) add_fail "history_import_guild_not_compaction_canary" ;;
+    esac
+  done
+  add_detail "message_history_import=sqlite_first_v3"
+else
+  add_detail "message_history_import=disabled"
 fi
 if nv_env_enabled "$worker_enabled"; then
   # Worker-only configuration errors must not prevent an otherwise safe Bot

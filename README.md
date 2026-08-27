@@ -1,11 +1,13 @@
 # NuviloView:OEM
 
-## Message History Import v2
+## Message History Import SQLite-First v3
 
-Message History Import v2 adds durable per-channel checkpoints, real progress,
-Pause/Resume/Cancel, stalled recovery, bounded retries, source-aware deletion,
-diagnostics, and Guild-scoped server-side controls. It remains disabled by
-default until its additive migration and test-Guild rehearsal are approved.
+Message History Import v3 stores Discord history and its durable checkpoint in
+SQLite first. Raw message content stays local; existing Analytics Compaction
+projections are the only History-derived data sent to Cloud replicas. The Web
+retains only the bounded Job control metadata required for Start, Pause, Resume,
+Cancel, Retry, Skip, Reset, and deletion requests. It remains disabled by
+default and is explicitly limited to configured Canary Guilds.
 See [docs/message-history-import-v2.md](docs/message-history-import-v2.md) for
 the state model, privacy contract, retention, rollout, and rollback steps.
 
@@ -27,7 +29,7 @@ SQLiteをBot側の唯一のSource of Truthとして維持し、SupabaseとTurso�
 明示したCanary Guildでは、Message Raw EventをSQLiteだけに保持し、15分周期の
 Current / Daily / Channel Daily / User Daily ProjectionだけをSupabase・Tursoへ
 同期できます。既定値はOFFです。送信削減指標、Web countdown、History Importの
-既知blockerは[Analytics Compaction v2](docs/analytics-compaction-v2.md)を参照してください。
+SQLite-first統合は[Analytics Compaction v2](docs/analytics-compaction-v2.md)を参照してください。
 
 This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
 

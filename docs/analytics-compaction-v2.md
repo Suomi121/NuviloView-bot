@@ -21,8 +21,8 @@ only IDs listed in `ANALYTICS_COMPACTION_GUILD_IDS` are eligible.
 | `analytics_snapshot` | Snapshot | Provider UPSERT only when the semantic checksum changes |
 | Guild/runtime/sync status snapshots | Snapshot/control | Existing bounded snapshot path retained |
 | Discord OAuth, Web sessions, user settings | Control/Auth | Unchanged; Supabase Web Auth remains separate |
-| Message History Import v2 job/control tables | Control | Existing PostgreSQL control path retained |
-| Message History Import v2 `discord_message` batch INSERT | Legacy direct raw Cloud write | Follow-up blocker described below |
+| Message History Import v3 job/control tables | Control | Minimal PostgreSQL control path retained for Web actions |
+| Message History Import v3 raw messages/checkpoints | Local raw/control | SQLite transaction; never sent as Cloud raw rows |
 
 The Cloud `analytics_snapshot` table is reused as the provider-neutral
 projection table. Its `aggregate_id` identifies one of these bounded buckets:
@@ -51,19 +51,17 @@ SQLite tracks `raw_events_seen`, `snapshots_built`, `snapshots_changed`,
 write-reduction ratio. These counters are operational telemetry and contain no
 message content.
 
-## Follow-up blocker: Message History Import
+## Message History Import SQLite-first integration
 
-`lib/message-history-import-worker.mjs` still performs a batched direct INSERT
-into PostgreSQL `discord_message`. Moving that job safely requires preserving
-pause/resume/cancel checkpoints, duplicate counts, imported-data deletion, and
-the existing Web search contract. It is intentionally isolated from this
-runtime change and must be the first follow-up phase:
+`lib/message-history-import-worker.mjs` sends each Discord page to the local
+History repository. One SQLite transaction records the raw rows, provenance,
+duplicate count, channel checkpoint, and Job counters. Newly inserted rows mark
+the same bounded projection buckets dirty; no `discord_message` raw INSERT is
+performed by History Import.
 
-1. write imported messages to SQLite `message_event_log` transactionally;
-2. persist the import checkpoint independently from raw message storage;
-3. mark the same projection buckets dirty;
-4. keep only explicit recent-message/search data in Cloud, with retention;
-5. migrate deletion and reconciliation tests before removing the legacy INSERT.
-
-Until that phase is complete, operators must treat History Import as a legacy
-raw-Cloud path. Analytics Compaction v2 does not silently claim otherwise.
+The Web-facing PostgreSQL tables remain a small control plane because Vercel
+cannot open the Bot host's SQLite file. Cloud metadata failure never rolls back
+a completed local batch: its stable batch receipt lets a replay repair the
+control-plane checkpoint without duplicating the message or count. Imported
+data deletion is queued through the control plane and executed locally with a
+Guild-plus-`history_import` predicate. Rows promoted to `live` are preserved.

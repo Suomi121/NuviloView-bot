@@ -353,7 +353,7 @@ test("Cloud writes scale with bounded buckets, not with 100/1000/10000 raw rows"
   }
 });
 
-test("History Import direct Cloud write is an explicit follow-up blocker", () => {
+test("History Import is integrated with SQLite-first compaction without raw Cloud writes", () => {
   const worker = readFileSync(
     new URL("../lib/message-history-import-worker.mjs", import.meta.url),
     "utf8",
@@ -362,9 +362,10 @@ test("History Import direct Cloud write is an explicit follow-up blocker", () =>
     new URL("../docs/analytics-compaction-v2.md", import.meta.url),
     "utf8",
   );
-  assert.match(worker, /INSERT INTO "discord_message"/);
-  assert.match(documentation, /Follow-up blocker: Message History Import/);
-  assert.match(documentation, /legacy\s+raw-Cloud path/);
+  assert.match(worker, /requireLocal\(guildId\)\.saveBatch/);
+  assert.doesNotMatch(worker, /INSERT INTO "discord_message"/);
+  assert.doesNotMatch(documentation, /Follow-up blocker: Message History Import/);
+  assert.match(documentation, /SQLite-first/i);
 });
 
 test("Web analytics refresh uses one-shot scheduling instead of minute polling", () => {

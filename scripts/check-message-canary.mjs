@@ -15,6 +15,10 @@ import {
   getLocalStorageConfig,
 } from "../lib/storage/index.mjs";
 import {
+  analyticsCurrentProjectionKey,
+  getAnalyticsCompactionConfig,
+} from "../lib/sync/analytics-compaction.mjs";
+import {
   loadWorkerSnapshot,
   printJson,
   withReadonlyMessageReplica,
@@ -27,6 +31,7 @@ export async function checkMessageCanary({
   now = () => Date.now(),
 } = {}) {
   const config = getMessageCanaryConfig(env);
+  const compaction = getAnalyticsCompactionConfig(env);
   const localConfig = getLocalStorageConfig(env, { cwd });
   if (!existsSync(localConfig.databasePath)) {
     return {
@@ -45,23 +50,54 @@ export async function checkMessageCanary({
     const worker = loadWorkerSnapshot(env, { cwd });
     let replicaSchema = null;
     let comparisons = [];
-    const replica = await withReadonlyMessageReplica(env, async (execute) => {
-      replicaSchema = await checkMessageReplicaSchema(execute);
-      if (!compare) return null;
-      for (const guildId of config.guildIds) {
+    const projectionMode =
+      config.guildIds.length > 0 &&
+      config.guildIds.every((guildId) => compaction.isEnabledForGuild(guildId));
+    if (projectionMode) {
+      comparisons = config.guildIds.map((guildId) => {
         const local = storage.messageDomain.getComparisonSnapshot(guildId);
-        const remote = await fetchMessageReplicaComparison(execute, guildId);
-        comparisons.push({
+        const projection = storage.snapshots.get(
+          "analytics",
+          analyticsCurrentProjectionKey(guildId),
+        );
+        return {
           guildId,
           local,
-          replica: remote,
-          ...compareMessageCanarySnapshots(local, remote),
-        });
+          projection: projection
+            ? {
+                snapshotVersion: projection.snapshotVersion,
+                checksum: projection.checksum,
+                messageCount: projection.payload?.messageCount ?? null,
+              }
+            : null,
+          matched:
+            projection !== null &&
+            Number(projection.payload?.messageCount) === Number(local.createCount),
+        };
+      });
+      replicaSchema = {
+        ready: comparisons.every((item) => item.projection !== null),
+        mode: "analytics_projection_v2",
+      };
+    } else {
+      const replica = await withReadonlyMessageReplica(env, async (execute) => {
+        replicaSchema = await checkMessageReplicaSchema(execute);
+        if (!compare) return null;
+        for (const guildId of config.guildIds) {
+          const local = storage.messageDomain.getComparisonSnapshot(guildId);
+          const remote = await fetchMessageReplicaComparison(execute, guildId);
+          comparisons.push({
+            guildId,
+            local,
+            replica: remote,
+            ...compareMessageCanarySnapshots(local, remote),
+          });
+        }
+        return true;
+      });
+      if (!replica.available) {
+        replicaSchema = { ready: false, reason: "read_only_replica_url_missing" };
       }
-      return true;
-    });
-    if (!replica.available) {
-      replicaSchema = { ready: false, reason: "read_only_replica_url_missing" };
     }
     const comparison = compare
       ? {

@@ -96,6 +96,15 @@ if [[ -f "$metrics_path" ]] && command -v node >/dev/null 2>&1; then
         const complete = value.cloudComplete ?? {};
         console.log(`Cloud Complete: ${Number(complete.complete ?? 0)} / ${Number(complete.total ?? 0)}`);
       }
+      if (value.analyticsCompaction) {
+        const analytics = value.analyticsCompaction;
+        console.log("Analytics Compaction v2:");
+        console.log(`  Enabled: ${analytics.enabled ? "YES" : "NO"} (${Number(analytics.guildCount ?? 0)} Guilds)`);
+        console.log(`  Raw Events Seen: ${Number(analytics.rawEventsSeen ?? 0)}`);
+        console.log(`  Snapshots Changed / Skipped: ${Number(analytics.snapshotsChanged ?? 0)} / ${Number(analytics.snapshotsSkipped ?? 0)}`);
+        console.log(`  Provider Writes: ${Number(analytics.providerWrites ?? 0)}`);
+        console.log(`  Reduction Ratio: ${(Number(analytics.providerWriteReductionRatio ?? 0) * 100).toFixed(2)}%`);
+      }
     } catch { console.log("Sync Health: UNKNOWN (invalid metrics)"); }
   ' "$metrics_path"
 else

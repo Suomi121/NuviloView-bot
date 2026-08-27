@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, BarChart3, Clock3, Hash, HeartPulse, LoaderCircle, MessageSquareText, Mic2, Sparkles, TrendingDown, TrendingUp, Users } from "lucide-react";
+import { AnalyticsRefreshCountdown } from "@/components/analytics-refresh-countdown";
 
 export type CommunityAnalyticsView = "retention" | "health" | "diagnostics" | "channels" | "roles" | "insights";
 
@@ -43,6 +44,7 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
   const [options, setOptions] = useState<{ roles: any[]; channels: any[] }>({ roles: [], channels: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const [refreshSequence, setRefreshSequence] = useState(0);
 
   useEffect(() => {
     if (!guildId) return;
@@ -72,7 +74,7 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
       })
       .finally(() => setLoading(false));
     return () => controller.abort();
-  }, [channelId, custom, endDate, excludeBots, guildId, presetDays, roleId, startDate, timeZone]);
+  }, [channelId, custom, endDate, excludeBots, guildId, presetDays, refreshSequence, roleId, startDate, timeZone]);
 
   if (view === "overview") {
     return <AnalyticsOverview data={data} loading={loading} error={error} en={en} />;
@@ -88,6 +90,11 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
           <select aria-label={en ? "Role filter" : "ロール絞り込み"} value={roleId} onChange={(event) => setRoleId(event.target.value)} className="min-w-36 rounded-lg border border-border bg-background px-3 py-2 text-xs"><option value="">{en ? "All roles" : "すべてのロール"}</option>{options.roles.filter((role) => !role.deleted).map((role) => <option value={role.roleId} key={role.roleId}>{role.name}</option>)}</select>
           <select aria-label={en ? "Channel filter" : "チャンネル絞り込み"} value={channelId} onChange={(event) => setChannelId(event.target.value)} className="min-w-36 rounded-lg border border-border bg-background px-3 py-2 text-xs"><option value="">{en ? "All channels" : "すべてのチャンネル"}</option>{options.channels.filter((channel) => channel.channelId && !channel.deleted).map((channel) => <option value={channel.channelId} key={channel.channelId}>#{channel.name}</option>)}</select>
           <label className="ml-auto flex items-center gap-2 text-xs font-semibold text-muted-foreground"><input type="checkbox" checked={excludeBots} onChange={(event) => setExcludeBots(event.target.checked)} className="accent-primary" />{en ? "Exclude bots" : "Botを除外"}</label>
+          <AnalyticsRefreshCountdown
+            guildId={guildId}
+            locale={locale}
+            onRefresh={() => setRefreshSequence((value) => value + 1)}
+          />
         </div>
       </section>
       {loading && !data ? <LoadingState en={en} /> : error && !data ? <ErrorState en={en} /> : data ? <>

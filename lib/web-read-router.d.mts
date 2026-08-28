@@ -32,6 +32,7 @@ export function createWebReadRouter(options: {
   priority?: readonly string[];
   neonCompatibilityEnabled?: boolean;
   now?: () => number;
+  logger?: { warn?: (message: string) => void } | null;
 }): {
   readAnalyticsBundle(input: {
     guildId: string;

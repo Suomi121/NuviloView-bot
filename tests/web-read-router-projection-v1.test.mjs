@@ -92,12 +92,21 @@ test("Supabase network failure falls back to Turso without weakening fatal error
   });
   const supabase = fakeProvider("supabase", { readError: networkError });
   const turso = fakeProvider("turso");
-  const router = createWebReadRouter({ registry: registry([supabase, turso]), now: () => now });
+  const warnings = [];
+  const router = createWebReadRouter({
+    registry: registry([supabase, turso]),
+    now: () => now,
+    logger: { warn: (message) => warnings.push(message) },
+  });
   const result = await router.readAnalyticsBundle({ guildId });
   assert.equal(result.metadata.provider, "turso");
   assert.deepEqual(result.attempts, ["supabase", "turso"]);
   assert.equal(router.getMetrics().tursoFallbackReads, 1);
   assert.equal(router.getMetrics().readFailures, 1);
+  assert.deepEqual(warnings, [
+    "[web-read-router] supabase analytics fallback (ECONNRESET).",
+  ]);
+  assert.doesNotMatch(warnings[0], /fetch failed/i);
 
   assert.equal(isWebReadFallbackError(networkError), true);
   assert.equal(isWebReadFallbackError(Object.assign(new Error("bad schema"), { code: "42P01" })), false);

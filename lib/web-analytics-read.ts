@@ -22,6 +22,7 @@ export async function withWebReadRouter<T>(
       neonCompatibilityEnabled:
         config.providers.neon.enabled
         && isEnabledFlag(process.env.MULTI_DB_WEB_READ_NEON_COMPAT_ENABLED),
+      logger: console,
     });
     return await callback(router);
   } finally {

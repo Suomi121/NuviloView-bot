@@ -47,10 +47,15 @@ try {
       enabled: true,
       available: bundle.available,
       freshness: bundle.metadata.freshness,
+      lastUpdatedAt: bundle.metadata.lastUpdatedAt,
+      observedAt: bundle.metadata.observedAt,
+      observationSource: bundle.metadata.observationSource,
       snapshotVersion: bundle.metadata.snapshotVersion,
       currentChecksum: bundle.current?.checksum ?? null,
       projectionRows: bundle.snapshots.length,
-      providerCalls: bundle.current ? 2 : 1,
+      providerCalls: bundle.current
+        ? (bundle.metadata.observationSource ? 3 : 2)
+        : 1,
       elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
       rawAnalyticsQueries: router.getMetrics().rawAnalyticsQueries,
       checksums: checksumMap(bundle),

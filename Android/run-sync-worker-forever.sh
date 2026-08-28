@@ -278,11 +278,25 @@ request_shutdown() {
 
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
+
   local exit_code=$?
-  terminate_current_worker
-  rm -f -- "$WORKER_PID_FILE" "$STARTED_AT_FILE" 2>/dev/null || true
-  release_lock
+
+
+
+  if (( LOCK_ACQUIRED == 1 )); then
+
+    terminate_current_worker
+
+    rm -f -- "$WORKER_PID_FILE" "$STARTED_AT_FILE" 2>/dev/null || true
+
+    release_lock
+
+  fi
+
+
+
   exit "$exit_code"
+
 }
 
 sleep_interruptibly() {

@@ -1,41 +1,29 @@
 import { NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
-import { createCloudReadRouter } from "@/lib/sync/cloud-read-router.mjs";
-import { getMultiDbSyncConfig } from "@/lib/sync/multi-config.mjs";
-import { analyticsCurrentProjectionKey } from "@/lib/sync/analytics-compaction.mjs";
-import { createProviderRegistry } from "@/lib/sync/providers/registry.mjs";
 import { isAuthorizedGuild } from "@/lib/community-analytics-utils.mjs";
 import { getManagedGuilds } from "@/lib/discord";
 import { isRateLimited } from "@/lib/request-security";
+import { analyticsCurrentProjectionKey } from "@/lib/sync/analytics-compaction.mjs";
+import { withWebReadRouter } from "@/lib/web-analytics-read";
 
 const DISCORD_ID_PATTERN = /^\d{16,22}$/;
 const PUBLIC_SNAPSHOT_TYPES = new Set(["guild_status", "analytics"]);
 
 export async function GET(request: Request) {
   const session = await auth.api.getSession({ headers: request.headers });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (
-    await isRateLimited(request, {
-      scope: "cloud-analytics-snapshot",
-      limit: 30,
-      windowSeconds: 60,
-      identity: session.user.id,
-    })
-  ) {
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (await isRateLimited(request, {
+    scope: "cloud-analytics-snapshot",
+    limit: 30,
+    windowSeconds: 60,
+    identity: session.user.id,
+  })) {
     return NextResponse.json({ error: "Too many snapshot requests" }, { status: 429 });
   }
-
   const searchParams = new URL(request.url).searchParams;
   const guildId = searchParams.get("guildId") ?? "";
   const snapshotType = searchParams.get("type") ?? "analytics";
-  const requestedMaxAge = Number(searchParams.get("maxAgeSeconds") ?? 120);
-  const maxAgeSeconds = Number.isFinite(requestedMaxAge)
-    ? Math.min(900, Math.max(30, requestedMaxAge))
-    : 120;
-  const maxAgeMs = maxAgeSeconds * 1_000;
   if (!DISCORD_ID_PATTERN.test(guildId) || !PUBLIC_SNAPSHOT_TYPES.has(snapshotType)) {
     return NextResponse.json({ error: "Invalid snapshot request" }, { status: 400 });
   }
@@ -43,64 +31,35 @@ export async function GET(request: Request) {
   if (!isAuthorizedGuild(managedGuilds, guildId)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-
-  const config = getMultiDbSyncConfig(process.env);
-  if (!config.webReadEnabled || !config.snapshotEnabled) {
-    return NextResponse.json(
-      { error: "Cloud snapshot reads are not enabled" },
-      { status: 503 },
-    );
-  }
-
-  const registry = await createProviderRegistry({ config });
   try {
-    const router = createCloudReadRouter({ registry });
-    let snapshot;
-    if (snapshotType === "analytics") {
-      try {
-        snapshot = await router.readSnapshot({
-          snapshotType,
-          aggregateId: analyticsCurrentProjectionKey(guildId),
-          maxAgeMs,
-        });
-      } catch {
-        // Compatibility fallback while individual Guilds move to Projection v2.
-        snapshot = await router.readSnapshot({
-          snapshotType,
-          aggregateId: guildId,
-          maxAgeMs,
-        });
-      }
-    } else {
-      snapshot = await router.readSnapshot({
-        snapshotType,
-        aggregateId: guildId,
-        maxAgeMs,
-      });
-    }
-    const intervalMs = config.analyticsCompaction.intervalMs;
-    const at = Date.now();
-    const payload = snapshot.payload as Record<string, unknown>;
-    const sourceNextUpdateAt = Number(payload?.nextUpdateAt ?? 0);
-    const nextUpdateAt = sourceNextUpdateAt > at
-      ? sourceNextUpdateAt
-      : at + intervalMs;
+    const value = await withWebReadRouter(async (router) => {
+      const aggregateId = snapshotType === "analytics"
+        ? analyticsCurrentProjectionKey(guildId)
+        : guildId;
+      return router.readSnapshot({ snapshotType, aggregateId });
+    });
+    const configuredIntervalSeconds = Number(process.env.ANALYTICS_SNAPSHOT_INTERVAL_SECONDS || 900);
+    const intervalMs = Number.isFinite(configuredIntervalSeconds)
+      ? Math.min(86_400, Math.max(60, configuredIntervalSeconds)) * 1_000
+      : 900_000;
+    const nextUpdateAt = value.metadata.nextUpdateAt ?? Date.now() + intervalMs;
     return NextResponse.json({
-      ...snapshot,
+      available: value.available,
+      ...(value.snapshot ?? {}),
+      readMeta: value.metadata,
       refreshSchedule: {
-        lastUpdatedAt: Number(payload?.lastUpdatedAt ?? snapshot.generatedAt),
+        lastUpdatedAt: value.metadata.lastUpdatedAt ?? 0,
         nextUpdateAt,
         intervalMs,
       },
     }, {
       headers: { "Cache-Control": "private, max-age=15, must-revalidate" },
     });
-  } catch {
+  } catch (error) {
+    console.error("Projection snapshot API failed:", error);
     return NextResponse.json(
       { error: "Cloud analytics snapshot is temporarily unavailable" },
       { status: 503 },
     );
-  } finally {
-    await registry.close();
   }
 }

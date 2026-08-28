@@ -3,10 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, BarChart3, Clock3, Hash, HeartPulse, LoaderCircle, MessageSquareText, Mic2, Sparkles, TrendingDown, TrendingUp, Users } from "lucide-react";
 import { AnalyticsRefreshCountdown } from "@/components/analytics-refresh-countdown";
+import { ProjectionReadNotice, type ProjectionReadMeta } from "@/components/projection-read-notice";
 
 export type CommunityAnalyticsView = "retention" | "health" | "diagnostics" | "channels" | "roles" | "insights";
 
 type AnalyticsData = {
+  readMeta: ProjectionReadMeta;
   range: { startDate: string; endDate: string; previousStartDate: string; previousEndDate: string; days: number };
   coverage: { observationDays: number; memberTrackingSince: string | null; storedMessages: number; messagesWithChannelId: number; messagesWithRoles: number; retentionAvailable: boolean; roleHistoryMode: string };
   retention: any;
@@ -77,7 +79,10 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
   }, [channelId, custom, endDate, excludeBots, guildId, presetDays, refreshSequence, roleId, startDate, timeZone]);
 
   if (view === "overview") {
-    return <AnalyticsOverview data={data} loading={loading} error={error} en={en} />;
+    return <>
+      {data?.readMeta && <div className="mt-5"><ProjectionReadNotice meta={data.readMeta} locale={locale} compact /></div>}
+      <AnalyticsOverview data={data} loading={loading} error={error} en={en} />
+    </>;
   }
 
   return (
@@ -89,7 +94,7 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
           {custom && <><input aria-label={en ? "Start date" : "開始日"} type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs" /><span className="text-muted-foreground">–</span><input aria-label={en ? "End date" : "終了日"} type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs" /></>}
           <select aria-label={en ? "Role filter" : "ロール絞り込み"} value={roleId} onChange={(event) => setRoleId(event.target.value)} className="min-w-36 rounded-lg border border-border bg-background px-3 py-2 text-xs"><option value="">{en ? "All roles" : "すべてのロール"}</option>{options.roles.filter((role) => !role.deleted).map((role) => <option value={role.roleId} key={role.roleId}>{role.name}</option>)}</select>
           <select aria-label={en ? "Channel filter" : "チャンネル絞り込み"} value={channelId} onChange={(event) => setChannelId(event.target.value)} className="min-w-36 rounded-lg border border-border bg-background px-3 py-2 text-xs"><option value="">{en ? "All channels" : "すべてのチャンネル"}</option>{options.channels.filter((channel) => channel.channelId && !channel.deleted).map((channel) => <option value={channel.channelId} key={channel.channelId}>#{channel.name}</option>)}</select>
-          <label className="ml-auto flex items-center gap-2 text-xs font-semibold text-muted-foreground"><input type="checkbox" checked={excludeBots} onChange={(event) => setExcludeBots(event.target.checked)} className="accent-primary" />{en ? "Exclude bots" : "Botを除外"}</label>
+          <label className="ml-auto flex items-center gap-2 text-xs font-semibold text-muted-foreground" title={en ? "Bot filtering is not available in Projection v1" : "Bot除外はProjection v1では未対応です"}><input type="checkbox" checked={excludeBots} disabled onChange={(event) => setExcludeBots(event.target.checked)} className="accent-primary disabled:opacity-50" />{en ? "Bot filter unavailable" : "Bot除外は未対応"}</label>
           <AnalyticsRefreshCountdown
             guildId={guildId}
             locale={locale}
@@ -98,6 +103,7 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
         </div>
       </section>
       {loading && !data ? <LoadingState en={en} /> : error && !data ? <ErrorState en={en} /> : data ? <>
+        <ProjectionReadNotice meta={data.readMeta} locale={locale} />
         <CoverageNotice data={data} en={en} />
         {view === "retention" && <RetentionView data={data} en={en} />}
         {view === "health" && <HealthView data={data} en={en} />}

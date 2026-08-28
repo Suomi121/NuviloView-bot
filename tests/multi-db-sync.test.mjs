@@ -1023,6 +1023,10 @@ test("CLI, Termux status, and Cloud schema contracts stay bounded and secret-saf
     new URL("../app/api/analytics/snapshot/route.ts", import.meta.url),
     "utf8",
   );
+  const webAnalyticsRead = readFileSync(
+    new URL("../lib/web-analytics-read.ts", import.meta.url),
+    "utf8",
+  );
   assert.match(reconcile, /mode: "read_only"/);
   assert.match(reconcile, /getSnapshotStates/);
   assert.match(reconcile, /snapshotMismatched/);
@@ -1031,7 +1035,9 @@ test("CLI, Termux status, and Cloud schema contracts stay bounded and secret-saf
   assert.doesNotMatch(backfill, /DELETE FROM sync_outbox|DROP TABLE|TRUNCATE/i);
   assert.match(status, /Cloud Replicas/);
   assert.match(snapshotRoute, /isAuthorizedGuild/);
-  assert.match(snapshotRoute, /MULTI_DB|webReadEnabled/);
+  assert.match(snapshotRoute, /withWebReadRouter/);
+  assert.match(webAnalyticsRead, /webReadEnabled/);
+  assert.match(webAnalyticsRead, /MULTI_DB_WEB_READ_NEON_COMPAT_ENABLED/);
   assert.match(snapshotRoute, /source|readSnapshot/);
   assert.doesNotMatch(snapshotRoute, /TURSO_AUTH_TOKEN|SUPABASE_DATABASE_URL/);
   for (const sql of [supabaseSql, tursoSql]) {

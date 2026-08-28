@@ -36,6 +36,8 @@ import { useLocale } from "@/components/locale-provider";
 import { defaultGuildTheme, guildThemeStyle, type GuildTheme } from "@/lib/guild-theme";
 import { buildDashboardPrintReportHtml } from "@/lib/dashboard-report-utils.mjs";
 import { CommunityAnalyticsDashboard, type CommunityAnalyticsView } from "@/components/community-analytics-dashboard";
+import { ProjectionReadNotice, type ProjectionReadMeta } from "@/components/projection-read-notice";
+import { RuntimeProviderStatus } from "@/components/runtime-provider-status";
 
 type Guild = { id: string; name: string; icon: string | null };
 type RecentActivity = {
@@ -172,6 +174,7 @@ export default function DashboardPage() {
   const [lastLiveRefreshAt, setLastLiveRefreshAt] = useState<number | null>(
     null,
   );
+  const [analyticsReadMeta, setAnalyticsReadMeta] = useState<ProjectionReadMeta | null>(null);
   const [isGuildLoading, setIsGuildLoading] = useState(false);
   const [loadState, setLoadState] = useState<DashboardLoadState>("idle");
   const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false);
@@ -545,6 +548,7 @@ export default function DashboardPage() {
     setGoalTargets({ member_growth: "", messages: "", voice_seconds: "" });
     setCoverage({ statsDays: 0, messageDays: 0, insightRequiredDays: 10, insightRemainingDays: 10 });
     setLastLiveRefreshAt(null);
+    setAnalyticsReadMeta(null);
   };
 
   useEffect(() => {
@@ -553,14 +557,21 @@ export default function DashboardPage() {
       return;
     }
     void loadGoals(guildId);
-  // `guildId` deliberately resets the displayed server goals.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authorizedGuildId, guildId]);
 
   useEffect(() => {
     if (!guildId) return;
     let active = true;
     let loading = false;
+    let nextRefreshAt = 0;
+    let refreshTimer: number | null = null;
+    const scheduleNext = (requestedAt: number) => {
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      nextRefreshAt = Math.max(Date.now() + 1_000, requestedAt);
+      refreshTimer = window.setTimeout(() => {
+        if (active && document.visibilityState === "visible") void load("auto");
+      }, nextRefreshAt - Date.now());
+    };
     const load = async (reason: "initial" | "auto") => {
       if (loading) return;
       loading = true;
@@ -643,34 +654,48 @@ export default function DashboardPage() {
             ? data.botStatus.unreadableChannelNames.slice(0, 3)
             : [],
         });
+        const readMeta = data.readMeta && typeof data.readMeta === "object"
+          ? data.readMeta as ProjectionReadMeta
+          : null;
+        setAnalyticsReadMeta(readMeta);
+        scheduleNext(
+          Number(readMeta?.nextUpdateAt) > Date.now()
+            ? Number(readMeta?.nextUpdateAt)
+            : Date.now() + 15 * 60_000,
+        );
         setLastLiveRefreshAt(Date.now());
         // Theme and goal requests start only after this protected request has
         // verified the selected guild and populated the shared auth cache.
         setAuthorizedGuildId(guildId);
         setIsGuildLoading(false);
-        setLoadState("success");
+        setLoadState(readMeta?.available === false ? "error" : "success");
       } catch {
         // Keep the last successful data on screen. A short-lived refresh
         // failure should not interrupt dashboard use with a large warning.
         if (active) {
           setIsGuildLoading(false);
           setLoadState("error");
+          scheduleNext(Date.now() + 15 * 60_000);
         }
       } finally {
         loading = false;
       }
     };
-    // A guild change recreates this effect, so fetch that guild immediately.
-    // Aggregates are relatively expensive and do not need sub-minute polling.
-    // Gateway events still reach the Bot immediately; the dashboard refreshes
-    // the consolidated view once per minute while this tab is visible.
+    // A Guild change fetches once. Further reads are aligned to the next
+    // compaction snapshot; the browser does not poll Analytics every minute.
     void load("initial");
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void load("auto");
-    }, 60_000);
+    const onVisibility = () => {
+      if (
+        document.visibilityState === "visible"
+        && nextRefreshAt > 0
+        && Date.now() >= nextRefreshAt
+      ) void load("auto");
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
-      window.clearInterval(timer);
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [days, en, guildId, locale, timeZone]);
 
@@ -1338,7 +1363,12 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <section className="mb-5 grid gap-3 lg:grid-cols-2">
+          {analyticsReadMeta && (
+            <div className="mb-5">
+              <ProjectionReadNotice meta={analyticsReadMeta} locale={locale} compact />
+            </div>
+          )}
+          <section className="mb-5 grid gap-3 lg:grid-cols-3">
             <div className={`rounded-2xl border px-4 py-3.5 sm:px-5 ${loadState === "error" ? "border-rose-400/30 bg-rose-400/[0.08]" : loadState === "success" ? "border-emerald-400/25 bg-emerald-400/[0.07]" : "border-primary/20 bg-card/65"}`}>
               <div className={`flex items-center gap-2 text-xs font-bold ${loadState === "error" ? "text-rose-400" : loadState === "success" ? "text-emerald-400" : "text-primary"}`}>
                 <span className="relative flex h-2.5 w-2.5">
@@ -1362,8 +1392,8 @@ export default function DashboardPage() {
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {en
-                  ? "Updates automatically every 60 seconds while this page is open."
-                  : "この画面を開いている間は60秒ごとに自動更新します。"}
+                  ? "Analytics refreshes once when the next Projection is due."
+                  : "次のProjection更新時刻に合わせて1回だけ再取得します。"}
                 {lastLiveRefreshAt && (
                   <span>
                     {en ? " Last refresh: " : " 最終更新: "}
@@ -1383,7 +1413,7 @@ export default function DashboardPage() {
               </div>
               {!botStatus.lastPermissionCheckAt ? (
                 <p className="mt-2 text-sm font-semibold text-foreground">
-                  {en ? "Checking the Bot's permissions" : "Botの権限を確認中です"}
+                  {en ? "Permission details are not included in Projection v1" : "権限詳細はProjection v1の集約対象外です"}
                 </p>
               ) : botStatus.unreadableChannelCount > 0 ? (
                 <>
@@ -1408,6 +1438,7 @@ export default function DashboardPage() {
                 </p>
               )}
             </div>
+            <RuntimeProviderStatus guildId={guildId} locale={locale} />
           </section>
           {aiGuideOpen && (
             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65 p-5">

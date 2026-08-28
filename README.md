@@ -84,6 +84,21 @@ Selecting off also writes an ignored persistent flag under `data/runtime`.
 The Windows startup launchers respect this flag, so the Bot remains off after
 a PC restart until on is selected again.
 
+## NuviloView Control Center
+
+The read-only PowerShell status dashboard summarizes the Bot, Sync Worker,
+SQLite, cloud replicas, queue, usage, and Analytics Compaction snapshots:
+
+```powershell
+.\nuviloctl.ps1 status
+.\nuviloctl.ps1 status --watch
+.\nuviloctl.ps1 status --json
+```
+
+It does not contact cloud providers or modify runtime state. See the
+[Control Center v1 guide](docs/control-center-v1.md) for data sources, state
+rules, usage budgets, and limitations.
+
 ## Learn More
 
 To learn more, take a look at the following resources:

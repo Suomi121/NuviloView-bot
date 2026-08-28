@@ -29,7 +29,13 @@ Guild Current, Guild Daily, Channel Daily, User Daily, Runtime, and Sync Status,
 plus one bounded Analytics bundle read. API routes must authorize the session
 and Guild before invoking the router.
 
-Freshness is based on the configured Analytics compaction interval:
+Freshness is based on the configured Analytics compaction interval. Projection
+`lastUpdatedAt` remains the time its analytical content last changed. When that
+content is unchanged, a current Sync Status snapshot may separately provide
+`observedAt`, but only when the selected provider is healthy, its circuit is
+closed, and pending/retry/dead-letter counts are all zero. This prevents an
+inactive but fully synchronized Guild from being mislabeled stale without ever
+promoting an unverified old snapshot to fresh.
 
 - `fresh`: at most 1.5 intervals old
 - `stale`: at most 4 intervals old
@@ -53,10 +59,11 @@ values. Role-filtered Analytics is rejected until a reviewed projection exists.
 The removed dashboard route contained 12 direct `pool.query` call sites and the
 removed community Analytics service contained 22. Their replacement performs
 one exact Current point read plus one bounded snapshot-family read against the
-selected Cloud replica. The Goals route retains one control-plane query for the
-user's saved targets, while its progress values now use the same Projection
-bundle. Migrated Analytics routes contain no direct Pool and no raw event-table
-query.
+selected Cloud replica. When the analytical content timestamp is old, one exact
+Sync Status point read verifies that the replica is caught up. The Goals route
+retains one control-plane query for the user's saved targets, while its progress
+values now use the same Projection bundle. Migrated Analytics routes contain no
+direct Pool and no raw event-table query.
 
 ## Operational flags
 

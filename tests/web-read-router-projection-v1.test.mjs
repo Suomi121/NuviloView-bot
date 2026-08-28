@@ -10,7 +10,7 @@ import {
 } from "../lib/web-read-router.mjs";
 
 const guildId = "1542212573389127723";
-const now = 1_800_000;
+const now = 18_000_000;
 
 function snapshot({
   provider,
@@ -111,6 +111,82 @@ test("Turso failure does not affect a healthy Supabase read", async () => {
   const result = await router.readAnalyticsBundle({ guildId });
   assert.equal(result.metadata.provider, "supabase");
   assert.equal(turso.calls.read.length, 0);
+});
+
+test("unchanged analytics stays fresh when a current healthy Sync Status proves queue completion", async () => {
+  const generatedAt = now - 10 * 900_000;
+  const supabase = fakeProvider("supabase", {
+    readSnapshot(input) {
+      if (input.snapshotType === "sync_status") {
+        return snapshot({
+          provider: "supabase",
+          snapshotType: "sync_status",
+          aggregateId: "nuviloview-sync",
+          generatedAt: now - 1_000,
+          payload: {
+            providers: [{
+              providerId: "supabase",
+              enabled: true,
+              status: "HEALTHY",
+              circuit: "CLOSED",
+              pending: 0,
+              retry: 0,
+              deadLetter: 0,
+              lastSuccessAt: now - 2_000,
+            }],
+          },
+        });
+      }
+      return snapshot({ provider: "supabase", ...input, generatedAt });
+    },
+  });
+  const router = createWebReadRouter({ registry: registry([supabase]), now: () => now });
+  const result = await router.readAnalyticsBundle({ guildId });
+  assert.equal(result.metadata.freshness, "fresh");
+  assert.equal(result.metadata.degraded, false);
+  assert.equal(result.metadata.lastUpdatedAt, generatedAt);
+  assert.equal(result.metadata.observedAt, now - 2_000);
+  assert.equal(result.metadata.observationSource, "sync_status");
+  assert.equal(supabase.calls.read.length, 2);
+});
+
+test("stale Sync Status or a non-empty queue never promotes old analytics to fresh", async () => {
+  const generatedAt = now - 10 * 900_000;
+  for (const syncStatus of [
+    { generatedAt: now - 10 * 900_000, pending: 0 },
+    { generatedAt: now - 1_000, pending: 1 },
+  ]) {
+    const supabase = fakeProvider("supabase", {
+      readSnapshot(input) {
+        if (input.snapshotType === "sync_status") {
+          return snapshot({
+            provider: "supabase",
+            snapshotType: "sync_status",
+            aggregateId: "nuviloview-sync",
+            generatedAt: syncStatus.generatedAt,
+            payload: {
+              providers: [{
+                providerId: "supabase",
+                enabled: true,
+                status: "HEALTHY",
+                circuit: "CLOSED",
+                pending: syncStatus.pending,
+                retry: 0,
+                deadLetter: 0,
+                lastSuccessAt: syncStatus.generatedAt,
+              }],
+            },
+          });
+        }
+        return snapshot({ provider: "supabase", ...input, generatedAt });
+      },
+    });
+    const router = createWebReadRouter({ registry: registry([supabase]), now: () => now });
+    const result = await router.readAnalyticsBundle({ guildId });
+    assert.equal(result.metadata.freshness, "very_stale");
+    assert.equal(result.metadata.degraded, true);
+    assert.equal(result.metadata.observedAt, null);
+  }
 });
 
 test("both providers unavailable returns an explicit degraded result", async () => {

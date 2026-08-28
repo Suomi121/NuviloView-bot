@@ -22,6 +22,8 @@ export type ProjectionReadMetadata = {
   snapshotVersion: number | null;
   checksum: string | null;
   lastUpdatedAt: number | null;
+  observedAt: number | null;
+  observationSource: "sync_status" | null;
   nextUpdateAt: number | null;
   freshness: "fresh" | "stale" | "very_stale" | "unavailable";
   degraded: boolean;

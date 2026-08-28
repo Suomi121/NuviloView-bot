@@ -9,6 +9,8 @@ export type ProjectionReadMeta = {
   degraded: boolean;
   truncated?: boolean;
   lastUpdatedAt: number | null;
+  observedAt?: number | null;
+  observationSource?: "sync_status" | null;
   nextUpdateAt: number | null;
   limitations?: string[];
   rawAnalyticsQueries?: number;
@@ -56,6 +58,14 @@ export function ProjectionReadNotice({
         minute: "2-digit",
       }).format(meta.lastUpdatedAt)
     : null;
+  const observed = meta.observedAt
+    ? new Intl.DateTimeFormat(en ? "en-US" : "ja-JP", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(meta.observedAt)
+    : null;
   const message = healthy
     ? (en
         ? `Fresh Projection from ${providerName(meta.provider)}`
@@ -80,6 +90,9 @@ export function ProjectionReadNotice({
               : (en ? "No last-known timestamp" : "最終更新時刻なし")}
             {meta.rawAnalyticsQueries === 0
               ? (en ? " · Raw Cloud analytics queries: 0" : "・Raw Cloud分析クエリ: 0")
+              : ""}
+            {observed
+              ? (en ? ` · Confirmed current: ${observed}` : `・最新同期確認: ${observed}`)
               : ""}
           </p>
         )}

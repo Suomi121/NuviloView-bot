@@ -13,7 +13,10 @@ import {
   SYNC_PROVIDER_POLICIES,
 } from "../lib/sync/providers/contract.mjs";
 import { createPostgresProviderAdapter } from "../lib/sync/providers/postgres.mjs";
-import { createProviderRegistry } from "../lib/sync/providers/registry.mjs";
+import {
+  createPostgresPoolConfig,
+  createProviderRegistry,
+} from "../lib/sync/providers/registry.mjs";
 import { createTursoProviderAdapter } from "../lib/sync/providers/turso.mjs";
 import {
   replicaSchemaColumns,
@@ -58,6 +61,39 @@ function envelope(eventId, createdAt = 1_000, payload = { guildId: "100" }) {
   };
   return { ...item, checksum: calculateEnvelopeChecksum(item) };
 }
+
+test("Supabase inline CA removes host-local SSL file references without weakening verification", () => {
+  const config = getMultiDbSyncConfig({
+    ...baseEnv,
+    SUPABASE_DATABASE_URL:
+      "postgresql://user:password@db.invalid/replica?sslmode=verify-full&sslrootcert=%2Ftermux%2Froot.crt",
+    WEB_AUTH_SUPABASE_CA_CERT: "shared-public-ca",
+  });
+  assert.equal(config.providers.supabase.caCertificate, "shared-public-ca");
+
+  const poolConfig = createPostgresPoolConfig(
+    config.providers.supabase.connectionString,
+    config,
+    "nuviloview-sync-supabase",
+    config.providers.supabase.caCertificate,
+  );
+  const parsed = new URL(poolConfig.connectionString);
+  assert.equal(parsed.searchParams.has("sslmode"), false);
+  assert.equal(parsed.searchParams.has("sslrootcert"), false);
+  assert.deepEqual(poolConfig.ssl, {
+    ca: "shared-public-ca",
+    rejectUnauthorized: true,
+  });
+});
+
+test("Analytics-specific Supabase CA takes precedence over the Auth CA fallback", () => {
+  const config = getMultiDbSyncConfig({
+    ...baseEnv,
+    SUPABASE_CA_CERT: "analytics-ca",
+    WEB_AUTH_SUPABASE_CA_CERT: "auth-ca",
+  });
+  assert.equal(config.providers.supabase.caCertificate, "analytics-ca");
+});
 
 function fakeProvider(id, { required, failures = 0 } = {}) {
   const state = {
@@ -1023,6 +1059,10 @@ test("CLI, Termux status, and Cloud schema contracts stay bounded and secret-saf
     new URL("../app/api/analytics/snapshot/route.ts", import.meta.url),
     "utf8",
   );
+  const webAnalyticsRead = readFileSync(
+    new URL("../lib/web-analytics-read.ts", import.meta.url),
+    "utf8",
+  );
   assert.match(reconcile, /mode: "read_only"/);
   assert.match(reconcile, /getSnapshotStates/);
   assert.match(reconcile, /snapshotMismatched/);
@@ -1031,7 +1071,9 @@ test("CLI, Termux status, and Cloud schema contracts stay bounded and secret-saf
   assert.doesNotMatch(backfill, /DELETE FROM sync_outbox|DROP TABLE|TRUNCATE/i);
   assert.match(status, /Cloud Replicas/);
   assert.match(snapshotRoute, /isAuthorizedGuild/);
-  assert.match(snapshotRoute, /MULTI_DB|webReadEnabled/);
+  assert.match(snapshotRoute, /withWebReadRouter/);
+  assert.match(webAnalyticsRead, /webReadEnabled/);
+  assert.match(webAnalyticsRead, /MULTI_DB_WEB_READ_NEON_COMPAT_ENABLED/);
   assert.match(snapshotRoute, /source|readSnapshot/);
   assert.doesNotMatch(snapshotRoute, /TURSO_AUTH_TOKEN|SUPABASE_DATABASE_URL/);
   for (const sql of [supabaseSql, tursoSql]) {

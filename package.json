@@ -22,6 +22,7 @@
     "sync:repair": "node --env-file=.env.local scripts/repair-sync-queue.mjs",
     "sync:reconcile": "node --env-file=.env.local scripts/reconcile-provider.mjs",
     "sync:backfill": "node --env-file=.env.local scripts/backfill-provider.mjs",
+    "web-read:check": "node --env-file=.env.local scripts/check-web-read-router.mjs",
     "message:canary:check": "node --env-file=.env.local scripts/check-message-canary.mjs",
     "message:canary:compare": "node --env-file=.env.local scripts/check-message-canary.mjs --compare",
     "message:canary:preflight": "node --env-file=.env.local scripts/preflight-message-canary.mjs",

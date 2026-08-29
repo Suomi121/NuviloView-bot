@@ -16,6 +16,13 @@ export type SyncProvider = {
     snapshotType: string;
     aggregateId: string;
   }): Promise<CloudSnapshot | null>;
+  listSnapshots?(input: {
+    snapshotType: string;
+    aggregateIdPrefix: string;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    limit?: number;
+  }): Promise<CloudSnapshot[]>;
   getSnapshotStates(items: Array<{
     snapshotType: string;
     aggregateId: string;
@@ -31,6 +38,13 @@ export type ProviderRegistry = {
   initializationErrors(): Record<string, string>;
   close(): Promise<void>;
 };
+
+export function createPostgresPoolConfig(
+  connectionString: string,
+  config: { queryTimeoutMs: number },
+  applicationName: string,
+  caCertificate?: string | null,
+): Record<string, unknown>;
 
 export function createProviderRegistry(options: {
   config: unknown;

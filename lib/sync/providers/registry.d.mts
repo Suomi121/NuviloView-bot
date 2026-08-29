@@ -39,6 +39,13 @@ export type ProviderRegistry = {
   close(): Promise<void>;
 };
 
+export function createPostgresPoolConfig(
+  connectionString: string,
+  config: { queryTimeoutMs: number },
+  applicationName: string,
+  caCertificate?: string | null,
+): Record<string, unknown>;
+
 export function createProviderRegistry(options: {
   config: unknown;
   clients?: Record<string, unknown>;

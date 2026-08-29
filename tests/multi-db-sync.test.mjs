@@ -13,7 +13,10 @@ import {
   SYNC_PROVIDER_POLICIES,
 } from "../lib/sync/providers/contract.mjs";
 import { createPostgresProviderAdapter } from "../lib/sync/providers/postgres.mjs";
-import { createProviderRegistry } from "../lib/sync/providers/registry.mjs";
+import {
+  createPostgresPoolConfig,
+  createProviderRegistry,
+} from "../lib/sync/providers/registry.mjs";
 import { createTursoProviderAdapter } from "../lib/sync/providers/turso.mjs";
 import {
   replicaSchemaColumns,
@@ -58,6 +61,39 @@ function envelope(eventId, createdAt = 1_000, payload = { guildId: "100" }) {
   };
   return { ...item, checksum: calculateEnvelopeChecksum(item) };
 }
+
+test("Supabase inline CA removes host-local SSL file references without weakening verification", () => {
+  const config = getMultiDbSyncConfig({
+    ...baseEnv,
+    SUPABASE_DATABASE_URL:
+      "postgresql://user:password@db.invalid/replica?sslmode=verify-full&sslrootcert=%2Ftermux%2Froot.crt",
+    WEB_AUTH_SUPABASE_CA_CERT: "shared-public-ca",
+  });
+  assert.equal(config.providers.supabase.caCertificate, "shared-public-ca");
+
+  const poolConfig = createPostgresPoolConfig(
+    config.providers.supabase.connectionString,
+    config,
+    "nuviloview-sync-supabase",
+    config.providers.supabase.caCertificate,
+  );
+  const parsed = new URL(poolConfig.connectionString);
+  assert.equal(parsed.searchParams.has("sslmode"), false);
+  assert.equal(parsed.searchParams.has("sslrootcert"), false);
+  assert.deepEqual(poolConfig.ssl, {
+    ca: "shared-public-ca",
+    rejectUnauthorized: true,
+  });
+});
+
+test("Analytics-specific Supabase CA takes precedence over the Auth CA fallback", () => {
+  const config = getMultiDbSyncConfig({
+    ...baseEnv,
+    SUPABASE_CA_CERT: "analytics-ca",
+    WEB_AUTH_SUPABASE_CA_CERT: "auth-ca",
+  });
+  assert.equal(config.providers.supabase.caCertificate, "analytics-ca");
+});
 
 function fakeProvider(id, { required, failures = 0 } = {}) {
   const state = {

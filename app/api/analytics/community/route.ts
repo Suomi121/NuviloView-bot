@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
+import {
+  createAnalyticsRefreshContract,
+  getAnalyticsRefreshIntervalMs,
+} from "@/lib/analytics-refresh.mjs";
 import { isAuthorizedGuild } from "@/lib/community-analytics-utils.mjs";
 import { getManagedGuilds } from "@/lib/discord";
 import {
@@ -138,8 +142,12 @@ export async function GET(request: Request) {
         { status: 403 },
       );
     }
+    const refresh = createAnalyticsRefreshContract(result.analytics.readMeta, {
+      intervalMs: getAnalyticsRefreshIntervalMs(process.env),
+    });
     return NextResponse.json({
       ...result.analytics,
+      ...refresh,
       readMetrics: result.metrics,
     }, {
       headers: { "Cache-Control": "private, max-age=15, must-revalidate" },

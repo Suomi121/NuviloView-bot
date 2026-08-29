@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 
+import {
+  createAnalyticsRefreshContract,
+  getAnalyticsRefreshIntervalMs,
+} from "@/lib/analytics-refresh.mjs";
 import { auth } from "@/lib/auth";
 import { isAuthorizedGuild } from "@/lib/community-analytics-utils.mjs";
 import { getManagedGuilds } from "@/lib/discord";
@@ -38,19 +42,21 @@ export async function GET(request: Request) {
         : guildId;
       return router.readSnapshot({ snapshotType, aggregateId });
     });
-    const configuredIntervalSeconds = Number(process.env.ANALYTICS_SNAPSHOT_INTERVAL_SECONDS || 900);
-    const intervalMs = Number.isFinite(configuredIntervalSeconds)
-      ? Math.min(86_400, Math.max(60, configuredIntervalSeconds)) * 1_000
-      : 900_000;
-    const nextUpdateAt = value.metadata.nextUpdateAt ?? Date.now() + intervalMs;
+    const refresh = createAnalyticsRefreshContract(value.metadata, {
+      intervalMs: getAnalyticsRefreshIntervalMs(process.env),
+    });
     return NextResponse.json({
       available: value.available,
       ...(value.snapshot ?? {}),
       readMeta: value.metadata,
+      ...refresh,
       refreshSchedule: {
-        lastUpdatedAt: value.metadata.lastUpdatedAt ?? 0,
-        nextUpdateAt,
-        intervalMs,
+        lastUpdatedAt: refresh.last_updated_at ?? 0,
+        nextUpdateAt: refresh.next_update_at,
+        snapshotVersion: refresh.snapshot_version,
+        checksum: refresh.checksum,
+        freshness: refresh.freshness,
+        intervalMs: refresh.interval_ms,
       },
     }, {
       headers: { "Cache-Control": "private, max-age=15, must-revalidate" },

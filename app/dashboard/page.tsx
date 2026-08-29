@@ -36,8 +36,15 @@ import { useLocale } from "@/components/locale-provider";
 import { defaultGuildTheme, guildThemeStyle, type GuildTheme } from "@/lib/guild-theme";
 import { buildDashboardPrintReportHtml } from "@/lib/dashboard-report-utils.mjs";
 import { CommunityAnalyticsDashboard, type CommunityAnalyticsView } from "@/components/community-analytics-dashboard";
+import { AnalyticsRefreshCountdown } from "@/components/analytics-refresh-countdown";
 import { ProjectionReadNotice, type ProjectionReadMeta } from "@/components/projection-read-notice";
 import { RuntimeProviderStatus } from "@/components/runtime-provider-status";
+import {
+  recordAnalyticsFetch,
+  toAnalyticsRefreshSchedule,
+  type AnalyticsRefreshReason,
+  type AnalyticsRefreshSchedule,
+} from "@/lib/analytics-refresh.mjs";
 
 type Guild = { id: string; name: string; icon: string | null };
 type RecentActivity = {
@@ -175,6 +182,8 @@ export default function DashboardPage() {
     null,
   );
   const [analyticsReadMeta, setAnalyticsReadMeta] = useState<ProjectionReadMeta | null>(null);
+  const [analyticsRefreshSchedule, setAnalyticsRefreshSchedule] =
+    useState<AnalyticsRefreshSchedule | null>(null);
   const [isGuildLoading, setIsGuildLoading] = useState(false);
   const [loadState, setLoadState] = useState<DashboardLoadState>("idle");
   const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false);
@@ -549,6 +558,7 @@ export default function DashboardPage() {
     setCoverage({ statsDays: 0, messageDays: 0, insightRequiredDays: 10, insightRemainingDays: 10 });
     setLastLiveRefreshAt(null);
     setAnalyticsReadMeta(null);
+    setAnalyticsRefreshSchedule(null);
   };
 
   useEffect(() => {
@@ -561,6 +571,9 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!guildId) return;
+    if (["retention", "health", "diagnostics", "channels", "roles", "insights"].includes(activeView)) {
+      return;
+    }
     let active = true;
     let loading = false;
     let nextRefreshAt = 0;
@@ -569,14 +582,15 @@ export default function DashboardPage() {
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       nextRefreshAt = Math.max(Date.now() + 1_000, requestedAt);
       refreshTimer = window.setTimeout(() => {
-        if (active && document.visibilityState === "visible") void load("auto");
+        if (active && document.visibilityState === "visible") void load("countdown");
       }, nextRefreshAt - Date.now());
     };
-    const load = async (reason: "initial" | "auto") => {
+    const load = async (reason: AnalyticsRefreshReason) => {
       if (loading) return;
       loading = true;
+      recordAnalyticsFetch(reason);
       if (active) {
-        setLoadState(reason === "auto" ? "refreshing" : "loading");
+        setLoadState(reason === "initial" ? "loading" : "refreshing");
         if (reason === "initial") setIsGuildLoading(true);
       }
       try {
@@ -657,10 +671,12 @@ export default function DashboardPage() {
         const readMeta = data.readMeta && typeof data.readMeta === "object"
           ? data.readMeta as ProjectionReadMeta
           : null;
+        const refreshSchedule = toAnalyticsRefreshSchedule(data);
         setAnalyticsReadMeta(readMeta);
+        setAnalyticsRefreshSchedule(refreshSchedule);
         scheduleNext(
-          Number(readMeta?.nextUpdateAt) > Date.now()
-            ? Number(readMeta?.nextUpdateAt)
+          Number(refreshSchedule?.nextUpdateAt) > Date.now()
+            ? Number(refreshSchedule?.nextUpdateAt)
             : Date.now() + 15 * 60_000,
         );
         setLastLiveRefreshAt(Date.now());
@@ -675,7 +691,16 @@ export default function DashboardPage() {
         if (active) {
           setIsGuildLoading(false);
           setLoadState("error");
-          scheduleNext(Date.now() + 15 * 60_000);
+          const retryAt = Date.now() + 15 * 60_000;
+          scheduleNext(retryAt);
+          setAnalyticsRefreshSchedule((current) => ({
+            lastUpdatedAt: current?.lastUpdatedAt ?? 0,
+            nextUpdateAt: retryAt,
+            snapshotVersion: current?.snapshotVersion ?? null,
+            checksum: current?.checksum ?? null,
+            freshness: current?.freshness ?? "unavailable",
+            intervalMs: current?.intervalMs ?? 15 * 60_000,
+          }));
         }
       } finally {
         loading = false;
@@ -689,7 +714,7 @@ export default function DashboardPage() {
         document.visibilityState === "visible"
         && nextRefreshAt > 0
         && Date.now() >= nextRefreshAt
-      ) void load("auto");
+      ) void load("visibility");
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
@@ -697,7 +722,7 @@ export default function DashboardPage() {
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [days, en, guildId, locale, timeZone]);
+  }, [activeView, days, en, guildId, locale, timeZone]);
 
   const displayedChartPoints = useMemo(() => {
     if (chartMetric === "members") return memberPoints;
@@ -1363,9 +1388,13 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {analyticsReadMeta && (
-            <div className="mb-5">
+          {(analyticsReadMeta || analyticsRefreshSchedule) && (
+            <div className="mb-5 flex flex-wrap items-center gap-3">
               <ProjectionReadNotice meta={analyticsReadMeta} locale={locale} compact />
+              <AnalyticsRefreshCountdown
+                schedule={analyticsRefreshSchedule}
+                locale={locale}
+              />
             </div>
           )}
           <section className="mb-5 grid gap-3 lg:grid-cols-3">
@@ -2072,7 +2101,6 @@ export default function DashboardPage() {
               timeZone={timeZone}
             />
           </div>
-          <CommunityAnalyticsDashboard view="overview" guildId={guildId} days={days} timeZone={timeZone} locale={locale} />
           </div>
           </>}
         </section>

@@ -2,12 +2,11 @@
 
 import { Clock3 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-type RefreshSchedule = {
-  lastUpdatedAt: number;
-  nextUpdateAt: number;
-  intervalMs: number;
-};
+import {
+  isAnalyticsRefreshDue,
+  type AnalyticsRefreshReason,
+  type AnalyticsRefreshSchedule,
+} from "@/lib/analytics-refresh.mjs";
 
 function remainingLabel(milliseconds: number) {
   const seconds = Math.max(0, Math.ceil(milliseconds / 1_000));
@@ -20,98 +19,80 @@ function remainingLabel(milliseconds: number) {
 }
 
 export function AnalyticsRefreshCountdown({
-  guildId,
+  schedule,
   locale,
   onRefresh,
 }: {
-  guildId: string;
+  schedule: AnalyticsRefreshSchedule | null;
   locale: "ja" | "en";
-  onRefresh?: () => void;
+  onRefresh?: (reason: AnalyticsRefreshReason) => Promise<boolean>;
 }) {
-  const [schedule, setSchedule] = useState<RefreshSchedule | null>(null);
   const [clock, setClock] = useState(() => Date.now());
-  const requestRef = useRef<AbortController | null>(null);
-  const onRefreshRef = useRef(onRefresh);
+  const [deferredNextUpdateAt, setDeferredNextUpdateAt] = useState<number | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const lastRequestedNextUpdateAtRef = useRef<number | null>(null);
+
+  const nextUpdateAt = deferredNextUpdateAt ?? schedule?.nextUpdateAt ?? null;
 
   useEffect(() => {
-    onRefreshRef.current = onRefresh;
-  }, [onRefresh]);
+    setDeferredNextUpdateAt(null);
+    lastRequestedNextUpdateAtRef.current = null;
+    setClock(Date.now());
+  }, [schedule?.nextUpdateAt]);
 
-  const load = useCallback(async (refreshAnalytics = false) => {
-    if (!guildId) return;
-    requestRef.current?.abort();
-    const controller = new AbortController();
-    requestRef.current = controller;
+  const requestRefresh = useCallback(async (reason: AnalyticsRefreshReason) => {
+    if (!schedule || !onRefresh || nextUpdateAt === null) return false;
+    const at = Date.now();
+    if (!isAnalyticsRefreshDue({
+      at,
+      nextUpdateAt,
+      inFlight: refreshInFlightRef.current,
+      lastRequestedNextUpdateAt: lastRequestedNextUpdateAtRef.current,
+    })) return false;
+
+    refreshInFlightRef.current = true;
+    lastRequestedNextUpdateAtRef.current = nextUpdateAt;
     try {
-      const response = await fetch(
-        `/api/analytics/snapshot?guildId=${encodeURIComponent(guildId)}&type=analytics&maxAgeSeconds=900`,
-        { cache: "no-store", signal: controller.signal },
-      );
-      if (!response.ok) return;
-      const value = await response.json();
-      const next = value?.refreshSchedule;
-      if (
-        Number.isFinite(Number(next?.lastUpdatedAt)) &&
-        Number.isFinite(Number(next?.nextUpdateAt))
-      ) {
-        setSchedule({
-          lastUpdatedAt: Number(next.lastUpdatedAt),
-          nextUpdateAt: Number(next.nextUpdateAt),
-          intervalMs: Number(next.intervalMs),
-        });
-        setClock(Date.now());
-        if (refreshAnalytics) onRefreshRef.current?.();
+      const refreshed = await onRefresh(reason);
+      if (!refreshed) {
+        // A failed request is deferred to the next projection window. This
+        // prevents a deadline or visibility event from creating a retry storm.
+        setDeferredNextUpdateAt(Date.now() + schedule.intervalMs);
       }
-    } catch (error) {
-      if ((error as { name?: string })?.name !== "AbortError") {
-        // The detailed analytics view remains usable when Cloud snapshots are
-        // temporarily unavailable. Retry only at the next projection window,
-        // never with a short polling loop.
-        setSchedule((current) => {
-          const intervalMs = current?.intervalMs || 15 * 60_000;
-          return {
-            lastUpdatedAt: current?.lastUpdatedAt ?? 0,
-            nextUpdateAt: Date.now() + intervalMs,
-            intervalMs,
-          };
-        });
-      }
+      return refreshed;
     } finally {
-      if (requestRef.current === controller) requestRef.current = null;
+      refreshInFlightRef.current = false;
     }
-  }, [guildId]);
+  }, [nextUpdateAt, onRefresh, schedule]);
 
   useEffect(() => {
-    setSchedule(null);
-    void load(false);
-    return () => requestRef.current?.abort();
-  }, [load]);
-
-  useEffect(() => {
-    if (!schedule) return;
+    if (!schedule || nextUpdateAt === null) return;
     // This interval updates only the browser text. It never calls an API.
     const clockTimer = window.setInterval(() => setClock(Date.now()), 1_000);
-    const refreshTimer = window.setTimeout(
-      () => void load(true),
-      Math.max(250, schedule.nextUpdateAt - Date.now()),
-    );
+    const refreshTimer = onRefresh
+      ? window.setTimeout(
+          () => void requestRefresh("countdown"),
+          Math.max(250, nextUpdateAt - Date.now()),
+        )
+      : null;
     const onVisibility = () => {
       if (
-        document.visibilityState === "visible" &&
-        Date.now() >= schedule.nextUpdateAt
+        onRefresh
+        && document.visibilityState === "visible"
+        && Date.now() >= nextUpdateAt
       ) {
-        void load(true);
+        void requestRefresh("visibility");
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.clearInterval(clockTimer);
-      window.clearTimeout(refreshTimer);
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [load, schedule]);
+  }, [nextUpdateAt, onRefresh, requestRefresh, schedule]);
 
-  if (!schedule) return null;
+  if (!schedule || nextUpdateAt === null) return null;
   const en = locale === "en";
   const updated = schedule.lastUpdatedAt > 0
     ? new Intl.DateTimeFormat(en ? "en-US" : "ja-JP", {
@@ -130,7 +111,7 @@ export function AnalyticsRefreshCountdown({
           : (en ? "Snapshot pending" : "集約データ待ち")}
       </span>
       <span aria-label={en ? "Time until the next analytics refresh" : "次回分析更新まで"}>
-        {en ? "Next in" : "次回更新まで"} {remainingLabel(schedule.nextUpdateAt - clock)}
+        {en ? "Next in" : "次回更新まで"} {remainingLabel(nextUpdateAt - clock)}
       </span>
     </div>
   );

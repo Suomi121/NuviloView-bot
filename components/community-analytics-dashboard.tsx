@@ -1,13 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, BarChart3, Clock3, Hash, HeartPulse, LoaderCircle, MessageSquareText, Mic2, Sparkles, TrendingDown, TrendingUp, Users } from "lucide-react";
 import { AnalyticsRefreshCountdown } from "@/components/analytics-refresh-countdown";
 import { ProjectionReadNotice, type ProjectionReadMeta } from "@/components/projection-read-notice";
+import {
+  recordAnalyticsFetch,
+  toAnalyticsRefreshSchedule,
+  type AnalyticsRefreshReason,
+} from "@/lib/analytics-refresh.mjs";
 
 export type CommunityAnalyticsView = "retention" | "health" | "diagnostics" | "channels" | "roles" | "insights";
 
 type AnalyticsData = {
+  last_updated_at: number | null;
+  next_update_at: number;
+  snapshot_version: number | null;
+  checksum: string | null;
+  freshness: "fresh" | "stale" | "very_stale" | "unavailable";
+  interval_ms: number;
   readMeta: ProjectionReadMeta;
   range: { startDate: string; endDate: string; previousStartDate: string; previousEndDate: string; days: number };
   coverage: { observationDays: number; memberTrackingSince: string | null; storedMessages: number; messagesWithChannelId: number; messagesWithRoles: number; retentionAvailable: boolean; roleHistoryMode: string };
@@ -46,11 +57,13 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
   const [options, setOptions] = useState<{ roles: any[]; channels: any[] }>({ roles: [], channels: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
-  const [refreshSequence, setRefreshSequence] = useState(0);
+  const requestRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    if (!guildId) return;
+  const loadAnalytics = useCallback(async (reason: AnalyticsRefreshReason) => {
+    if (!guildId) return false;
+    requestRef.current?.abort();
     const controller = new AbortController();
+    requestRef.current = controller;
     const params = new URLSearchParams({ guildId, timeZone, excludeBots: String(excludeBots) });
     if (custom && startDate && endDate) {
       params.set("startDate", startDate);
@@ -62,25 +75,48 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
     if (channelId) params.set("channelId", channelId);
     setLoading(true);
     setError(false);
-    fetch(`/api/analytics/community?${params}`, { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("analytics request failed");
-        return response.json();
-      })
-      .then((next: AnalyticsData) => {
-        setData(next);
-        if (!roleId && !channelId) setOptions({ roles: next.roles, channels: next.channels });
-      })
-      .catch((requestError) => {
-        if (requestError?.name !== "AbortError") setError(true);
-      })
-      .finally(() => setLoading(false));
-    return () => controller.abort();
-  }, [channelId, custom, endDate, excludeBots, guildId, presetDays, refreshSequence, roleId, startDate, timeZone]);
+    recordAnalyticsFetch(reason);
+    try {
+      const response = await fetch(
+        `/api/analytics/community?${params}`,
+        { cache: "no-store", signal: controller.signal },
+      );
+      if (!response.ok) throw new Error("analytics request failed");
+      const next = await response.json() as AnalyticsData;
+      setData(next);
+      if (!roleId && !channelId) {
+        setOptions({ roles: next.roles, channels: next.channels });
+      }
+      return true;
+    } catch (requestError) {
+      if ((requestError as { name?: string })?.name !== "AbortError") setError(true);
+      return false;
+    } finally {
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
+    }
+  }, [channelId, custom, endDate, excludeBots, guildId, presetDays, roleId, startDate, timeZone]);
+
+  useEffect(() => {
+    void loadAnalytics("initial");
+    return () => requestRef.current?.abort();
+  }, [loadAnalytics]);
+
+  const refreshSchedule = useMemo(
+    () => toAnalyticsRefreshSchedule(
+      data as unknown as Record<string, unknown> | null,
+    ),
+    [data],
+  );
 
   if (view === "overview") {
     return <>
       {data?.readMeta && <div className="mt-5"><ProjectionReadNotice meta={data.readMeta} locale={locale} compact /></div>}
+      <div className="mt-3 flex justify-end">
+        <AnalyticsRefreshCountdown schedule={refreshSchedule} locale={locale} onRefresh={loadAnalytics} />
+      </div>
       <AnalyticsOverview data={data} loading={loading} error={error} en={en} />
     </>;
   }
@@ -96,9 +132,9 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
           <select aria-label={en ? "Channel filter" : "チャンネル絞り込み"} value={channelId} onChange={(event) => setChannelId(event.target.value)} className="min-w-36 rounded-lg border border-border bg-background px-3 py-2 text-xs"><option value="">{en ? "All channels" : "すべてのチャンネル"}</option>{options.channels.filter((channel) => channel.channelId && !channel.deleted).map((channel) => <option value={channel.channelId} key={channel.channelId}>#{channel.name}</option>)}</select>
           <label className="ml-auto flex items-center gap-2 text-xs font-semibold text-muted-foreground" title={en ? "Bot filtering is not available in Projection v1" : "Bot除外はProjection v1では未対応です"}><input type="checkbox" checked={excludeBots} disabled onChange={(event) => setExcludeBots(event.target.checked)} className="accent-primary disabled:opacity-50" />{en ? "Bot filter unavailable" : "Bot除外は未対応"}</label>
           <AnalyticsRefreshCountdown
-            guildId={guildId}
+            schedule={refreshSchedule}
             locale={locale}
-            onRefresh={() => setRefreshSequence((value) => value + 1)}
+            onRefresh={loadAnalytics}
           />
         </div>
       </section>

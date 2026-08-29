@@ -45,6 +45,10 @@ import {
   type AnalyticsRefreshReason,
   type AnalyticsRefreshSchedule,
 } from "@/lib/analytics-refresh.mjs";
+import {
+  classifyDashboardDataConnection,
+  type DashboardDataConnectionState,
+} from "@/lib/dashboard-data-connection.mjs";
 
 type Guild = { id: string; name: string; icon: string | null };
 type RecentActivity = {
@@ -93,7 +97,12 @@ type ChannelInsight = {
 };
 type GoalType = "member_growth" | "messages" | "voice_seconds";
 type GrowthGoal = { type: GoalType; target: number; current: number };
-type DashboardLoadState = "idle" | "loading" | "refreshing" | "success" | "error";
+type DashboardLoadState =
+  | "idle"
+  | "loading"
+  | "refreshing"
+  | "fetch_error"
+  | DashboardDataConnectionState;
 type DataCoverage = {
   statsDays: number;
   messageDays: number;
@@ -684,13 +693,15 @@ export default function DashboardPage() {
         // verified the selected guild and populated the shared auth cache.
         setAuthorizedGuildId(guildId);
         setIsGuildLoading(false);
-        setLoadState(readMeta?.available === false ? "error" : "success");
+        setLoadState(classifyDashboardDataConnection(
+          readMeta as unknown as Record<string, unknown> | null,
+        ));
       } catch {
         // Keep the last successful data on screen. A short-lived refresh
         // failure should not interrupt dashboard use with a large warning.
         if (active) {
           setIsGuildLoading(false);
-          setLoadState("error");
+          setLoadState("fetch_error");
           const retryAt = Date.now() + 15 * 60_000;
           scheduleNext(retryAt);
           setAnalyticsRefreshSchedule((current) => ({
@@ -1398,8 +1409,8 @@ export default function DashboardPage() {
             </div>
           )}
           <section className="mb-5 grid gap-3 lg:grid-cols-3">
-            <div className={`rounded-2xl border px-4 py-3.5 sm:px-5 ${loadState === "error" ? "border-rose-400/30 bg-rose-400/[0.08]" : loadState === "success" ? "border-emerald-400/25 bg-emerald-400/[0.07]" : "border-primary/20 bg-card/65"}`}>
-              <div className={`flex items-center gap-2 text-xs font-bold ${loadState === "error" ? "text-rose-400" : loadState === "success" ? "text-emerald-400" : "text-primary"}`}>
+            <div className={`rounded-2xl border px-4 py-3.5 sm:px-5 ${loadState === "fetch_error" ? "border-rose-400/30 bg-rose-400/[0.08]" : loadState === "connected" ? "border-emerald-400/25 bg-emerald-400/[0.07]" : loadState === "degraded" || loadState === "stale" ? "border-amber-400/30 bg-amber-400/[0.08]" : "border-primary/20 bg-card/65"}`}>
+              <div className={`flex items-center gap-2 text-xs font-bold ${loadState === "fetch_error" ? "text-rose-400" : loadState === "connected" ? "text-emerald-400" : loadState === "degraded" || loadState === "stale" ? "text-amber-400" : "text-primary"}`}>
                 <span className="relative flex h-2.5 w-2.5">
                   {(loadState === "loading" || loadState === "refreshing") && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-60" />}
                   <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-current" />
@@ -1407,10 +1418,22 @@ export default function DashboardPage() {
                 {en ? "BOT DATA CONNECTION" : "BOTデータ接続"}
               </div>
               <p className="mt-2 text-sm font-semibold text-foreground">
-                {loadState === "error"
+                {loadState === "fetch_error"
                   ? en
-                    ? "Could not refresh. Showing the last successful data."
-                    : "更新に失敗しました。最後に取得できたデータを表示しています"
+                    ? "The dashboard request failed. The displayed data was not updated."
+                    : "画面データの取得に失敗しました。表示中のデータは更新していません"
+                  : loadState === "degraded"
+                    ? en
+                      ? "Cloud reads are unavailable. Showing the Last Known Good snapshot."
+                      : "Cloud読み取りが利用できないため、Last Known Goodを表示しています"
+                  : loadState === "stale"
+                    ? en
+                      ? "The provider is connected. Waiting for the next Projection refresh."
+                      : "Providerには接続済みです。次のProjection更新を待っています"
+                  : loadState === "unavailable"
+                    ? en
+                      ? "The request succeeded, but no Projection is available yet."
+                      : "接続できましたが、表示可能なProjectionはまだありません"
                   : botStatus.lastRecordedAt
                   ? en
                     ? `Last recorded ${formatElapsed(botStatus.lastRecordedAt, true)}`
@@ -2414,8 +2437,11 @@ function StatusBadge({ tone, children }: { tone: "success" | "warning" | "danger
 function DashboardLoadBadge({ state, lastUpdatedAt, periodLabel, en }: { state: DashboardLoadState; lastUpdatedAt: number | null; periodLabel: string; en: boolean }) {
   if (state === "loading") return <StatusBadge tone="info"><LoaderCircle className="h-3 w-3 animate-spin" />{en ? `Loading ${periodLabel.toLowerCase()}` : `${periodLabel}を取得中`}</StatusBadge>;
   if (state === "refreshing") return <StatusBadge tone="info"><LoaderCircle className="h-3 w-3 animate-spin" />{en ? "Refreshing automatically" : "自動更新中"}</StatusBadge>;
-  if (state === "error") return <StatusBadge tone="danger"><AlertCircle className="h-3 w-3" />{en ? "Refresh failed" : "更新に失敗"}</StatusBadge>;
-  if (state === "success") return <StatusBadge tone="success">{en ? `Updated ${lastUpdatedAt ? formatElapsed(lastUpdatedAt, true) : "now"}` : `更新完了・${lastUpdatedAt ? formatElapsed(lastUpdatedAt) : "たった今"}`}</StatusBadge>;
+  if (state === "fetch_error") return <StatusBadge tone="danger"><AlertCircle className="h-3 w-3" />{en ? "Fetch failed" : "取得に失敗"}</StatusBadge>;
+  if (state === "degraded") return <StatusBadge tone="warning"><AlertCircle className="h-3 w-3" />{en ? "Degraded · Last Known Good" : "Degraded・Last Known Good"}</StatusBadge>;
+  if (state === "stale") return <StatusBadge tone="warning">{en ? "Projection refresh pending" : "Projection更新待ち"}</StatusBadge>;
+  if (state === "unavailable") return <StatusBadge tone="neutral">{en ? "Projection pending" : "Projection準備中"}</StatusBadge>;
+  if (state === "connected") return <StatusBadge tone="success">{en ? `Updated ${lastUpdatedAt ? formatElapsed(lastUpdatedAt, true) : "now"}` : `更新完了・${lastUpdatedAt ? formatElapsed(lastUpdatedAt) : "たった今"}`}</StatusBadge>;
   return <StatusBadge tone="neutral">{en ? "Select a server" : "サーバーを選択してください"}</StatusBadge>;
 }
 

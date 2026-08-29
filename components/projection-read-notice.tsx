@@ -7,6 +7,7 @@ export type ProjectionReadMeta = {
   provider: string | null;
   freshness: "fresh" | "stale" | "very_stale" | "unavailable";
   degraded: boolean;
+  lastKnownGood?: boolean;
   truncated?: boolean;
   lastUpdatedAt: number | null;
   observedAt?: number | null;
@@ -48,7 +49,9 @@ export function ProjectionReadNotice({
 }) {
   if (!meta) return null;
   const en = locale === "en";
-  const healthy = meta.available && meta.freshness === "fresh" && !meta.degraded;
+  // Provider health is rendered separately by RuntimeProviderStatus. This
+  // notice describes only the Projection returned for this request.
+  const healthy = meta.available && meta.freshness === "fresh" && !meta.lastKnownGood;
   const Icon = healthy ? CheckCircle2 : AlertTriangle;
   const updated = meta.lastUpdatedAt
     ? new Intl.DateTimeFormat(en ? "en-US" : "ja-JP", {
@@ -70,10 +73,14 @@ export function ProjectionReadNotice({
     ? (en
         ? `Fresh Projection from ${providerName(meta.provider)}`
         : `${providerName(meta.provider)} の最新Projectionを表示中`)
-    : meta.freshness === "stale" || meta.freshness === "very_stale"
+    : meta.lastKnownGood
       ? (en
-          ? `Cloud Analytics is degraded. Showing an older ${providerName(meta.provider)} snapshot.`
-          : `Cloud分析が劣化中です。${providerName(meta.provider)} の古いスナップショットを表示しています。`)
+          ? `Cloud Analytics is degraded. Showing the Last Known Good ${providerName(meta.provider)} snapshot.`
+          : `Cloud分析が劣化中です。${providerName(meta.provider)} のLast Known Goodを表示しています。`)
+      : meta.freshness === "stale" || meta.freshness === "very_stale"
+        ? (en
+            ? `${providerName(meta.provider)} is connected, but this Projection is older than its refresh window.`
+            : `${providerName(meta.provider)} には接続済みですが、Projectionの更新期限を超えています。`)
       : (en
           ? "Analytics data is temporarily unavailable. No current snapshot is being shown."
           : "分析データを一時的に取得できません。現在のスナップショットは表示していません。");

@@ -27,6 +27,7 @@ export type ProjectionReadMetadata = {
   nextUpdateAt: number | null;
   freshness: "fresh" | "stale" | "very_stale" | "unavailable";
   degraded: boolean;
+  lastKnownGood?: boolean;
   truncated?: boolean;
 };
 

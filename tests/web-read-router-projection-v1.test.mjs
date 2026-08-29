@@ -79,6 +79,7 @@ test("Supabase is the canonical Projection read and Turso is not queried", async
   });
   assert.equal(result.metadata.provider, "supabase");
   assert.equal(result.metadata.freshness, "fresh");
+  assert.equal(result.metadata.lastKnownGood, false);
   assert.equal(supabase.calls.read.length, 1);
   assert.equal(supabase.calls.list.length, 1);
   assert.equal(turso.calls.read.length, 0);
@@ -100,6 +101,7 @@ test("Supabase network failure falls back to Turso without weakening fatal error
   });
   const result = await router.readAnalyticsBundle({ guildId });
   assert.equal(result.metadata.provider, "turso");
+  assert.equal(result.metadata.lastKnownGood, false);
   assert.deepEqual(result.attempts, ["supabase", "turso"]);
   assert.equal(router.getMetrics().tursoFallbackReads, 1);
   assert.equal(router.getMetrics().readFailures, 1);
@@ -211,6 +213,7 @@ test("both providers unavailable returns an explicit degraded result", async () 
   assert.equal(result.available, false);
   assert.equal(result.metadata.freshness, "unavailable");
   assert.equal(result.metadata.degraded, true);
+  assert.equal(result.metadata.lastKnownGood, false);
   assert.equal(router.getMetrics().degradedResponses, 1);
 });
 
@@ -241,6 +244,7 @@ test("Last Known Good is retained but is clearly marked very stale", async () =>
   assert.equal(degraded.snapshots.length, first.snapshots.length);
   assert.equal(degraded.metadata.freshness, "very_stale");
   assert.equal(degraded.metadata.degraded, true);
+  assert.equal(degraded.metadata.lastKnownGood, true);
 });
 
 test("Guild validation occurs before any Provider call", async () => {

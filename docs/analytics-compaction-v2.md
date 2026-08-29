@@ -43,15 +43,21 @@ version; Neon remains optional compatibility storage.
 The default projection interval is 900 seconds. Dirty buckets are aggregated at
 most once per interval, while a previously unseen bucket may be built
 immediately. The Web countdown updates text in the browser once per second and
-performs a single snapshot fetch when the countdown reaches zero. There is no
-one-second or one-minute Cloud polling loop.
+performs no request itself. Each Analytics surface performs one initial read,
+then exactly one read when the countdown reaches zero. Returning to a visible
+tab reads only when the previous deadline has elapsed. Deadline and visibility
+events share an in-flight/deadline guard, so they cannot duplicate the same
+refresh. Runtime/provider health remains on its independent 60-second cadence;
+there is no one-second or one-minute Analytics polling loop.
 
 ## Send-reduction metrics
 
 SQLite tracks `raw_events_seen`, `snapshots_built`, `snapshots_changed`,
-`snapshots_skipped`, total Provider writes, per-Provider writes, and the derived
-write-reduction ratio. These counters are operational telemetry and contain no
-message content.
+`snapshots_skipped_checksum` (with the previous `snapshotsSkipped` compatibility
+alias), total Provider writes, per-Provider writes, and the derived
+write-reduction ratio. Browser memory separately tracks `analytics_fetches`,
+`countdown_refetches`, and `visibility_refetches`. These counters are
+operational telemetry and contain no message content.
 
 ## Message History Import SQLite-first integration
 

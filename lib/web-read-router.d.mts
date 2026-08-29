@@ -12,6 +12,7 @@ export type WebReadMetadata = {
   freshness: WebReadFreshness;
   degraded: boolean;
   truncated: boolean;
+  lastKnownGood: boolean;
 };
 export type WebSnapshotReadResult = {
   available: boolean;

@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 
+import {
+  createAnalyticsRefreshContract,
+  getAnalyticsRefreshIntervalMs,
+} from "@/lib/analytics-refresh.mjs";
 import { auth } from "@/lib/auth";
 import { isAuthorizedGuild } from "@/lib/community-analytics-utils.mjs";
 import { getManagedGuilds } from "@/lib/discord";
@@ -80,7 +84,10 @@ export async function GET(request: Request) {
       });
       return buildProjectionDashboardStatus(bundle, range, english);
     });
-    return NextResponse.json(response, {
+    const refresh = createAnalyticsRefreshContract(response.readMeta, {
+      intervalMs: getAnalyticsRefreshIntervalMs(process.env),
+    });
+    return NextResponse.json({ ...response, ...refresh }, {
       headers: { "Cache-Control": "private, max-age=15, must-revalidate" },
     });
   } catch (error) {

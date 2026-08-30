@@ -112,6 +112,7 @@ import { createStorage } from "./lib/storage/index.mjs";
 import { createSnapshotService } from "./lib/sync/snapshots.mjs";
 import { createMessageDomainRouter } from "./lib/message-local-first.mjs";
 import { createEventDomainRouter } from "./lib/event-local-first.mjs";
+import { createSecurityAuditService } from "./lib/security-local-first.mjs";
 import {
   createCloudDatabase,
   isCloudDatabaseUnavailableError,
@@ -140,6 +141,12 @@ const messageRetentionDays = Number.isInteger(
   : 90;
 const messageImportConfig = getMessageImportConfig(process.env);
 const messageStorage = createStorage({ env: process.env });
+const localFirstAllGuildsEnabled = ["1", "true", "yes", "on"].includes(
+  String(process.env.LOCAL_FIRST_ALL_GUILDS_ENABLED ?? "").trim().toLowerCase(),
+);
+const securityAuditService = messageStorage.enabled && messageStorage.writeEnabled
+  ? createSecurityAuditService({ storage: messageStorage })
+  : null;
 const localRuntimeSnapshots =
   messageStorage.enabled && messageStorage.writeEnabled
     ? createSnapshotService(messageStorage)
@@ -166,10 +173,27 @@ const eventRouter = createEventDomainRouter({
     syncMembers: syncLegacyMemberGuild,
   },
 });
+if (
+  localFirstAllGuildsEnabled &&
+  (!messageRouter.enabled ||
+    !eventRouter.enabled ||
+    !eventRouter.config.domains.reaction ||
+    !eventRouter.config.domains.voice ||
+    !eventRouter.config.domains.member ||
+    !securityAuditService)
+) {
+  const error = new Error(
+    "LOCAL_FIRST_ALL_GUILDS_ENABLED requires writable Message, Reaction, Voice, Member, and Security SQLite paths.",
+  );
+  error.code = "LOCAL_FIRST_ALL_GUILDS_UNSAFE_CONFIGURATION";
+  throw error;
+}
 const configuredMessageStorageMode = messageRouter.globalEnabled
-  ? messageRouter.config.canaryGuildIds.length > 0
-    ? "LOCAL_FIRST_CANARY"
-    : "LOCAL_FIRST_NO_GUILDS"
+  ? messageRouter.config.allGuildsEnabled
+    ? "LOCAL_FIRST_ALL_GUILDS"
+    : messageRouter.config.canaryGuildIds.length > 0
+      ? "LOCAL_FIRST_CANARY"
+      : "LOCAL_FIRST_NO_GUILDS"
   : "LEGACY_NEON";
 cloudDatabase.updateRuntimeDetails({
   messageStorageConfiguredMode: configuredMessageStorageMode,
@@ -180,7 +204,9 @@ cloudDatabase.updateRuntimeDetails({
     : "DISABLED",
   crossHostLeadership: runtimeConfig.enabled ? "UNKNOWN" : "DISABLED",
   eventStorageConfiguredMode: eventRouter.enabled
-    ? `LOCAL_FIRST_CANARY:${eventRouter.config.guildIds.length}`
+    ? eventRouter.config.allGuildsEnabled
+      ? "LOCAL_FIRST_ALL_GUILDS"
+      : `LOCAL_FIRST_CANARY:${eventRouter.config.guildIds.length}`
     : "LEGACY_CLOUD",
   degradedFeatures: [],
 });
@@ -3586,18 +3612,33 @@ async function replySpamComponentError(interaction, message) {
 
 async function getSpamDetectionForComponent(interaction, detectionId) {
   if (!/^[0-9a-f-]{36}$/i.test(detectionId)) return null;
-  const rows = await sql`
-    SELECT
-      "id", "guildId", "targetId", "targetName", "createdAt"
-    FROM "bot_moderation_audit"
-    WHERE
-      "id" = ${detectionId}
-      AND "action" = 'spam_timeout'
-    LIMIT 1
-  `;
-  const detection = rows[0] ?? null;
+  let detection;
+  if (securityAuditService) {
+    const audit = securityAuditService.getModerationAudit(detectionId);
+    detection = audit
+      ? {
+          id: audit.incidentId,
+          guildId: audit.guildId,
+          targetId: audit.targetId,
+          targetName: audit.payload?.targetName ?? null,
+          createdAt: new Date(audit.occurredAt),
+          action: audit.action,
+        }
+      : null;
+  } else {
+    // Emergency rollback compatibility only. Final all-Guild mode requires
+    // writable SQLite and cannot enter this branch.
+    const rows = await sql`
+      SELECT "id", "guildId", "targetId", "targetName", "createdAt", "action"
+      FROM "bot_moderation_audit"
+      WHERE "id" = ${detectionId} AND "action" = 'spam_timeout'
+      LIMIT 1
+    `;
+    detection = rows[0] ?? null;
+  }
   if (
     !detection ||
+    detection.action !== "spam_timeout" ||
     detection.guildId !== interaction.guildId ||
     !detection.targetId ||
     Date.now() - new Date(detection.createdAt).getTime() > 24 * 60 * 60 * 1_000
@@ -3843,17 +3884,34 @@ async function startModerationAudit(interaction, {
   requestedCount = null,
 }) {
   const id = randomUUID();
-  await sql`
-    INSERT INTO "bot_moderation_audit" (
-      "id", "guildId", "guildName", "action", "actorId", "actorName",
-      "targetId", "targetName", "channelId", "reason", "requestedCount", "status"
-    )
-    VALUES (
-      ${id}, ${interaction.guildId}, ${interaction.guild.name}, ${action},
-      ${interaction.user.id}, ${getInteractionMemberName(interaction)},
-      ${targetId}, ${targetName}, ${channelId}, ${reason}, ${requestedCount}, 'pending'
-    )
-  `;
+  if (securityAuditService) {
+    securityAuditService.startModeration({
+      incidentId: id,
+      guildId: interaction.guildId,
+      guildName: interaction.guild.name,
+      action,
+      actorId: interaction.user.id,
+      actorName: getInteractionMemberName(interaction),
+      targetId,
+      targetName,
+      channelId,
+      reason,
+      requestedCount,
+    });
+  } else {
+    // Emergency rollback compatibility only. Production all-Guild mode never
+    // performs this direct Cloud write.
+    await sql`
+      INSERT INTO "bot_moderation_audit" (
+        "id", "guildId", "guildName", "action", "actorId", "actorName",
+        "targetId", "targetName", "channelId", "reason", "requestedCount", "status"
+      ) VALUES (
+        ${id}, ${interaction.guildId}, ${interaction.guild.name}, ${action},
+        ${interaction.user.id}, ${getInteractionMemberName(interaction)},
+        ${targetId}, ${targetName}, ${channelId}, ${reason}, ${requestedCount}, 'pending'
+      )
+    `;
+  }
   console.info("[moderation-audit]", JSON.stringify({
     id,
     guildId: interaction.guildId,
@@ -3874,16 +3932,22 @@ async function finishModerationAudit(id, {
 }) {
   const errorCode = error ? String(error?.code ?? "DISCORD_API_ERROR").slice(0, 100) : null;
   const errorMessage = error ? safeErrorText(error).slice(0, 500) : null;
-  await sql`
-    UPDATE "bot_moderation_audit"
-    SET
-      "status" = ${status},
-      "affectedCount" = ${affectedCount},
-      "errorCode" = ${errorCode},
-      "errorMessage" = ${errorMessage},
-      "completedAt" = now()
-    WHERE "id" = ${id}
-  `;
+  if (securityAuditService) {
+    securityAuditService.completeModeration(id, {
+      status,
+      affectedCount,
+      errorCode,
+      errorMessage,
+    });
+  } else {
+    await sql`
+      UPDATE "bot_moderation_audit"
+      SET "status" = ${status}, "affectedCount" = ${affectedCount},
+          "errorCode" = ${errorCode}, "errorMessage" = ${errorMessage},
+          "completedAt" = now()
+      WHERE "id" = ${id}
+    `;
+  }
   console.info("[moderation-audit]", JSON.stringify({
     id,
     status,
@@ -4748,6 +4812,19 @@ async function recordLegacyMessageCreate(message) {
     recordActiveMember({ guildId: message.guild.id, userId: message.author.id }),
     storeMessage(message),
   ]);
+}
+
+// Emergency rollback adapter only. Production all-Guild Local-First routing
+// never calls this path.
+async function removeLegacyMessage(message) {
+  const rows = await sql`
+    SELECT "authorId", "authorName", "content"
+    FROM "discord_message"
+    WHERE "id" = ${message.id}
+    LIMIT 1
+  `;
+  await sql`DELETE FROM "discord_message" WHERE "id" = ${message.id}`;
+  return rows[0] ?? null;
 }
 
 async function purgeExpiredMessages() {
@@ -6059,17 +6136,6 @@ async function rememberDeletedMessageForSnipe(
   }
   deletedMessageSnipes.set(key, history);
   scheduleSnipeHistoryCleanup(key);
-}
-
-async function removeLegacyMessage(message) {
-  const rows = await sql`
-    SELECT "authorId", "authorName", "content"
-    FROM "discord_message"
-    WHERE "id" = ${message.id}
-    LIMIT 1
-  `;
-  await sql`DELETE FROM "discord_message" WHERE "id" = ${message.id}`;
-  return rows[0] ?? null;
 }
 
 async function processDeletedMessageForSnipe(

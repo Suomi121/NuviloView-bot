@@ -50,9 +50,10 @@ export async function checkMessageCanary({
     const worker = loadWorkerSnapshot(env, { cwd });
     let replicaSchema = null;
     let comparisons = [];
-    const projectionMode =
-      config.guildIds.length > 0 &&
-      config.guildIds.every((guildId) => compaction.isEnabledForGuild(guildId));
+    const projectionMode = config.allGuildsEnabled
+      ? compaction.allGuildsEnabled
+      : config.guildIds.length > 0 &&
+        config.guildIds.every((guildId) => compaction.isEnabledForGuild(guildId));
     if (projectionMode) {
       comparisons = config.guildIds.map((guildId) => {
         const local = storage.messageDomain.getComparisonSnapshot(guildId);

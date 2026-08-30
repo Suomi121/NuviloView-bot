@@ -59,6 +59,7 @@ else
 fi
 
 if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_ENABLED)"; then
+  all_guilds_enabled="$(nv_get_env_value "$ENV_FILE" LOCAL_FIRST_ALL_GUILDS_ENABLED)"
   event_guilds="$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_GUILD_IDS)"
   event_reaction_enabled="$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_REACTION_ENABLED)"
   event_voice_enabled="$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_VOICE_ENABLED)"
@@ -73,8 +74,12 @@ if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" EVENT_LOCAL_FIRST_ENABLED)"; t
       [[ -n "$(nv_trim_value "$configured_guild")" ]] && event_guild_count=$((event_guild_count + 1))
     done
   fi
-  printf 'Event Local-First: ENABLED (%s Guilds; Reaction=%s Voice=%s Member=%s)\n' \
-    "$event_guild_count" \
+  event_scope="$event_guild_count Guilds"
+  if nv_env_enabled "$all_guilds_enabled"; then
+    event_scope="ALL GUILDS"
+  fi
+  printf 'Event Local-First: ENABLED (%s; Reaction=%s Voice=%s Member=%s)\n' \
+    "$event_scope" \
     "$event_reaction_enabled" \
     "$event_voice_enabled" \
     "$event_member_enabled"
@@ -140,8 +145,11 @@ if [[ -f "$metrics_path" ]] && command -v node >/dev/null 2>&1; then
       }
       if (value.analyticsCompaction) {
         const analytics = value.analyticsCompaction;
+        const scope = analytics.allGuildsEnabled
+          ? "ALL GUILDS"
+          : `${Number(analytics.guildCount ?? 0)} Guilds`;
         console.log("Analytics Compaction v2:");
-        console.log(`  Enabled: ${analytics.enabled ? "YES" : "NO"} (${Number(analytics.guildCount ?? 0)} Guilds)`);
+        console.log(`  Enabled: ${analytics.enabled ? "YES" : "NO"} (${scope})`);
         console.log(`  Raw Events Seen: ${Number(analytics.rawEventsSeen ?? 0)}`);
         console.log(`  Snapshots Changed / Skipped: ${Number(analytics.snapshotsChanged ?? 0)} / ${Number(analytics.snapshotsSkipped ?? 0)}`);
         console.log(`  Provider Writes: ${Number(analytics.providerWrites ?? 0)}`);

@@ -363,3 +363,18 @@ test("Discord handlers do not contain direct Raw Cloud writes", () => {
   assert.match(eventHandlers, /eventRouter\.member\(member, "join"\)/);
   assert.doesNotMatch(eventHandlers, /\bsql`|pool\.query|neon\(|discord_message|daily_stats|recent_activity|discord_reaction_event|voice_session|guild_member_event/);
 });
+
+test("Termux status reports the final scope as all Guilds", () => {
+  const status = readFileSync(
+    new URL("../Android/status-nuviloview.sh", import.meta.url),
+    "utf8",
+  );
+  const worker = readFileSync(
+    new URL("../lib/sync/multi-worker.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(status, /LOCAL_FIRST_ALL_GUILDS_ENABLED/);
+  assert.match(status, /event_scope="ALL GUILDS"/);
+  assert.match(status, /analytics\.allGuildsEnabled[\s\S]*?"ALL GUILDS"/);
+  assert.match(worker, /allGuildsEnabled:\s*Boolean/);
+});

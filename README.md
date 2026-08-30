@@ -1,13 +1,13 @@
 # NuviloView:OEM
 
-## Event Local-First Expansion v1
+## Local-First Finalization v1
 
-Reaction、Voice、MemberのDiscord Raw EventをSQLiteへ保存し、Cloudには
-Current / Daily / Channel Daily / User Dailyの集約Projectionだけを同期する
-段階移行機能を利用できます。Voice sessionの再起動復旧では不明な滞在時間を
-推測せず、Reaction/Memberは状態遷移を使って重複を除外します。全体Flagは既定で
-OFFです。構成とCanary手順は
-[Event Local-First Expansion v1](docs/event-local-first-expansion-v1.md)を参照してください。
+Message、Reaction、Voice、MemberのDiscord Raw Eventは、最終rollout flagを
+有効にした通常GuildすべてでSQLiteをPrimary Storageとして使用します。Cloudへは
+Current / Daily / Channel Daily / User Dailyの集約Projectionだけを同期します。
+Moderation / Spam auditもSQLiteを一次保存とし、必要な監査記録だけをOutbox経由で
+Cloud replicaへ送ります。構成、rollback境界、Retention上の注意は
+[Local-First Finalization v1](docs/local-first-finalization-v1.md)を参照してください。
 
 ## Message History Import SQLite-First v3
 

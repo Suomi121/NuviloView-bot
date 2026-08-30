@@ -40,6 +40,8 @@ import { AnalyticsRefreshCountdown } from "@/components/analytics-refresh-countd
 import { ProjectionReadNotice, type ProjectionReadMeta } from "@/components/projection-read-notice";
 import { RuntimeProviderStatus } from "@/components/runtime-provider-status";
 import {
+  DEFAULT_ANALYTICS_REFRESH_INTERVAL_MS,
+  getNextAnalyticsRefreshBoundary,
   recordAnalyticsFetch,
   toAnalyticsRefreshSchedule,
   type AnalyticsRefreshReason,
@@ -586,13 +588,23 @@ export default function DashboardPage() {
     let active = true;
     let loading = false;
     let nextRefreshAt = 0;
+    let refreshIntervalMs = DEFAULT_ANALYTICS_REFRESH_INTERVAL_MS;
+    let serverClockOffsetMs = 0;
     let refreshTimer: number | null = null;
-    const scheduleNext = (requestedAt: number) => {
+    const serverNow = () => Date.now() + serverClockOffsetMs;
+    const scheduleNext = (requestedAt: number, serverTime?: number) => {
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
-      nextRefreshAt = Math.max(Date.now() + 1_000, requestedAt);
+      if (
+        serverTime !== undefined
+        && Number.isFinite(serverTime)
+        && serverTime > 0
+      ) {
+        serverClockOffsetMs = Number(serverTime) - Date.now();
+      }
+      nextRefreshAt = requestedAt;
       refreshTimer = window.setTimeout(() => {
         if (active && document.visibilityState === "visible") void load("countdown");
-      }, nextRefreshAt - Date.now());
+      }, Math.max(250, nextRefreshAt - serverNow()));
     };
     const load = async (reason: AnalyticsRefreshReason) => {
       if (loading) return;
@@ -683,11 +695,10 @@ export default function DashboardPage() {
         const refreshSchedule = toAnalyticsRefreshSchedule(data);
         setAnalyticsReadMeta(readMeta);
         setAnalyticsRefreshSchedule(refreshSchedule);
-        scheduleNext(
-          Number(refreshSchedule?.nextUpdateAt) > Date.now()
-            ? Number(refreshSchedule?.nextUpdateAt)
-            : Date.now() + 15 * 60_000,
-        );
+        if (refreshSchedule) {
+          refreshIntervalMs = refreshSchedule.intervalMs;
+          scheduleNext(refreshSchedule.nextUpdateAt, refreshSchedule.serverTime);
+        }
         setLastLiveRefreshAt(Date.now());
         // Theme and goal requests start only after this protected request has
         // verified the selected guild and populated the shared auth cache.
@@ -702,15 +713,21 @@ export default function DashboardPage() {
         if (active) {
           setIsGuildLoading(false);
           setLoadState("fetch_error");
-          const retryAt = Date.now() + 15 * 60_000;
+          const retryServerTime = serverNow();
+          const retryAt = getNextAnalyticsRefreshBoundary(
+            retryServerTime,
+            refreshIntervalMs,
+          );
           scheduleNext(retryAt);
           setAnalyticsRefreshSchedule((current) => ({
+            serverTime: retryServerTime,
             lastUpdatedAt: current?.lastUpdatedAt ?? 0,
             nextUpdateAt: retryAt,
             snapshotVersion: current?.snapshotVersion ?? null,
             checksum: current?.checksum ?? null,
             freshness: current?.freshness ?? "unavailable",
-            intervalMs: current?.intervalMs ?? 15 * 60_000,
+            intervalMs:
+              current?.intervalMs ?? DEFAULT_ANALYTICS_REFRESH_INTERVAL_MS,
           }));
         }
       } finally {
@@ -724,7 +741,7 @@ export default function DashboardPage() {
       if (
         document.visibilityState === "visible"
         && nextRefreshAt > 0
-        && Date.now() >= nextRefreshAt
+        && serverNow() >= nextRefreshAt
       ) void load("visibility");
     };
     document.addEventListener("visibilitychange", onVisibility);

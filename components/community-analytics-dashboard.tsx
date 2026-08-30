@@ -13,6 +13,7 @@ import {
 export type CommunityAnalyticsView = "retention" | "health" | "diagnostics" | "channels" | "roles" | "insights";
 
 type AnalyticsData = {
+  server_time: number;
   last_updated_at: number | null;
   next_update_at: number;
   snapshot_version: number | null;

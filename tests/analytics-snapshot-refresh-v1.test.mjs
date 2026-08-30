@@ -6,6 +6,7 @@ import {
   createAnalyticsRefreshContract,
   getAnalyticsRefreshIntervalMs,
   getAnalyticsRefreshMetrics,
+  getNextAnalyticsRefreshBoundary,
   isAnalyticsRefreshDue,
   recordAnalyticsFetch,
   resetAnalyticsRefreshMetricsForTests,
@@ -18,6 +19,12 @@ function source(path) {
 
 test.beforeEach(() => resetAnalyticsRefreshMetricsForTests());
 
+function utc(hour, minute, second = 0) {
+  return Date.parse(
+    `2026-08-30T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}.000Z`,
+  );
+}
+
 test("Analytics refresh contract defaults to 15 minutes and preserves snapshot identity", () => {
   assert.equal(getAnalyticsRefreshIntervalMs({}), 900_000);
   assert.equal(
@@ -28,24 +35,27 @@ test("Analytics refresh contract defaults to 15 minutes and preserves snapshot i
     getAnalyticsRefreshIntervalMs({ ANALYTICS_SNAPSHOT_INTERVAL_SECONDS: "90000" }),
     86_400_000,
   );
+  const at = utc(13, 22);
   const contract = createAnalyticsRefreshContract({
     lastUpdatedAt: 1_000,
-    nextUpdateAt: 901_000,
+    nextUpdateAt: utc(13, 37),
     snapshotVersion: 7,
     checksum: "sha256:projection",
     freshness: "stale",
-  }, { at: 2_000, intervalMs: 900_000 });
+  }, { at, intervalMs: 900_000 });
   assert.deepEqual(contract, {
+    server_time: at,
     last_updated_at: 1_000,
-    next_update_at: 901_000,
+    next_update_at: utc(13, 30),
     snapshot_version: 7,
     checksum: "sha256:projection",
     freshness: "stale",
     interval_ms: 900_000,
   });
   assert.deepEqual(toAnalyticsRefreshSchedule(contract), {
+    serverTime: at,
     lastUpdatedAt: 1_000,
-    nextUpdateAt: 901_000,
+    nextUpdateAt: utc(13, 30),
     snapshotVersion: 7,
     checksum: "sha256:projection",
     freshness: "stale",
@@ -56,8 +66,48 @@ test("Analytics refresh contract defaults to 15 minutes and preserves snapshot i
       { nextUpdateAt: 100_000, freshness: "very_stale" },
       { at: 1_000_000, intervalMs: 900_000 },
     ).next_update_at,
-    1_900_000,
+    1_800_000,
   );
+});
+
+test("Analytics refresh uses stable 15-minute boundaries across reloads", () => {
+  for (const minute of [16, 20, 29]) {
+    assert.equal(
+      createAnalyticsRefreshContract({}, { at: utc(13, minute) }).next_update_at,
+      utc(13, 30),
+    );
+  }
+});
+
+test("Analytics refresh advances strictly after boundaries and across midnight", () => {
+  const cases = [
+    [utc(13, 14, 59), utc(13, 15)],
+    [utc(13, 15), utc(13, 30)],
+    [utc(13, 29, 59), utc(13, 30)],
+    [utc(13, 30), utc(13, 45)],
+    [utc(13, 45), utc(14, 0)],
+    [utc(23, 59), Date.parse("2026-08-31T00:00:00.000Z")],
+    [Date.parse("2026-08-31T00:00:00.000Z"), Date.parse("2026-08-31T00:15:00.000Z")],
+  ];
+  for (const [at, expected] of cases) {
+    assert.equal(getNextAnalyticsRefreshBoundary(at), expected);
+  }
+});
+
+test("Client fallback derives a boundary from server time instead of request time plus interval", () => {
+  assert.deepEqual(toAnalyticsRefreshSchedule({
+    server_time: utc(13, 22),
+    interval_ms: 900_000,
+    freshness: "stale",
+  }, { at: utc(13, 29) }), {
+    serverTime: utc(13, 22),
+    lastUpdatedAt: 0,
+    nextUpdateAt: utc(13, 30),
+    snapshotVersion: null,
+    checksum: null,
+    freshness: "stale",
+    intervalMs: 900_000,
+  });
 });
 
 test("Countdown and visibility gates request once only when the deadline is due", () => {
@@ -91,11 +141,14 @@ test("Countdown is DOM-only and detailed Analytics uses one request path", () =>
   const countdown = source("components/analytics-refresh-countdown.tsx");
   const dashboard = source("components/community-analytics-dashboard.tsx");
   assert.doesNotMatch(countdown, /\bfetch\s*\(/);
-  assert.match(countdown, /setInterval\(\(\) => setClock\(Date\.now\(\)\), 1_000\)/);
+  assert.match(countdown, /setInterval\(\(\) => setClock\(serverNow\(\)\), 1_000\)/);
   assert.match(countdown, /setTimeout/);
   assert.match(countdown, /requestRefresh\("countdown"\)/);
   assert.match(countdown, /requestRefresh\("visibility"\)/);
   assert.match(countdown, /lastRequestedNextUpdateAtRef/);
+  assert.doesNotMatch(countdown, /Date\.now\(\)\s*\+\s*schedule\.intervalMs/);
+  const dashboardPage = source("app/dashboard/page.tsx");
+  assert.doesNotMatch(dashboardPage, /Date\.now\(\)\s*\+\s*15\s*\*\s*60_000/);
   assert.match(dashboard, /fetch\(\s*`\/api\/analytics\/community\?/);
   assert.doesNotMatch(dashboard, /\/api\/analytics\/snapshot/);
   assert.equal((dashboard.match(/\bfetch\s*\(/g) ?? []).length, 1);

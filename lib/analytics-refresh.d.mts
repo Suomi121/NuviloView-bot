@@ -2,6 +2,7 @@ export type AnalyticsFreshness = "fresh" | "stale" | "very_stale" | "unavailable
 export type AnalyticsRefreshReason = "initial" | "filter" | "countdown" | "visibility";
 
 export type AnalyticsRefreshContract = Readonly<{
+  server_time: number;
   last_updated_at: number | null;
   next_update_at: number;
   snapshot_version: number | null;
@@ -11,6 +12,7 @@ export type AnalyticsRefreshContract = Readonly<{
 }>;
 
 export type AnalyticsRefreshSchedule = Readonly<{
+  serverTime: number;
   lastUpdatedAt: number;
   nextUpdateAt: number;
   snapshotVersion: number | null;
@@ -27,6 +29,11 @@ export function getAnalyticsRefreshIntervalMs(
   env?: Record<string, string | undefined>,
 ): number;
 
+export function getNextAnalyticsRefreshBoundary(
+  at?: number,
+  intervalMs?: number,
+): number;
+
 export function createAnalyticsRefreshContract(
   metadata: Record<string, unknown> | null | undefined,
   options?: { at?: number; intervalMs?: number },
@@ -34,6 +41,7 @@ export function createAnalyticsRefreshContract(
 
 export function toAnalyticsRefreshSchedule(
   value: Record<string, unknown> | null | undefined,
+  options?: { at?: number },
 ): AnalyticsRefreshSchedule | null;
 
 export function recordAnalyticsFetch(reason?: AnalyticsRefreshReason): Readonly<{

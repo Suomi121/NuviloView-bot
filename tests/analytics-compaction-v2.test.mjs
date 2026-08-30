@@ -379,6 +379,6 @@ test("Web analytics refresh uses one-shot scheduling instead of minute polling",
   );
   assert.doesNotMatch(analyticsDashboard, /setInterval|60_000/);
   assert.match(countdown, /setTimeout/);
-  assert.match(countdown, /setInterval\(\(\) => setClock\(Date\.now\(\)\), 1_000\)/);
+  assert.match(countdown, /setInterval\(\(\) => setClock\(serverNow\(\)\), 1_000\)/);
   assert.match(countdown, /This interval updates only the browser text/);
 });

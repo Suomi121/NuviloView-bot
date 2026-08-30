@@ -3,6 +3,7 @@
 import { Clock3 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  getNextAnalyticsRefreshBoundary,
   isAnalyticsRefreshDue,
   type AnalyticsRefreshReason,
   type AnalyticsRefreshSchedule,
@@ -31,18 +32,27 @@ export function AnalyticsRefreshCountdown({
   const [deferredNextUpdateAt, setDeferredNextUpdateAt] = useState<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const lastRequestedNextUpdateAtRef = useRef<number | null>(null);
+  const serverClockOffsetRef = useRef(0);
+
+  const serverNow = useCallback(
+    () => Date.now() + serverClockOffsetRef.current,
+    [],
+  );
 
   const nextUpdateAt = deferredNextUpdateAt ?? schedule?.nextUpdateAt ?? null;
 
   useEffect(() => {
+    serverClockOffsetRef.current = schedule?.serverTime
+      ? schedule.serverTime - Date.now()
+      : 0;
     setDeferredNextUpdateAt(null);
     lastRequestedNextUpdateAtRef.current = null;
-    setClock(Date.now());
-  }, [schedule?.nextUpdateAt]);
+    setClock(serverNow());
+  }, [schedule?.nextUpdateAt, schedule?.serverTime, serverNow]);
 
   const requestRefresh = useCallback(async (reason: AnalyticsRefreshReason) => {
     if (!schedule || !onRefresh || nextUpdateAt === null) return false;
-    const at = Date.now();
+    const at = serverNow();
     if (!isAnalyticsRefreshDue({
       at,
       nextUpdateAt,
@@ -57,29 +67,31 @@ export function AnalyticsRefreshCountdown({
       if (!refreshed) {
         // A failed request is deferred to the next projection window. This
         // prevents a deadline or visibility event from creating a retry storm.
-        setDeferredNextUpdateAt(Date.now() + schedule.intervalMs);
+        setDeferredNextUpdateAt(
+          getNextAnalyticsRefreshBoundary(serverNow(), schedule.intervalMs),
+        );
       }
       return refreshed;
     } finally {
       refreshInFlightRef.current = false;
     }
-  }, [nextUpdateAt, onRefresh, schedule]);
+  }, [nextUpdateAt, onRefresh, schedule, serverNow]);
 
   useEffect(() => {
     if (!schedule || nextUpdateAt === null) return;
     // This interval updates only the browser text. It never calls an API.
-    const clockTimer = window.setInterval(() => setClock(Date.now()), 1_000);
+    const clockTimer = window.setInterval(() => setClock(serverNow()), 1_000);
     const refreshTimer = onRefresh
       ? window.setTimeout(
           () => void requestRefresh("countdown"),
-          Math.max(250, nextUpdateAt - Date.now()),
+          Math.max(250, nextUpdateAt - serverNow()),
         )
       : null;
     const onVisibility = () => {
       if (
         onRefresh
         && document.visibilityState === "visible"
-        && Date.now() >= nextUpdateAt
+        && serverNow() >= nextUpdateAt
       ) {
         void requestRefresh("visibility");
       }
@@ -90,7 +102,7 @@ export function AnalyticsRefreshCountdown({
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [nextUpdateAt, onRefresh, requestRefresh, schedule]);
+  }, [nextUpdateAt, onRefresh, requestRefresh, schedule, serverNow]);
 
   if (!schedule || nextUpdateAt === null) return null;
   const en = locale === "en";

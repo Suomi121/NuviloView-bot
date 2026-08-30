@@ -109,6 +109,7 @@ import {
   createMessageHistoryImportWorker,
 } from "./lib/message-history-import-worker.mjs";
 import { createStorage } from "./lib/storage/index.mjs";
+import { createSnapshotService } from "./lib/sync/snapshots.mjs";
 import { createMessageDomainRouter } from "./lib/message-local-first.mjs";
 import { createEventDomainRouter } from "./lib/event-local-first.mjs";
 import {
@@ -139,6 +140,10 @@ const messageRetentionDays = Number.isInteger(
   : 90;
 const messageImportConfig = getMessageImportConfig(process.env);
 const messageStorage = createStorage({ env: process.env });
+const localRuntimeSnapshots =
+  messageStorage.enabled && messageStorage.writeEnabled
+    ? createSnapshotService(messageStorage)
+    : null;
 const messageRouter = createMessageDomainRouter({
   env: process.env,
   storage: messageStorage,
@@ -4293,6 +4298,17 @@ async function updateMemberCount(guild) {
 async function recordBotHeartbeat() {
   if (!client.isReady()) return;
   const guildCount = getAvailableBotGuilds().length;
+  try {
+    localRuntimeSnapshots?.writeRuntimeSnapshot({
+      runtimeMode: cloudDatabase.getStatus().runtimeMode,
+      botStatus: "RUNNING",
+      botHeartbeatAt: Date.now(),
+    });
+  } catch (error) {
+    console.error(
+      `[Runtime] Failed to record local Bot heartbeat: ${safeErrorText(error)}`,
+    );
+  }
   const wasAvailable = cloudDatabase.isAvailable();
   refreshCloudRuntimeStatus({ guildCount });
   if (!cloudDatabase.isAvailable()) {
@@ -6349,6 +6365,17 @@ async function shutdown(
   shuttingDown = true;
   if (localStopWatcher) clearInterval(localStopWatcher);
   console.log(`${signal} received. Disconnecting NuviloChan Bot...`);
+  try {
+    localRuntimeSnapshots?.writeRuntimeSnapshot({
+      runtimeMode: cloudDatabase.getStatus().runtimeMode,
+      botStatus: "STOPPED",
+      botHeartbeatAt: Date.now(),
+    });
+  } catch (error) {
+    console.error(
+      `[Runtime] Failed to record local Bot stop state: ${safeErrorText(error)}`,
+    );
+  }
   client.destroy();
   if (releaseLease && cloudDatabase.isAvailable()) {
     try {

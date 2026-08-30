@@ -1,7 +1,9 @@
 import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
-import { pool } from '@/lib/db'
+import { evaluateProjectionBotHealth } from '@/lib/production-bot-monitor.mjs'
 import { evaluateRuntimeSnapshot, getRuntimeMonitorConfig } from '@/lib/runtime-monitor.mjs'
+import { getMultiDbSyncConfig } from '@/lib/sync/multi-config.mjs'
+import { withWebReadRouter } from '@/lib/web-analytics-read'
 
 export const dynamic = 'force-dynamic'
 
@@ -33,6 +35,37 @@ export async function GET(request: Request) {
   }
 
   try {
+    const multiDbConfig = getMultiDbSyncConfig(process.env)
+    if (multiDbConfig.webReadEnabled && multiDbConfig.snapshotEnabled) {
+      const assessment = await withWebReadRouter(async (router) => {
+        const [runtimeRead, syncRead] = await Promise.all([
+          router.readRuntimeSnapshot(),
+          router.readSyncStatusSnapshot(),
+        ])
+        return evaluateProjectionBotHealth({
+          runtimeRead,
+          syncRead,
+          maxAgeMs: maxHeartbeatAgeMilliseconds(),
+        })
+      })
+      if (!assessment.available) {
+        console.warn(`Bot monitor projection is down (${assessment.reason}).`)
+      } else if (assessment.state === 'Warning') {
+        console.warn(`Bot monitor projection is degraded (${assessment.reason}).`)
+      }
+      return NextResponse.json(
+        { status: assessment.available ? 'ok' : 'down' },
+        {
+          status: assessment.available ? 200 : 503,
+          headers: noStoreHeaders,
+        },
+      )
+    }
+
+    // Compatibility path for deployments that have not enabled Projection
+    // reads yet. Production Local-First deployments must not fall back here
+    // after a Projection read failure.
+    const { pool } = await import('@/lib/db')
     if (process.env.NUVILOVIEW_DISTRIBUTED_SINGLETON?.trim().toLowerCase() === 'true') {
       const config = getRuntimeMonitorConfig(process.env)
       const client = await pool.connect()

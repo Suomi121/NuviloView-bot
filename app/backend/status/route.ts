@@ -5,6 +5,7 @@ import {
   getAnalyticsRefreshIntervalMs,
 } from "@/lib/analytics-refresh.mjs";
 import { auth } from "@/lib/auth";
+import { getGuildChannelMetadata } from "@/lib/channel-metadata";
 import { isAuthorizedGuild } from "@/lib/community-analytics-utils.mjs";
 import { getManagedGuilds } from "@/lib/discord";
 import {
@@ -61,6 +62,7 @@ export async function GET(request: Request) {
     if (!isAuthorizedGuild(managedGuilds, guildId)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
+    const channelNames = await getGuildChannelMetadata(guildId);
     const endDate = todayIn(timeZone);
     const startDate = addDays(endDate, -(days - 1));
     const previousEndDate = addDays(startDate, -1);
@@ -82,7 +84,7 @@ export async function GET(request: Request) {
         dateFrom: previousStartDate,
         dateTo: endDate,
       });
-      return buildProjectionDashboardStatus(bundle, range, english);
+      return buildProjectionDashboardStatus(bundle, range, english, { channelNames });
     });
     const refresh = createAnalyticsRefreshContract(response.readMeta, {
       intervalMs: getAnalyticsRefreshIntervalMs(process.env),

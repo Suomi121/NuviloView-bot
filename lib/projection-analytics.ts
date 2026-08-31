@@ -7,6 +7,11 @@ import {
   percentagePointChange,
   safeRate,
 } from "./community-analytics-utils.mjs";
+import {
+  formatInsightPresentation,
+  resolveChannelDisplayName,
+  type ChannelEntityMetadata,
+} from "./insight-presentation.mjs";
 
 type ProjectionSnapshot = {
   aggregateId: string;
@@ -51,6 +56,11 @@ export type ProjectionAnalyticsRange = {
 };
 
 type Payload = Record<string, any>;
+
+type ProjectionPresentationOptions = {
+  locale?: "ja" | "en";
+  channelNames?: Readonly<Record<string, ChannelEntityMetadata>> | null;
+};
 
 const number = (value: unknown) => {
   const numeric = Number(value);
@@ -272,7 +282,11 @@ function topMemberShare(rows: Payload[], startDate: string, endDate: string) {
   return Math.round((top.reduce((sum, value) => sum + value, 0) / total) * 1_000) / 10;
 }
 
-function makeChannels(rows: Payload[], range: ProjectionAnalyticsRange) {
+function makeChannels(
+  rows: Payload[],
+  range: ProjectionAnalyticsRange,
+  options: ProjectionPresentationOptions,
+) {
   const channelRows = rows.filter((row) => row.projection === "channel_daily" && row.channelId);
   const grouped = new Map<string, Payload[]>();
   for (const row of channelRows) {
@@ -281,6 +295,10 @@ function makeChannels(rows: Payload[], range: ProjectionAnalyticsRange) {
     grouped.set(String(row.channelId), list);
   }
   return [...grouped.entries()].map(([channelId, list]) => {
+    const projectedName = list
+      .map((row) => row.channelName ?? row.channel_name)
+      .find((value) => typeof value === "string" && value !== channelId);
+    const resolvedMetadata = options.channelNames?.[channelId];
     const current = sumRows(list.filter((row) => inRange(row.dateUtc, range.startDate, range.endDate)));
     const previous = sumRows(list.filter((row) => inRange(row.dateUtc, range.previousStartDate, range.previousEndDate)));
     const change = comparison(current.messages || current.voiceSeconds, previous.messages || previous.voiceSeconds, {
@@ -288,9 +306,16 @@ function makeChannels(rows: Payload[], range: ProjectionAnalyticsRange) {
     });
     return {
       channelId,
-      name: channelId,
+      name: resolveChannelDisplayName({
+        channelId,
+        projectedName,
+        channelNames: options.channelNames,
+        locale: options.locale,
+      }),
       type: "unknown",
-      deleted: false,
+      deleted: typeof resolvedMetadata === "object" && resolvedMetadata !== null
+        ? Boolean(resolvedMetadata.deleted)
+        : !projectedName && !resolvedMetadata,
       messages: current.messages,
       previousMessages: previous.messages,
       uniqueAuthors: current.activeMembers,
@@ -432,7 +457,12 @@ function coreMetrics(rows: Payload[], range: ProjectionAnalyticsRange, currentPa
 export function buildProjectionCommunityAnalytics(
   bundle: ProjectionBundle,
   range: ProjectionAnalyticsRange,
+  options: ProjectionPresentationOptions = {},
 ) {
+  const presentation = {
+    locale: options.locale === "en" ? "en" as const : "ja" as const,
+    channelNames: options.channelNames ?? null,
+  };
   const rows = snapshotPayloads(bundle);
   const currentPayload = (bundle.current?.payload ?? {}) as Payload;
   const core = coreMetrics(rows, range, currentPayload);
@@ -440,7 +470,7 @@ export function buildProjectionCommunityAnalytics(
   const previousRetention = projectionRetention(rows, range.previousStartDate, range.previousEndDate);
   const currentTopShare = topMemberShare(rows, range.startDate, range.endDate);
   const previousTopShare = topMemberShare(rows, range.previousStartDate, range.previousEndDate);
-  const channels = makeChannels(rows, range);
+  const channels = makeChannels(rows, range, presentation);
   const currentHealth = calculateHealthScore({
     memberCount: core.memberCount,
     activeUsers: core.activeUsers,
@@ -505,7 +535,9 @@ export function buildProjectionCommunityAnalytics(
     "hourly_heatmap_not_projected",
     "event_time_role_breakdown_not_projected",
     "subday_onboarding_not_projected",
-    "channel_names_not_projected",
+    ...(channels.some((channel) => channel.name.startsWith(
+      presentation.locale === "en" ? "Unknown channel" : "不明なチャンネル",
+    )) ? ["channel_names_partially_resolved"] : []),
   ];
   const health = {
     ...currentHealth,
@@ -566,8 +598,13 @@ export function buildProjectionDashboardStatus(
   bundle: ProjectionBundle,
   range: ProjectionAnalyticsRange,
   english = false,
+  options: Omit<ProjectionPresentationOptions, "locale"> = {},
 ) {
-  const analytics = buildProjectionCommunityAnalytics(bundle, range);
+  const locale = english ? "en" as const : "ja" as const;
+  const analytics = buildProjectionCommunityAnalytics(bundle, range, {
+    ...options,
+    locale,
+  });
   const rows = snapshotPayloads(bundle);
   const dates = datesBetween(range.startDate, range.endDate);
   const daily = new Map(
@@ -593,10 +630,23 @@ export function buildProjectionDashboardStatus(
   });
   const currentPayload = (bundle.current?.payload ?? {}) as Payload;
   const health = analytics.health;
-  const insightCards = analytics.insights.slice(0, 3).map((insight: any) => ({
-    kind: insight.category === "voice" ? "engagement" : insight.category === "activity" ? "channel" : "members",
-    title: insight.titleKey,
-    body: JSON.stringify(insight.values ?? {}),
+  const presentedInsights = analytics.insights.map((insight: any) => ({
+    insight,
+    copy: formatInsightPresentation(insight, {
+      locale,
+      channelNames: options.channelNames,
+    }),
+  }));
+  // The leading insight is already rendered as the hero. Cards intentionally
+  // start at the next item so the same observation is not shown twice.
+  const insightCards = presentedInsights.slice(1, 4).map(({ insight, copy }: any) => ({
+    kind: insight.category === "channel"
+      ? "channel"
+      : insight.category === "voice" || insight.category === "activity"
+        ? "engagement"
+        : "members",
+    title: copy.title,
+    body: copy.detail,
   }));
   return {
     labels,
@@ -622,8 +672,8 @@ export function buildProjectionDashboardStatus(
     voiceTotalSeconds: dates.reduce((sum, date) => sum + number(daily.get(date)?.voiceSeconds), 0),
     maxVoiceSessionSeconds: 0,
     health,
-    insight: analytics.insights[0]
-      ? { title: analytics.insights[0].titleKey, body: JSON.stringify(analytics.insights[0].values ?? {}) }
+    insight: presentedInsights[0]
+      ? { title: presentedInsights[0].copy.title, body: presentedInsights[0].copy.detail }
       : {
           title: english ? "Collecting projected data" : "Projectionデータを収集中です",
           body: english ? "Insights appear after enough projected history is available." : "十分なProjection履歴が揃うとインサイトを表示します。",

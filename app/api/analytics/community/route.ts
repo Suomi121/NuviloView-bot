@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
+import { getGuildChannelMetadata } from "@/lib/channel-metadata";
 import {
   createAnalyticsRefreshContract,
   getAnalyticsRefreshIntervalMs,
@@ -104,6 +105,7 @@ export async function GET(request: Request) {
     }
     const searchParams = new URL(request.url).searchParams;
     const guildId = searchParams.get("guildId") ?? "";
+    const locale = searchParams.get("locale") === "en" ? "en" as const : "ja" as const;
     const range = parseRange(searchParams);
     if (!DISCORD_ID_PATTERN.test(guildId) || !range) {
       return NextResponse.json({ error: "Invalid analytics filters" }, { status: 400 });
@@ -118,6 +120,7 @@ export async function GET(request: Request) {
         { status: 422 },
       );
     }
+    const channelNames = await getGuildChannelMetadata(guildId);
     const result = await withWebReadRouter(async (router) => {
       const bundle = await router.readAnalyticsBundle({
         guildId,
@@ -132,7 +135,10 @@ export async function GET(request: Request) {
       }
       return {
         forbiddenFilter: false as const,
-        analytics: buildProjectionCommunityAnalytics(bundle, range),
+        analytics: buildProjectionCommunityAnalytics(bundle, range, {
+          locale,
+          channelNames,
+        }),
         metrics: router.getMetrics(),
       };
     });

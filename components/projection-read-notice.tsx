@@ -32,7 +32,8 @@ function limitationLabel(value: string, en: boolean) {
     event_time_role_breakdown_not_projected: ["発言時点ロール内訳は未集約", "Event-time role breakdown is not projected"],
     subday_onboarding_not_projected: ["1時間単位の初動分析は未集約", "Sub-day onboarding is not projected"],
     projection_row_limit_reached: ["Projection行上限に達したため一部集計です", "Projection row limit reached; totals are partial"],
-    channel_names_not_projected: ["チャンネル名は未集約のためID表示です", "Channel names are not projected; IDs are shown"],
+    channel_names_not_projected: ["チャンネル名はProjection外のメタデータから補完します", "Channel names are resolved from metadata outside the Projection"],
+    channel_names_partially_resolved: ["一部の削除済みチャンネルは人間向けの代替名で表示します", "Some deleted channels are shown with a human-readable fallback"],
   };
   const label = labels[value];
   return label ? label[en ? 1 : 0] : value;

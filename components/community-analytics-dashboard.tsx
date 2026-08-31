@@ -9,6 +9,7 @@ import {
   toAnalyticsRefreshSchedule,
   type AnalyticsRefreshReason,
 } from "@/lib/analytics-refresh.mjs";
+import { formatInsightPresentation } from "@/lib/insight-presentation.mjs";
 
 export type CommunityAnalyticsView = "retention" | "health" | "diagnostics" | "channels" | "roles" | "insights";
 
@@ -65,7 +66,7 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
-    const params = new URLSearchParams({ guildId, timeZone, excludeBots: String(excludeBots) });
+    const params = new URLSearchParams({ guildId, timeZone, locale, excludeBots: String(excludeBots) });
     if (custom && startDate && endDate) {
       params.set("startDate", startDate);
       params.set("endDate", endDate);
@@ -98,7 +99,7 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
         setLoading(false);
       }
     }
-  }, [channelId, custom, endDate, excludeBots, guildId, presetDays, roleId, startDate, timeZone]);
+  }, [channelId, custom, endDate, excludeBots, guildId, locale, presetDays, roleId, startDate, timeZone]);
 
   useEffect(() => {
     void loadAnalytics("initial");
@@ -294,32 +295,11 @@ function InsightsView({ data, en }: { data: AnalyticsData; en: boolean }) {
 function InsightCard({ insight, en, compact = false }: { insight: any; en: boolean; compact?: boolean }) {
   const copy = insightCopy(insight, en);
   const tone = insight.severity === "positive" ? "border-emerald-400/25 bg-emerald-400/10" : insight.severity === "critical" ? "border-rose-400/30 bg-rose-400/10" : "border-amber-400/25 bg-amber-400/10";
-  return <article className={`rounded-xl border p-4 ${tone}`}><div className="flex items-center justify-between gap-3"><span className="text-[10px] font-black tracking-wider uppercase">{insight.category} · {insight.severity}</span><span className="text-[10px] text-muted-foreground">{Math.round(insight.importance)}</span></div><h3 className="mt-2 font-bold">{copy.title}</h3><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{copy.detail}</p>{!compact && <div className="mt-3 rounded-lg bg-background/35 p-3 text-xs"><b>{en ? "Suggested review" : "検討候補"}</b><p className="mt-1 text-muted-foreground">{copy.recommendation}</p></div>}</article>;
+  return <article className={`rounded-xl border p-4 ${tone}`}><div className="flex items-center justify-between gap-3"><span className="text-[10px] font-black tracking-wider uppercase">{copy.categoryLabel} · {copy.severityLabel}</span><span className="text-[10px] text-muted-foreground">{Math.round(insight.importance)}</span></div><h3 className="mt-2 font-bold">{copy.title}</h3><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{copy.detail}</p>{!compact && <div className="mt-3 rounded-lg bg-background/35 p-3 text-xs"><b>{en ? "Suggested review" : "検討候補"}</b><p className="mt-1 text-muted-foreground">{copy.recommendation}</p></div>}</article>;
 }
 
 function insightCopy(insight: any, en: boolean) {
-  const values = insight.values ?? {};
-  const titleMap: Record<string, [string, string]> = {
-    activity_increased: ["サーバー活動が増加しました", "Server activity increased"], activity_decreased: ["サーバー活動が減少しました", "Server activity decreased"],
-    retention_increased: ["新規メンバー定着率が上昇しました", "New-member retention improved"], retention_decreased: ["新規メンバー定着率が低下しました", "New-member retention declined"],
-    channel_increased: ["主要チャンネルの活動が増加しました", "A leading channel grew"], channel_decreased: ["主要チャンネルの活動が減少しました", "A leading channel declined"],
-    activity_concentrated: ["活動が一部メンバーへ集中しています", "Activity is concentrated"], voice_increased: ["VC活動が増加しました", "Voice activity increased"], voice_decreased: ["VC活動が減少しました", "Voice activity decreased"],
-  };
-  const recommendationMap: Record<string, [string, string]> = {
-    review_activity_drivers: ["減少寄与の大きいチャンネル・時間帯を確認してみてください。", "Consider reviewing the channels and time windows with the largest decline."],
-    review_successful_channels: ["伸びたチャンネルの運用パターンを他の場所でも参考にできるか検討してください。", "Consider reviewing whether successful channel patterns are transferable."],
-    review_onboarding: ["案内チャンネルや初回投稿までの導線を確認してみてください。", "Consider reviewing onboarding guidance and the path to a first post."],
-    review_retained_behaviors: ["定着した参加者に共通する行動傾向を確認してみてください。", "Consider reviewing behaviors associated with retained members."],
-    review_channel_context: ["該当チャンネルの予定・話題・権限変更と同時期か確認してください。", "Consider checking whether schedules, topics, or permissions changed in the same period."],
-    broaden_participation: ["新規・低頻度メンバーが参加しやすい話題や導線を検討してください。", "Consider ways to make participation easier for new or infrequent members."],
-    review_voice_schedule: ["VCの開催時間やイベント有無を同期間で確認してください。", "Consider checking voice schedules and events during the same period."],
-  };
-  let detail = `${values.current ?? "—"} → ${values.previous ?? "—"}`;
-  if (values.percent !== undefined && values.percent !== null) detail = `${values.previous ?? 0} → ${values.current ?? 0} (${values.percent >= 0 ? "+" : ""}${values.percent}%)`;
-  if (values.delta !== undefined) detail = `${values.previous ?? 0}% → ${values.current ?? 0}% (${values.delta >= 0 ? "+" : ""}${values.delta}pt)`;
-  if (values.name) detail = `#${values.name} · ${values.change?.percent ?? "—"}%`;
-  if (values.share !== undefined && !values.name) detail = en ? `Top 10% account for ${values.share}% of messages.` : `上位10%が投稿の${values.share}%を占めています。`;
-  return { title: titleMap[insight.titleKey]?.[en ? 1 : 0] ?? insight.titleKey, detail, recommendation: recommendationMap[insight.recommendationKey]?.[en ? 1 : 0] ?? "—" };
+  return formatInsightPresentation(insight, { locale: en ? "en" : "ja" });
 }
 
 function ContributorList({ title, rows, en }: { title: string; rows: any[]; en: boolean }) { return <SectionCard title={title}><ContributorRows rows={rows} en={en} /></SectionCard>; }

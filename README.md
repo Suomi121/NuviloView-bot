@@ -35,10 +35,11 @@ SQLiteをBot側の唯一のSource of Truthとして維持し、SupabaseとTurso�
 
 ## Analytics Compaction v2
 
-明示したCanary Guildでは、Message Raw EventをSQLiteだけに保持し、15分周期の
-Current / Daily / Channel Daily / User Daily ProjectionだけをSupabase・Tursoへ
-同期できます。既定値はOFFです。送信削減指標、Web countdown、History Importの
-SQLite-first統合は[Analytics Compaction v2](docs/analytics-compaction-v2.md)を参照してください。
+全通常GuildのMessage / Reaction / Voice / Member Raw EventをSQLiteだけに保持し、
+固定15分境界でCurrent / Daily / Channel Daily / User Daily Projectionだけを
+Supabase・Tursoへ同期します。versioned contract、dirty checkpoint、checksum skip、
+Shadow / Canary、範囲限定Backfill、送信削減指標は
+[Analytics Compaction v2](docs/analytics-compaction-v2.md)を参照してください。
 
 This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
 

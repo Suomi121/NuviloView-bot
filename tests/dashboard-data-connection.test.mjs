@@ -56,3 +56,13 @@ test("Dashboard keeps request failure separate from Projection and Provider heal
   assert.match(notice, /meta\.lastKnownGood/);
   assert.match(notice, /Last Known Good/);
 });
+
+test("Dashboard labels the activity summary as weekly insights", () => {
+  const dashboard = readFileSync(new URL("../app/dashboard/page.tsx", import.meta.url), "utf8");
+  const analytics = readFileSync(new URL("../components/community-analytics-dashboard.tsx", import.meta.url), "utf8");
+
+  assert.match(dashboard, /Weekly insights/);
+  assert.match(dashboard, /週間インサイト/);
+  assert.doesNotMatch(dashboard, /Live activity pulse|リアルタイム活動パルス/);
+  assert.doesNotMatch(analytics, /live activity signal|リアルタイム活動パルス/);
+});

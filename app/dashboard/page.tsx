@@ -1962,10 +1962,10 @@ export default function DashboardPage() {
               <div className="flex items-start justify-between">
                 <div>
                   <h2 className="font-bold">
-                    {en ? "Live activity pulse" : "リアルタイム活動パルス"}
+                    {en ? "Weekly insights" : "週間インサイト"}
                   </h2>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {en ? "A quick live signal; the Health v2 Preview is shown below" : "当日の簡易シグナルです。Health v2 Previewは下部に表示します"}
+                    {en ? "A quick summary of recent activity; the Health v2 Preview is shown below" : "直近の活動をまとめた簡易シグナルです。Health v2 Previewは下部に表示します"}
                   </p>
                 </div>
                 <StatusBadge tone={health.status === "良好" || health.status === "Good" ? "success" : health.status === "注意" || health.status === "Caution" ? "warning" : health.status === "要確認" || health.status === "Needs attention" ? "danger" : "neutral"}>{health.status}</StatusBadge>

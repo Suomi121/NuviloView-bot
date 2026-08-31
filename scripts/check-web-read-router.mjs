@@ -52,6 +52,10 @@ try {
       observationSource: bundle.metadata.observationSource,
       snapshotVersion: bundle.metadata.snapshotVersion,
       currentChecksum: bundle.current?.checksum ?? null,
+      projectionVersion:
+        Number(bundle.current?.payload?.projectionVersion ?? 1),
+      projectionSchemaVersion:
+        Number(bundle.current?.payload?.schemaVersion ?? 0),
       projectionRows: bundle.snapshots.length,
       providerCalls: bundle.current
         ? (bundle.metadata.observationSource ? 3 : 2)

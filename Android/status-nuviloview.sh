@@ -150,9 +150,14 @@ if [[ -f "$metrics_path" ]] && command -v node >/dev/null 2>&1; then
           : `${Number(analytics.guildCount ?? 0)} Guilds`;
         console.log("Analytics Compaction v2:");
         console.log(`  Enabled: ${analytics.enabled ? "YES" : "NO"} (${scope})`);
+        console.log(`  Contract Mode: ${String(analytics.mode ?? "legacy").toUpperCase()}`);
         console.log(`  Raw Events Seen: ${Number(analytics.rawEventsSeen ?? 0)}`);
+        console.log(`  Buckets Tracked / Dirty: ${Number(analytics.bucketsTracked ?? 0)} / ${Number(analytics.bucketsDirty ?? analytics.queueDepth ?? 0)}`);
         console.log(`  Snapshots Changed / Skipped: ${Number(analytics.snapshotsChanged ?? 0)} / ${Number(analytics.snapshotsSkipped ?? 0)}`);
         console.log(`  Provider Writes: ${Number(analytics.providerWrites ?? 0)}`);
+        console.log(`  Required Provider Skips: ${Number(analytics.requiredProviderWriteSkips ?? 0)}`);
+        console.log(`  Last / Max Duration: ${Number(analytics.lastDurationMs ?? 0)} / ${Number(analytics.maxDurationMs ?? 0)} ms`);
+        console.log(`  Shadow Compared / Mismatched: ${Number(analytics.shadowCompared ?? 0)} / ${Number(analytics.shadowMismatched ?? 0)}`);
         console.log(`  Reduction Ratio: ${(Number(analytics.providerWriteReductionRatio ?? 0) * 100).toFixed(2)}%`);
       }
     } catch { console.log("Sync Health: UNKNOWN (invalid metrics)"); }

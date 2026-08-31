@@ -314,3 +314,13 @@ test("Projection backfill defaults to dry-run and requires explicit confirmation
   assert.equal(storage.analyticsProjections.listDue({ at: Date.now() }).length, 4);
   storage.close();
 });
+
+test("Projection reconciliation accepts the CLI's bounded 10000-row limit", () => {
+  const storage = createLocalStorage({ databasePath: ":memory:" });
+  assert.deepEqual(storage.snapshots.listForReconciliation({ limit: 10_000 }), []);
+  assert.throws(
+    () => storage.snapshots.listForReconciliation({ limit: 10_001 }),
+    /between 1 and 10000/,
+  );
+  storage.close();
+});

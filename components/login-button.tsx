@@ -3,6 +3,7 @@
 import { DiscordIcon } from '@/components/discord-icon'
 import { GoogleIcon } from '@/components/google-icon'
 import { signIn, useSession } from '@/lib/auth-client'
+import { getAuthCallbackPath } from '@/lib/auth-redirect'
 import { useLocale } from '@/components/locale-provider'
 import { ChevronDown, LoaderCircle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
@@ -59,13 +60,16 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
   }
 
   const startSocialSignIn = async (provider: AuthProvider) => {
-    const callbackURL = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    const callbackURL = getAuthCallbackPath(
+      provider,
+      `${window.location.pathname}${window.location.search}${window.location.hash}`,
+    )
     setPendingProvider(provider)
 
     try {
       const result = await signIn.social({
         provider,
-        callbackURL: callbackURL === '/' ? '/dashboard' : callbackURL,
+        callbackURL,
         errorCallbackURL: '/auth-error',
       })
 

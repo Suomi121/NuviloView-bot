@@ -28,6 +28,9 @@ export function SiteHeader() {
           <a href="/guides" className="transition-colors hover:text-foreground">
             {en ? 'Guides' : '運営ガイド'}
           </a>
+          <a href="/pro" className="transition-colors hover:text-foreground">
+            Pro
+          </a>
           <a href="/support" className="transition-colors hover:text-foreground">
             {en ? 'Support' : 'サポート'}
           </a>

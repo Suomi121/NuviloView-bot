@@ -7,6 +7,7 @@ import {
   ArrowUpRight,
   Bell,
   Coffee,
+  Crown,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -28,6 +29,7 @@ import {
   Target,
   TrendingUp,
   Users,
+  UserRound,
   X,
 } from "lucide-react";
 import { useSession } from "@/lib/auth-client";
@@ -124,6 +126,8 @@ const appFeatures = [
     href: "/dashboard",
   },
   { title: "表示設定", description: "時間帯を変更", href: "/settings" },
+  { title: "アカウント接続", description: "Google・Discordの連携状態", href: "/account" },
+  { title: "NuviloView Pro", description: "Proプレビューを表示", href: "/pro" },
   {
     title: "ドキュメント",
     description: "Botとダッシュボードの使い方",
@@ -239,7 +243,7 @@ export default function DashboardPage() {
   const [savingGoals, setSavingGoals] = useState(false);
 
   const selectedGuild = guilds.find((guild) => guild.id === guildId);
-  const userName = session?.user?.name || "Discordユーザー";
+  const userName = session?.user?.name || (en ? "NuviloView user" : "NuviloViewユーザー");
   const userInitials = userName.slice(0, 2).toUpperCase();
   const days =
     period === "過去7日間"
@@ -1183,27 +1187,38 @@ export default function DashboardPage() {
               </div>
             )}
             <div className="relative">
-              {isDeveloper ? (
-                <button
-                  type="button"
-                  onClick={() => setUserMenuOpen((current) => !current)}
-                  aria-label={en ? "Open account menu" : "アカウントメニューを開く"}
-                  className="flex items-center gap-3 rounded-xl px-1.5 py-1 transition-colors hover:bg-secondary"
-                >
-                  <UserIdentity sessionImage={session?.user?.image} userName={userName} userInitials={userInitials} en={en} />
-                </button>
-              ) : (
+              <button
+                type="button"
+                onClick={() => setUserMenuOpen((current) => !current)}
+                aria-label={en ? "Open account menu" : "アカウントメニューを開く"}
+                aria-expanded={userMenuOpen}
+                className="flex items-center gap-3 rounded-xl px-1.5 py-1 transition-colors hover:bg-secondary"
+              >
                 <UserIdentity sessionImage={session?.user?.image} userName={userName} userInitials={userInitials} en={en} />
-              )}
-              {isDeveloper && userMenuOpen && (
+              </button>
+              {userMenuOpen && (
                 <div className="absolute right-0 top-12 z-50 w-56 overflow-hidden rounded-xl border border-border bg-card p-1.5 shadow-2xl">
-                  <a
-                    href="/developer"
-                    className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-bold text-primary transition-colors hover:bg-primary/10"
-                  >
-                    <ShieldCheck className="h-4 w-4" />
-                    <span>Developer Console</span>
+                  <a href="/account" className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-secondary">
+                    <UserRound className="h-4 w-4 text-primary" />
+                    <span>{en ? "Account connections" : "アカウント接続"}</span>
                   </a>
+                  <a href="/settings" className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-secondary">
+                    <Settings className="h-4 w-4 text-muted-foreground" />
+                    <span>{en ? "Settings" : "設定"}</span>
+                  </a>
+                  <a href="/pro" className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-secondary">
+                    <Crown className="h-4 w-4 text-amber-400" />
+                    <span>NuviloView Pro</span>
+                  </a>
+                  {isDeveloper && (
+                    <>
+                      <div className="my-1 border-t border-border" />
+                      <a href="/developer" className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-bold text-primary transition-colors hover:bg-primary/10">
+                        <ShieldCheck className="h-4 w-4" />
+                        <span>Developer Console</span>
+                      </a>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -2280,7 +2295,7 @@ function UserIdentity({ sessionImage, userName, userInitials, en }: { sessionIma
   return <>
     <div className="hidden text-right sm:block">
       <p className="text-sm font-semibold">{userName}</p>
-      <p className="text-[11px] text-muted-foreground">{en ? "Server owner" : "サーバーオーナー"}</p>
+      <p className="text-[11px] text-muted-foreground">{en ? "Signed in" : "ログイン中"}</p>
     </div>
     {sessionImage ? (
       <img src={sessionImage} alt="" className="h-9 w-9 rounded-full object-cover" referrerPolicy="no-referrer" />

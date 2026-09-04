@@ -53,7 +53,7 @@ export function HeroSection() {
           </div>
           <p className="mt-4 flex items-center gap-1.5 text-xs text-muted-foreground/70">
             <ShieldCheck className="h-3.5 w-3.5" />
-            Discord OAuth2を利用して安全に連携します（Discord公式サービスではありません）
+            GoogleまたはDiscord OAuthを利用して安全にログインできます（各社の公式サービスではありません）
           </p>
         </div>
 

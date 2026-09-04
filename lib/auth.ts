@@ -1,9 +1,7 @@
 import { betterAuth } from "better-auth"
 import { authStorage } from "@/lib/auth-storage"
 import { isAuthStorageUnavailableError, safeAuthStorageErrorCode } from "@/lib/auth-storage/postgres"
-
-const discordClientId = process.env.NUVILOVIEW_CLIENT_ID ?? process.env.DISCORD_CLIENT_ID
-const discordClientSecret = process.env.NUVILOVIEW_CLIENT_SECRET ?? process.env.DISCORD_CLIENT_SECRET
+import { authProviderCredentials, getAuthProviderAvailability } from "@/lib/auth-provider-config"
 
 const baseURL =
   process.env.BETTER_AUTH_URL ??
@@ -13,6 +11,8 @@ const additionalTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? '')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean)
+
+const providerAvailability = getAuthProviderAvailability()
 
 export const auth = betterAuth({
   database: authStorage.pool,
@@ -24,8 +24,8 @@ export const auth = betterAuth({
   // collecting or storing the user's real Discord email address.
   socialProviders: {
     discord: {
-      clientId: discordClientId as string,
-      clientSecret: discordClientSecret as string,
+      clientId: authProviderCredentials.discord.clientId as string,
+      clientSecret: authProviderCredentials.discord.clientSecret as string,
       disableDefaultScope: true,
       scope: ["identify", "guilds"],
       // Refresh the stored Discord display name and avatar whenever the user
@@ -35,6 +35,29 @@ export const auth = betterAuth({
         email: `discord-${profile.id}@users.invalid`,
         emailVerified: false,
       }),
+    },
+    ...(providerAvailability.google ? {
+      google: {
+        clientId: authProviderCredentials.google.clientId as string,
+        clientSecret: authProviderCredentials.google.clientSecret as string,
+        // NuviloView uses Google only for authentication. No Drive, Gmail or
+        // other Google service scope is requested.
+        scope: ["openid", "email", "profile"],
+      },
+    } : {}),
+  },
+  account: {
+    accountLinking: {
+      enabled: true,
+      // Linking is an explicit action on /account. A matching provider email
+      // must never silently merge two NuviloView users.
+      disableImplicitLinking: true,
+      trustedProviders: ["discord", "google"],
+      // Discord deliberately uses a users.invalid identity key, so an
+      // authenticated user must be allowed to link a real Google address.
+      allowDifferentEmails: true,
+      updateUserInfoOnLink: false,
+      allowUnlinkingAll: false,
     },
   },
   trustedOrigins: [

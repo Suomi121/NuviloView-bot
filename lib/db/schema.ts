@@ -8,6 +8,7 @@ import {
   date,
   serial,
   uniqueIndex,
+  unique,
   index,
   jsonb,
   bigint,
@@ -59,7 +60,9 @@ export const account = pgTable("account", {
   password: text("password"),
   createdAt: timestamp("createdAt").notNull().defaultNow(),
   updatedAt: timestamp("updatedAt").notNull().defaultNow(),
-});
+}, (table) => [
+  unique("account_provider_identity_unique").on(table.providerId, table.accountId),
+]);
 
 export const verification = pgTable("verification", {
   id: text("id").primaryKey(),

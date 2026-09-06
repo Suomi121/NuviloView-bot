@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth"
 import { authStorage } from "@/lib/auth-storage"
 import { isAuthStorageUnavailableError, safeAuthStorageErrorCode } from "@/lib/auth-storage/postgres"
 import { authProviderCredentials, getAuthProviderAvailability } from "@/lib/auth-provider-config"
+import { providerIdentityConflictHook } from "@/lib/auth-provider-identity"
 
 const baseURL =
   process.env.BETTER_AUTH_URL ??
@@ -16,6 +17,7 @@ const providerAvailability = getAuthProviderAvailability()
 
 export const auth = betterAuth({
   database: authStorage.pool,
+  hooks: { before: providerIdentityConflictHook },
   baseURL,
   // Discord OAuth is the primary sign-in method for NuviloView:OEM.
   // Better Auth 1.x requires a non-null email-shaped identity key even when a

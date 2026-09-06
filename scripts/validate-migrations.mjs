@@ -55,4 +55,5 @@ if (errors.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(`Migration validation passed: ${files.length} ordered migrations, checksums verified.`);
+  await import("./validate-auth-migrations.mjs");
 }

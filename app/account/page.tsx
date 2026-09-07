@@ -1,4 +1,5 @@
 import { AccountConnections } from '@/components/account-connections'
+import { AccountLogout } from '@/components/account-logout'
 import { auth } from '@/lib/auth'
 import { getAuthProviderAvailability } from '@/lib/auth-provider-config'
 import { ChevronLeft, Link2 } from 'lucide-react'
@@ -29,6 +30,7 @@ export default async function AccountPage() {
             {session.user.name}さんのログイン方法とDiscord認可の連携状態を確認できます。
           </p>
           <AccountConnections providerAvailability={getAuthProviderAvailability()} />
+          <AccountLogout />
         </div>
       </section>
     </main>

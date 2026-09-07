@@ -1,5 +1,9 @@
 # Phase 0.5e — Isolated Preview migration and OAuth checkpoint
 
+Historical checkpoint. For the later shared Logout UI validation and real OAuth
+matrix, see [the 2026-09-07 continuation](auth-provider-identity-phase-05e-logout.md).
+The successful Preview migration below was not repeated.
+
 Reviewed: 2026-09-06. Scope: NuviloView Web Auth only.
 
 **Result: NO-GO for the complete Phase 0.5e gate; real OAuth account selection is pending.**

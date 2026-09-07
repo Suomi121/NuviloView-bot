@@ -8,7 +8,7 @@ const settings = await readFile(new URL("../app/settings/page.tsx", import.meta.
 test("Settings delegates import UX without changing its account and theme controls", () => {
   assert.match(settings, /<MessageHistoryImportPanel guilds=\{guilds\} locale=\{locale\} \/>/);
   assert.match(settings, /<ThemeCustomizer guilds=\{guilds\} \/>/);
-  assert.match(settings, /signOut/);
+  assert.match(settings, /<AccountLogout\s*\/>/);
 });
 
 test("UI can represent every v2 lifecycle state and empty loading states", () => {

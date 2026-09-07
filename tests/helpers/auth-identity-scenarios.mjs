@@ -120,8 +120,19 @@ try {
   }
   await login(discordOnly, 'discord', 'discord-only');
   record('Discord-only fixture login', Boolean(await user(discordOnly)) && (await countIdentity('discord','discord-only')).rows === 1);
+  const { GET: guildsGET } = await import(pathToFileURL(resolve(repo, 'app/api/guilds/route.ts')));
+  // Validate real server invalidation for unlinked Google and Discord sessions,
+  // not merely removal of a browser's local cookie representation.
+  for (const [label, jar] of [['Google-only', b], ['Discord-only', discordOnly]]) {
+    const oldCookie = jar.header();
+    const out = await request(jar, 'sign-out', {});
+    const oldSession = await (await auth.handler(new Request(`${origin}/api/auth/get-session`, { headers: { cookie: oldCookie } }))).json();
+    const guildDenied = await guildsGET(new Request(`${origin}/api/guilds`, { headers: { cookie: oldCookie } }));
+    const dashboardDenied = await snapshotGET(new Request(`${origin}/api/analytics/snapshot?guildId=1532925691111145644`, { headers: { cookie: oldCookie } }));
+    record(`${label} logout invalidates server session and denies Guild and Dashboard APIs`, out.status === 200 && oldSession === null && guildDenied.status === 401 && dashboardDenied.status === 401);
+  }
   // Use actual session invalidation and login callbacks, without modifying token checks.
-  for (const [from,to] of [['google','google'],['google','discord'],['discord','google']]) {
+  for (const [from,to] of [['google','google'],['google','discord'],['discord','google'],['discord','discord']]) {
     const jar = new Jar();
     await login(jar, from, from === 'google' ? 'google-a' : 'discord-x');
     const beforeId = (await user(jar)).id;
@@ -129,6 +140,9 @@ try {
     const out = await request(jar, 'sign-out', {});
     const leaked = await auth.handler(new Request(`${origin}/api/auth/get-session`,{headers:{cookie:oldCookie}}));
     const oldSession = await leaked.json();
+    const guildDenied = await guildsGET(new Request(`${origin}/api/guilds`, { headers: { cookie: oldCookie } }));
+    const dashboardDenied = await snapshotGET(new Request(`${origin}/api/analytics/snapshot?guildId=1532925691111145644`, { headers: { cookie: oldCookie } }));
+    record(`linked ${from} logout denies old-session Guild and Dashboard APIs`, guildDenied.status === 401 && dashboardDenied.status === 401);
     await login(jar, to, to === 'google' ? 'google-a' : 'discord-x');
     record(`${from} logout ${to} relogin preserves user, invalidates old session`, out.status === 200 && oldSession === null && (await user(jar)).id === beforeId);
   }

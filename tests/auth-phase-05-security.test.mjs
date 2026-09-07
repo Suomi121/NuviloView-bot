@@ -84,13 +84,14 @@ test('Guild data routes preserve session and Discord-managed Guild boundaries', 
 })
 
 test('account UI and provider status never expose OAuth credentials', async () => {
-  const [connections, status, privacy, terms, pro, settings] = await Promise.all([
+  const [connections, status, privacy, terms, pro, settings, logout] = await Promise.all([
     source('components/account-connections.tsx'),
     source('app/api/auth-provider-status/route.ts'),
     source('app/privacy/page.tsx'),
     source('app/terms/page.tsx'),
     source('app/pro/page.tsx'),
     source('app/settings/page.tsx'),
+    source('components/account-logout.tsx'),
   ])
 
   assert.doesNotMatch(connections, /accessToken|refreshToken|idToken|clientSecret/)
@@ -100,5 +101,7 @@ test('account UI and provider status never expose OAuth credentials', async () =
   assert.match(terms, /GoogleログインだけではDiscordサーバー情報へアクセスできず/)
   assert.match(pro, /Billingなし/)
   assert.doesNotMatch(pro, /checkoutSession|paymentIntent|subscriptionId|priceId/)
-  assert.match(settings, /signOut\(\)/)
+  assert.match(settings, /<AccountLogout\s*\/>/)
+  assert.match(logout, /await signOut\(\)/)
+  assert.doesNotMatch(logout, /accessToken|refreshToken|idToken|clientSecret|document\.cookie/)
 })

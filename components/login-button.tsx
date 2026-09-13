@@ -53,7 +53,7 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
 
   if (session?.user) {
     return (
-      <a href="/dashboard" className={buttonClass}>
+      <a href="/dashboard" className={`${buttonClass} bg-primary text-primary-foreground shadow-primary/25 hover:shadow-primary/40`}>
         <span>{locale === 'en' ? 'Open dashboard' : 'ダッシュボードを開く'}</span>
       </a>
     )

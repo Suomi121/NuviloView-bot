@@ -43,7 +43,8 @@ test('Account page reports real Better Auth links and only performs explicit lin
   assert.match(connections, /account\.providerId === provider/)
   assert.match(connections, /authClient\.linkSocial\(/)
   assert.match(connections, /callbackURL:\s*'\/account'/)
-  assert.doesNotMatch(connections, /unlinkAccount/)
+  assert.match(connections, /authClient\.unlinkAccount/)
+  assert.match(connections, /confirmUnlink/)
 
   assert.match(discord, /getDiscordAccount\(userId\)/)
   assert.match(discord, /users\/@me\/guilds/)

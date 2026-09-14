@@ -45,6 +45,7 @@ export const auth = betterAuth({
         // NuviloView uses Google only for authentication. No Drive, Gmail or
         // other Google service scope is requested.
         scope: ["openid", "email", "profile"],
+        prompt: "select_account",
       },
     } : {}),
   },

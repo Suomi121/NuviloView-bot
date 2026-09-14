@@ -1,5 +1,6 @@
 import { AccountConnections } from '@/components/account-connections'
 import { AccountLogout } from '@/components/account-logout'
+import { AccountDisplayIdentity } from '@/components/account-display-identity'
 import { auth } from '@/lib/auth'
 import { getAuthProviderAvailability } from '@/lib/auth-provider-config'
 import { ChevronLeft, Link2 } from 'lucide-react'
@@ -27,8 +28,9 @@ export default async function AccountPage() {
           </div>
           <h1 className="mt-5 text-2xl font-extrabold tracking-tight">アカウント接続</h1>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            {session.user.name}さんのログイン方法とDiscord認可の連携状態を確認できます。
+            ログイン方法とDiscord認可の連携状態を確認できます。
           </p>
+          <AccountDisplayIdentity user={{ id: session.user.id, name: session.user.name, image: session.user.image }} />
           <AccountConnections providerAvailability={getAuthProviderAvailability()} />
           <AccountLogout />
         </div>

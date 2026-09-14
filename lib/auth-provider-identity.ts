@@ -19,6 +19,18 @@ export function isProviderIdentityConflict(error: unknown): boolean {
 // Request-local wrapper only. Better Auth still validates OAuth state, PKCE,
 // session ownership and redirects. The database, not this hook, prevents races.
 export const providerIdentityConflictHook = createAuthMiddleware(async (ctx) => {
+  if (ctx.path === '/unlink-account') {
+    const [{ authStorage }, { guardedUnlink }] = await Promise.all([
+      import('@/lib/auth-storage'), import('@/lib/auth-unlink-guard'),
+    ])
+    const adapter = ctx.context.internalAdapter
+    return { context: { context: { internalAdapter: {
+      ...adapter,
+      deleteAccount: async (id: string) => {
+        await guardedUnlink(authStorage.pool, id, () => adapter.deleteAccount(id))
+      },
+    } } } }
+  }
   if (ctx.path !== '/callback/:id' ||
       (ctx.params?.id !== 'google' && ctx.params?.id !== 'discord')) return
   const adapter = ctx.context.internalAdapter

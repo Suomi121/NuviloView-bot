@@ -33,6 +33,8 @@ import {
   X,
 } from "lucide-react";
 import { useSession } from "@/lib/auth-client";
+import { useDisplayIdentity } from "@/components/use-display-identity";
+import { ProfileAvatar } from "@/components/profile-avatar";
 import { useRouter } from "next/navigation";
 import { useLocale } from "@/components/locale-provider";
 import { defaultGuildTheme, guildThemeStyle, type GuildTheme } from "@/lib/guild-theme";
@@ -243,7 +245,8 @@ export default function DashboardPage() {
   const [savingGoals, setSavingGoals] = useState(false);
 
   const selectedGuild = guilds.find((guild) => guild.id === guildId);
-  const userName = session?.user?.name || (en ? "NuviloView user" : "NuviloViewユーザー");
+  const displayIdentity = useDisplayIdentity(session?.user);
+  const userName = displayIdentity?.name || (en ? "NuviloView user" : "NuviloViewユーザー");
   const userInitials = userName.slice(0, 2).toUpperCase();
   const days =
     period === "過去7日間"
@@ -1194,7 +1197,7 @@ export default function DashboardPage() {
                 aria-expanded={userMenuOpen}
                 className="flex items-center gap-3 rounded-xl px-1.5 py-1 transition-colors hover:bg-secondary"
               >
-                <UserIdentity sessionImage={session?.user?.image} userName={userName} userInitials={userInitials} en={en} />
+                <UserIdentity sessionImage={displayIdentity?.image} userName={userName} userInitials={userInitials} en={en} />
               </button>
               {userMenuOpen && (
                 <div className="absolute right-0 top-12 z-50 w-56 overflow-hidden rounded-xl border border-border bg-card p-1.5 shadow-2xl">
@@ -2298,7 +2301,7 @@ function UserIdentity({ sessionImage, userName, userInitials, en }: { sessionIma
       <p className="text-[11px] text-muted-foreground">{en ? "Signed in" : "ログイン中"}</p>
     </div>
     {sessionImage ? (
-      <img src={sessionImage} alt="" className="h-9 w-9 rounded-full object-cover" referrerPolicy="no-referrer" />
+      <ProfileAvatar image={sessionImage} name={userName} />
     ) : (
       <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-pink-400 to-violet-600 text-xs font-bold">{userInitials}</div>
     )}

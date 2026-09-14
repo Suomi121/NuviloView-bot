@@ -121,6 +121,26 @@ try {
   await login(discordOnly, 'discord', 'discord-only');
   record('Discord-only fixture login', Boolean(await user(discordOnly)) && (await countIdentity('discord','discord-only')).rows === 1);
   const { GET: guildsGET } = await import(pathToFileURL(resolve(repo, 'app/api/guilds/route.ts')));
+  for (const [provider, identity] of [['google', 'google-a'], ['discord', 'discord-x']]) {
+    if (provider === 'discord') await globalThis.identityTestStorage.guildAccess.setManagedGuildCache(aUser, [{ id: '1532925691111145644', name: 'Synthetic cached guild' }]);
+    const unlinked = await request(a, 'unlink-account', { providerId: provider });
+    const left = (await pool.query('SELECT "providerId" FROM account WHERE "userId"=$1', [aUser])).rows;
+    record(`${provider} official unlink preserves user and other provider`, unlinked.status === 200 && left.length === 1 && left[0].providerId !== provider && (await user(a)).id === aUser);
+    const blocked = await request(a, 'unlink-account', { providerId: left[0].providerId });
+    record(`${left[0].providerId}-only official unlink blocked server-side`, blocked.status === 400 && (await pool.query('SELECT count(*)::int n FROM account WHERE "userId"=$1', [aUser])).rows[0].n === 1);
+    if (provider === 'discord') {
+      const deniedAfter = await snapshotGET(new Request(`${origin}/api/analytics/snapshot?guildId=1532925691111145644`, { headers: { cookie: a.header() } }));
+      record('Discord unlink ignores stale managed Guild cache and denies private API', (await getManagedGuilds(aUser)).length === 0 && deniedAfter.status === 403);
+    }
+    const relinked = await complete(a, provider, await begin(a, provider, true), identity);
+    record(`${provider} relink preserves same user and unique identity`, relinked.location === `${origin}/account` && (await user(a)).id === aUser && (await countIdentity(provider, identity)).rows === 1);
+  }
+  const parallelUnlinks = await Promise.all(['discord', 'google'].map(providerId => request(a, 'unlink-account', { providerId })));
+  const survivors = (await pool.query('SELECT "providerId" FROM account WHERE "userId"=$1', [aUser])).rows;
+  record('concurrent cross-provider unlink retains at least one login method', survivors.length >= 1 && parallelUnlinks.filter(r => r.status === 200).length <= 1);
+  for (const [provider, identity] of [['google', 'google-a'], ['discord', 'discord-x']]) {
+    if (!survivors.some(row => row.providerId === provider)) await complete(a, provider, await begin(a, provider, true), identity);
+  }
   // Validate real server invalidation for unlinked Google and Discord sessions,
   // not merely removal of a browser's local cookie representation.
   for (const [label, jar] of [['Google-only', b], ['Discord-only', discordOnly]]) {

@@ -4,6 +4,7 @@ import { DiscordIcon } from '@/components/discord-icon'
 import { GoogleIcon } from '@/components/google-icon'
 import { useLocale } from '@/components/locale-provider'
 import { authClient } from '@/lib/auth-client'
+import type { ProviderLabel } from '@/lib/provider-label'
 import { Check, Link2, LoaderCircle, ShieldCheck } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -25,6 +26,18 @@ export function AccountConnections({
   const [confirmUnlink, setConfirmUnlink] = useState<AuthProvider | null>(null)
   const [unlinking, setUnlinking] = useState(false)
   const mutationInFlight = useRef(false)
+  const [labels, setLabels] = useState<Partial<Record<AuthProvider, ProviderLabel | null>>>({})
+  const [labelsLoading, setLabelsLoading] = useState(true)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetch('/api/account-connections', { cache: 'no-store', signal: controller.signal })
+      .then(response => { if (!response.ok) throw new Error('PROFILE_UNAVAILABLE'); return response.json() })
+      .then(result => { if (!controller.signal.aborted) setLabels(result) })
+      .catch(() => { if (!controller.signal.aborted) setLabels({}) })
+      .finally(() => { if (!controller.signal.aborted) setLabelsLoading(false) })
+    return () => controller.abort()
+  }, [])
 
   const unlinkProvider = async () => {
     if (!confirmUnlink || mutationInFlight.current) return
@@ -148,6 +161,12 @@ export function AccountConnections({
                     )}
                   </div>
                   <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{provider.description}</p>
+                  {!loading && linked && <div className="mt-2 break-words text-sm" aria-live="polite">
+                    {labelsLoading ? <p className="text-xs text-muted-foreground">{en ? 'Loading linked account…' : '連携先を確認中…'}</p> : labels[provider.id]?.name || labels[provider.id]?.detail ? <>
+                      {labels[provider.id]?.name && <p>{labels[provider.id]?.name}</p>}
+                      {labels[provider.id]?.detail && <p className="text-xs text-muted-foreground">{provider.id === 'discord' ? '@' : ''}{labels[provider.id]?.detail}</p>}
+                    </> : <p className="text-xs text-muted-foreground">{en ? 'Linked account details unavailable.' : '連携先情報を取得できませんでした。'}</p>}
+                  </div>}
                 </div>
               </div>
               {!loading && !linked && (

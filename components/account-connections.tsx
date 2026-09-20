@@ -91,6 +91,7 @@ export function AccountConnections({
       const result = await authClient.linkSocial({
         provider,
         callbackURL: '/account',
+        errorCallbackURL: `/auth-error?provider=${provider}`,
       })
       if (result.error) throw new Error(result.error.message)
     } catch {
@@ -194,6 +195,9 @@ export function AccountConnections({
         )
       })}
       {!loading && accounts.length <= 1 && <p className="text-xs text-muted-foreground">{en ? 'You cannot disconnect your last login method. Connect another login method first.' : '最後のログイン方法は解除できません。先に別のログイン方法を連携してください。'}</p>}
+      {!loading && isLinked('google') && !isLinked('discord') && <p className="rounded-xl border border-primary/25 bg-primary/[0.06] p-4 text-sm leading-relaxed text-foreground">
+        {en ? 'Connect Discord to use server features.' : 'Discordを連携するとサーバー機能を利用できます。'}
+      </p>}
       {confirmUnlink && <dialog ref={node => { if (node && !node.open) node.showModal() }} onCancel={event => { if (unlinking) event.preventDefault(); else setConfirmUnlink(null) }} aria-labelledby="unlink-title" className="m-auto max-w-[calc(100%-2rem)] rounded-2xl bg-transparent p-0 text-foreground backdrop:bg-black/60">
         <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
           <h2 id="unlink-title" className="font-bold">{en ? `Disconnect ${confirmUnlink === 'discord' ? 'Discord' : 'Google'}?` : `${confirmUnlink === 'discord' ? 'Discord' : 'Google'}連携を解除しますか？`}</h2>

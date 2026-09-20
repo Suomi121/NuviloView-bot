@@ -46,7 +46,7 @@ export const providerIdentityConflictHook = createAuthMiddleware(async (ctx) => 
               if (!isProviderIdentityConflict(error)) throw error
               // Fixed same-site destination; never expose driver details or claim
               // a failed link succeeded. Do not update the winning account.
-              throw ctx.redirect('/auth-error?error=account_already_linked_to_different_user')
+              throw ctx.redirect(`/auth-error?provider=${ctx.params?.id}&error=account_already_linked_to_different_user`)
             }
           },
         },

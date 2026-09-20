@@ -70,7 +70,7 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
       const result = await signIn.social({
         provider,
         callbackURL,
-        errorCallbackURL: '/auth-error',
+        errorCallbackURL: `/auth-error?provider=${provider}`,
       })
 
       if (result.error) router.push('/auth-error')

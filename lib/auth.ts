@@ -42,6 +42,9 @@ export const auth = betterAuth({
       google: {
         clientId: authProviderCredentials.google.clientId as string,
         clientSecret: authProviderCredentials.google.clientSecret as string,
+        // Discord creates the primary NuviloView user. Existing linked Google
+        // identities may sign in, but unknown ones must not create a new user.
+        disableSignUp: true,
         // NuviloView uses Google only for authentication. No Drive, Gmail or
         // other Google service scope is requested.
         scope: ["openid", "email", "profile"],

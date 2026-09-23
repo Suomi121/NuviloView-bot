@@ -29,6 +29,7 @@ import { createHmac, randomInt, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { createGuildResetService } from "./lib/guild-reset-service.mjs";
+import { createGuildOnboarding } from "./lib/guild-onboarding.mjs";
 import { getGuildResetConfig, isResetDeveloper, parseIdList } from "./lib/guild-reset-utils.mjs";
 import {
   RUNTIME_EXIT_CODES,
@@ -270,6 +271,7 @@ const client = new Client({
 });
 
 const dashboardUrl = "https://nuviloview-oem.vercel.app/";
+const onboardGuild = createGuildOnboarding({ dashboardUrl });
 const applicationId = process.env.NUVILOVIEW_CLIENT_ID;
 const developerGuildId = process.env.DISCORD_DEV_GUILD_ID;
 const developerOwnerUserId = process.env.DISCORD_OWNER_USER_ID?.trim() || null;
@@ -4953,6 +4955,7 @@ client.on("guildCreate", (guild) =>
   void (async () => {
     updateBotPresence();
     if (await leaveBlockedGuild(guild, "re-invite")) return;
+    void onboardGuild(guild);
     await Promise.allSettled([
       syncGuildCommands(guild.id),
       loadReactionRoleRules(guild.id),

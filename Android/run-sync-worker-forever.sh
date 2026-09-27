@@ -9,6 +9,7 @@ DEFAULT_PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 PROJECT_ROOT="${NUVILOVIEW_PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
 ENV_FILE="${NUVILOVIEW_ENV_FILE:-$PROJECT_ROOT/.env.local}"
 WORKER_FILE="$PROJECT_ROOT/scripts/run-sync-worker.mjs"
+SUPERVISOR_FILE="$SCRIPT_DIR/../scripts/supervise-sync-worker.mjs"
 RUNTIME_DIR="${NUVILOVIEW_ANDROID_RUNTIME_DIR:-$SCRIPT_DIR/runtime}"
 LOG_DIR="${NUVILOVIEW_ANDROID_LOG_DIR:-$SCRIPT_DIR/logs}"
 RUNNER_LOG="$LOG_DIR/sync-worker-runner.log"
@@ -24,6 +25,7 @@ CRASH_HISTORY_FILE="$RUNTIME_DIR/sync-worker-crash-history"
 MODE="forever"
 SHUTDOWN_REQUESTED=0
 CURRENT_WORKER_PID=""
+CURRENT_MONITOR_PID=""
 CURRENT_SLEEP_PID=""
 LOCK_ACQUIRED=0
 NODE_PATH=""
@@ -79,6 +81,10 @@ is_runner_process() {
 
 is_worker_process() {
   nv_pid_matches "$1" "scripts/run-sync-worker.mjs"
+}
+
+is_monitor_process() {
+  nv_pid_matches "$1" "scripts/supervise-sync-worker.mjs"
 }
 
 worker_enabled() {
@@ -145,7 +151,7 @@ validate_configuration() {
       failed=1
     }
   fi
-  for name in "$ENV_FILE" "$WORKER_FILE" "$PROJECT_ROOT/package.json" "$PROJECT_ROOT/node_modules/pg/package.json"; do
+  for name in "$ENV_FILE" "$WORKER_FILE" "$SUPERVISOR_FILE" "$PROJECT_ROOT/package.json" "$PROJECT_ROOT/node_modules/pg/package.json"; do
     [[ -f "$name" ]] || { log "Missing required file: $name"; failed=1; }
   done
   if [[ -f "$ENV_FILE" ]]; then
@@ -209,11 +215,7 @@ show_status() {
   else
     printf 'Sync Worker Runner: STOPPED (state %s)\n' "$state"
   fi
-  if [[ -n "$worker_pid" ]] && is_worker_process "$worker_pid"; then
-    printf 'Sync Worker: RUNNING (PID %s)\n' "$worker_pid"
-  else
-    printf 'Sync Worker: STOPPED\n'
-  fi
+  node "--env-file=$ENV_FILE" "$SUPERVISOR_FILE" --status "$PROJECT_ROOT" "$RUNTIME_DIR" "$LOG_DIR"
   printf 'Started: %s\n' "$started"
   if [[ -f "$RUNNER_LOG" ]]; then
     latest="$(tail -n 1 "$RUNNER_LOG" 2>/dev/null || true)"
@@ -251,6 +253,9 @@ stop_runner() {
 
 # shellcheck disable=SC2329 # Invoked from the EXIT-trap cleanup path.
 terminate_current_worker() {
+  # A validation failure or a foreign live PID must never be terminated by cleanup.
+  [[ -n "$CURRENT_MONITOR_PID" ]] || return 0
+  CURRENT_WORKER_PID="$(nv_read_pid "$WORKER_PID_FILE")"
   if [[ -n "$CURRENT_WORKER_PID" ]] && is_worker_process "$CURRENT_WORKER_PID"; then
     log "Sending SIGTERM to Sync Worker PID $CURRENT_WORKER_PID."
     kill -TERM "$CURRENT_WORKER_PID" 2>/dev/null || true
@@ -273,7 +278,7 @@ request_shutdown() {
     log "Sync Worker runner received $signal_name and is shutting down."
   fi
   [[ -n "$CURRENT_SLEEP_PID" ]] && nv_pid_alive "$CURRENT_SLEEP_PID" && kill -TERM "$CURRENT_SLEEP_PID" 2>/dev/null || true
-  [[ -n "$CURRENT_WORKER_PID" ]] && is_worker_process "$CURRENT_WORKER_PID" && kill -TERM "$CURRENT_WORKER_PID" 2>/dev/null || true
+  [[ -n "$CURRENT_MONITOR_PID" ]] && is_monitor_process "$CURRENT_MONITOR_PID" && kill -TERM "$CURRENT_MONITOR_PID" 2>/dev/null || true
 }
 
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
@@ -286,6 +291,11 @@ cleanup() {
   if (( LOCK_ACQUIRED == 1 )); then
 
     terminate_current_worker
+
+    if [[ -n "$CURRENT_MONITOR_PID" ]] && is_monitor_process "$CURRENT_MONITOR_PID"; then
+      kill -TERM "$CURRENT_MONITOR_PID" 2>/dev/null || true
+      wait "$CURRENT_MONITOR_PID" 2>/dev/null || true
+    fi
 
     rm -f -- "$WORKER_PID_FILE" "$STARTED_AT_FILE" 2>/dev/null || true
 
@@ -332,27 +342,34 @@ record_crash_and_count() {
 }
 
 run_worker_once() {
-  local output_fd exit_code raw_line
+  local exit_code
   NETWORK_FAILURE_SEEN=0
   log "Starting the local Outbox Sync Worker."
-  coproc NV_SYNC_WORKER_PROCESS {
-    cd -- "$PROJECT_ROOT" || exit 1
-    exec "$NODE_PATH" "--env-file=$ENV_FILE" "$WORKER_FILE" 2>&1
-  }
-  CURRENT_WORKER_PID="$NV_SYNC_WORKER_PROCESS_PID"
-  output_fd="${NV_SYNC_WORKER_PROCESS[0]}"
-  printf '%s\n' "$CURRENT_WORKER_PID" > "$WORKER_PID_FILE"
-  nv_write_state "$STATE_FILE" "RUNNING"
-  log "Sync Worker started with PID $CURRENT_WORKER_PID."
-  while IFS= read -r -u "$output_fd" raw_line || [[ -n "${raw_line:-}" ]]; do
-    printf '[%s] %s\n' "$(nv_timestamp)" "$(nv_redact_line "${raw_line:-}")" >> "$WORKER_OUTPUT_LOG"
-    if [[ "$raw_line" =~ ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ECONNRESET|ECONNREFUSED|getaddrinfo|[Nn]etwork[[:space:]]+unreachable|fetch[[:space:]]+failed ]]; then
-      NETWORK_FAILURE_SEEN=1
-    fi
-  done
-  wait "$CURRENT_WORKER_PID" 2>/dev/null
+  # Node observes child exit independently from both output streams. Bash owns
+  # only the established singleton lock and bounded restart/backoff policy.
+  "$NODE_PATH" "--env-file=$ENV_FILE" "$SUPERVISOR_FILE" --run "$PROJECT_ROOT" "$RUNTIME_DIR" "$LOG_DIR" &
+  CURRENT_MONITOR_PID=$!
+  wait "$CURRENT_MONITOR_PID" 2>/dev/null
   exit_code=$?
-  rm -f -- "$WORKER_PID_FILE"
+  if (( SHUTDOWN_REQUESTED == 1 )); then
+    terminate_current_worker
+    wait "$CURRENT_MONITOR_PID" 2>/dev/null || true
+  fi
+  CURRENT_MONITOR_PID=""
+  # The helper refuses ANY live recorded PID, including a reused non-worker PID.
+  # Preserve its evidence and DEGRADED state rather than clearing it below.
+  (( exit_code == 22 )) && return 22
+  # If the monitor itself crashed while its child is alive, fail closed: no
+  # second Worker. Ownership must be reviewed, not recovered by deleting locks.
+  CURRENT_WORKER_PID="$(nv_read_pid "$WORKER_PID_FILE")"
+  if [[ -n "$CURRENT_WORKER_PID" ]] && is_worker_process "$CURRENT_WORKER_PID"; then
+    nv_write_state "$STATE_FILE" "DEGRADED"
+    log "Worker remains alive after monitor exit; automatic restart refused."
+    return 22
+  fi
+  rm -f -- "$WORKER_PID_FILE" "$RUNTIME_DIR/sync-worker.identity.json"
+  nv_write_state "$STATE_FILE" "STOPPED"
+  [[ -f "$RUNTIME_DIR/sync-worker.network-failure" ]] && NETWORK_FAILURE_SEEN=1
   CURRENT_WORKER_PID=""
   return "$exit_code"
 }
@@ -409,6 +426,11 @@ while (( SHUTDOWN_REQUESTED == 0 )); do
   log "Sync Worker stopped with exit code $worker_exit_code after $run_seconds seconds. Restart count: $restart_count."
 
   (( SHUTDOWN_REQUESTED == 1 )) && break
+  if (( worker_exit_code == 22 )); then
+    # Do not let EXIT cleanup terminate a live process whose ownership is unclear.
+    release_lock
+    exit 22
+  fi
   if [[ "$MODE" == "once" ]]; then exit "$worker_exit_code"; fi
 
   if (( NETWORK_FAILURE_SEEN == 1 )); then

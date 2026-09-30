@@ -76,6 +76,16 @@ import {
   shouldTrackSpamMessage,
 } from "./lib/spam-protection.mjs";
 import {
+  DEFAULT_GUILD_SPAM_POLICY,
+  createGuildSpamDetectionTracker,
+  createGuildSpamPolicyCache,
+  countSpamLinks,
+  countSpamMentions,
+  parseGuildSpamPolicyRow,
+  resolveSpamPolicyAction,
+  shouldApplyGuildSpamPolicy,
+} from "./lib/guild-spam-policy.mjs";
+import {
   SNIPE_HISTORY_LIMIT,
   SNIPE_RETENTION_MS,
   SNIPE_RESULT_SESSION_MS,
@@ -366,6 +376,38 @@ const spamTracker = createSpamTracker({
   windowMs: spamWindowMs,
   detectionCooldownMs: spamDetectionCooldownMs,
 });
+const guildSpamDetectionTracker = createGuildSpamDetectionTracker({
+  cooldownMs: spamDetectionCooldownMs,
+});
+let spamPolicyTableCheckedAt = 0;
+let spamPolicyTableExists = false;
+const guildSpamPolicyCache = createGuildSpamPolicyCache({
+  ttlMs: 30_000,
+  loadPolicy: async (guildId) => {
+    if (Date.now() - spamPolicyTableCheckedAt >= 30_000) {
+      const tableResult = await sql.query(
+        `SELECT to_regclass('public.guild_spam_policy') AS table_name`,
+        [],
+      );
+      const tableRows = Array.isArray(tableResult?.rows) ? tableResult.rows : tableResult;
+      spamPolicyTableExists = Boolean(tableRows?.[0]?.table_name);
+      spamPolicyTableCheckedAt = Date.now();
+    }
+    if (!spamPolicyTableExists) return null;
+    const result = await sql.query(
+      `SELECT * FROM "guild_spam_policy" WHERE "guild_id" = $1 LIMIT 1`,
+      [guildId],
+    );
+    const rows = Array.isArray(result?.rows) ? result.rows : result;
+    const policy = parseGuildSpamPolicyRow(rows?.[0] ?? null);
+    if (rows?.[0] && !policy) {
+      throw Object.assign(new Error("Stored Guild spam policy is invalid."), {
+        code: "SPAM_POLICY_INVALID",
+      });
+    }
+    return policy;
+  },
+});
 const spamActionLocks = new Set();
 const spamAlertMessages = new Map();
 const reactionRoleRules = new Map();
@@ -374,7 +416,10 @@ const snipeHistoryCleanupTimers = new Map();
 const ignoredSnipeDeleteIds = new Set();
 const snipeResultSessions = new Map();
 const spamTrackerPruneTimer = setInterval(
-  () => spamTracker.prune(),
+  () => {
+    spamTracker.prune();
+    guildSpamDetectionTracker.prune();
+  },
   Math.max(spamWindowMs * 2, 60_000),
 );
 spamTrackerPruneTimer.unref();
@@ -2460,9 +2505,9 @@ async function handleSecurityHelpCommand(message, args) {
       ),
       new TextDisplayBuilder().setContent(
         `### 🚨 自動スパム検知 — ${spamProtectionEnabled ? "稼働中" : "停止中"}\n` +
-          `${spamWindowMs / 1_000}秒以内に同一ユーザーまたはBotが${spamMessageLimit}件送信すると、` +
-          `${spamTimeoutMinutes}分タイムアウトを試行します。\n` +
-          "-# 検知カードからTimeout解除・Kick・BANを選択でき、成功後はカードを自動削除します。",
+          `個別設定がないサーバーでは、${spamWindowMs / 1_000}秒以内の${spamMessageLimit}件投稿を検知し、` +
+          `従来どおり${spamTimeoutMinutes}分のタイムアウトを試行します。\n` +
+          "-# 個別設定のあるサーバーはDashboardの Security → Spam Detection で条件と対応方法を確認できます。",
       ),
       new TextDisplayBuilder().setContent(
         "### 🔐 権限・実行可否チェック\n" +
@@ -3433,6 +3478,9 @@ async function sendSpamDetectionAlert(message, {
   detectedCount,
   actionResult,
   protectedReason = null,
+  windowSeconds = spamWindowMs / 1_000,
+  signals = ["messages"],
+  allowActions = true,
 }) {
   const botMember =
     message.guild.members.me ?? (await message.guild.members.fetchMe());
@@ -3449,28 +3497,50 @@ async function sendSpamDetectionAlert(message, {
       targetMember.user.globalName ??
       targetMember.user.username,
   );
+  const signalLabels = {
+    messages: "短時間の連続投稿",
+    duplicates: "同一内容の繰り返し",
+    mentions: "メンション数",
+    links: "リンク数",
+    cross_channel: "複数チャンネルへの投稿",
+  };
+  const reasonText = signals.map((signal) => signalLabels[signal] ?? "投稿パターン").join("・");
   const content =
     `🚨 **スパムを検知しました**\n` +
     `対象: **${targetName}**（\`${targetMember.id}\`）\n` +
-    `検知条件: ${(spamWindowMs / 1_000).toLocaleString("ja-JP")}秒以内に` +
+    `検知条件: ${reasonText}（${windowSeconds.toLocaleString("ja-JP")}秒以内） · ` +
     `${detectedCount.toLocaleString("ja-JP")}件\n` +
     `自動対応: ${actionResult}` +
     (protectedReason ? `\n保護理由: ${protectedReason}` : "") +
-    `\n-# 所有者・Administrator・対応権限を持つ運営者が操作できます · 監査ID: ${auditId}`;
+    `\n-# 検知ID: ${auditId}`;
   const alertMessage = await alertChannel.send({
     content,
-    components: protectedReason ? [] : [createSpamActionRow(auditId)],
+    components: allowActions && !protectedReason ? [createSpamActionRow(auditId)] : [],
     allowedMentions: { parse: [] },
   });
-  spamAlertMessages.set(auditId, {
-    channelId: alertMessage.channelId,
-    messageId: alertMessage.id,
-  });
-  const cleanupTimer = setTimeout(
-    () => spamAlertMessages.delete(auditId),
-    24 * 60 * 60 * 1_000,
-  );
-  cleanupTimer.unref();
+  if (allowActions && !protectedReason) {
+    spamAlertMessages.set(auditId, {
+      channelId: alertMessage.channelId,
+      messageId: alertMessage.id,
+    });
+    const cleanupTimer = setTimeout(
+      () => spamAlertMessages.delete(auditId),
+      24 * 60 * 60 * 1_000,
+    );
+    cleanupTimer.unref();
+  }
+}
+
+function hasSpamAdminOrModeratorPermissions(member) {
+  if (!member) return false;
+  return member.id === member.guild.ownerId || [
+    PermissionFlagsBits.Administrator,
+    PermissionFlagsBits.ManageGuild,
+    PermissionFlagsBits.ManageMessages,
+    PermissionFlagsBits.ModerateMembers,
+    PermissionFlagsBits.KickMembers,
+    PermissionFlagsBits.BanMembers,
+  ].some((permission) => member.permissions.has(permission));
 }
 
 async function handleSpamDetection(message, detection) {
@@ -3491,6 +3561,50 @@ async function handleSpamDetection(message, detection) {
     user: client.user,
     member: botMember,
   };
+  const policyContext = detection.policyContext;
+  const actionMode = resolveSpamPolicyAction({
+    isCustom: Boolean(policyContext?.isCustom),
+    policy: policyContext?.policy,
+    source: policyContext?.source,
+  });
+  if (actionMode !== "LEGACY_TIMEOUT") {
+    const signalText = detection.signals.join(", ");
+    const auditId = randomUUID();
+    let storedAuditId = auditId;
+    if (actionMode === "LOG_ONLY" || actionMode === "INCIDENT") {
+      try {
+        storedAuditId = await startModerationAudit(context, {
+          action: actionMode === "INCIDENT" ? "spam_policy_incident" : "spam_policy_log",
+          targetId: targetMember.id,
+          targetName: (
+            targetMember.displayName ??
+            targetMember.user.globalName ??
+            targetMember.user.username
+          ).slice(0, 100),
+          channelId: message.channelId,
+          reason: `Guild Spam Policy detection: ${signalText}`.slice(0, 500),
+          requestedCount: detection.count,
+        });
+        await finishModerationAudit(storedAuditId, { status: "success", affectedCount: 0 });
+      } catch (error) {
+        console.error("Failed to record Guild Spam Policy detection:", error);
+        if (actionMode === "LOG_ONLY" || actionMode === "INCIDENT") return;
+      }
+    }
+    if (actionMode !== "LOG_ONLY") {
+      await sendSpamDetectionAlert(message, {
+        auditId: storedAuditId,
+        targetMember,
+        detectedCount: detection.count,
+        actionResult: "自動処分なし（管理者への通知のみ）",
+        protectedReason: getSpamProtectedReason(targetMember),
+        windowSeconds: detection.policyContext.policy.messageWindowSeconds,
+        signals: detection.signals,
+        allowActions: false,
+      }).catch((error) => console.error("Failed to send spam policy alert:", error));
+    }
+    return;
+  }
   const reason =
     `自動スパム検知: ${spamWindowMs / 1_000}秒以内に` +
     `${detection.count}件のメッセージ`;
@@ -3525,6 +3639,8 @@ async function handleSpamDetection(message, detection) {
       detectedCount: detection.count,
       actionResult: "保護対象のため自動タイムアウトなし",
       protectedReason,
+      windowSeconds: spamWindowMs / 1_000,
+      signals: detection.signals ?? ["messages"],
     }).catch((error) =>
       console.error("Failed to send protected spam alert:", error),
     );
@@ -3549,6 +3665,8 @@ async function handleSpamDetection(message, detection) {
       targetMember,
       detectedCount: detection.count,
       actionResult: "Bot権限またはロール階層不足のためタイムアウト失敗",
+      windowSeconds: spamWindowMs / 1_000,
+      signals: detection.signals ?? ["messages"],
     }).catch((error) => console.error("Failed to send spam alert:", error));
     return;
   }
@@ -3592,6 +3710,8 @@ async function handleSpamDetection(message, detection) {
     targetMember,
     detectedCount: detection.count,
     actionResult,
+    windowSeconds: spamWindowMs / 1_000,
+    signals: detection.signals ?? ["messages"],
   }).catch((error) => console.error("Failed to send spam alert:", error));
 }
 
@@ -5962,7 +6082,7 @@ client.on("interactionCreate", async (interaction) => {
 client.on("messageCreate", async (message) => {
   if (!message.guild || isGuildBlocked(message.guild.id)) return;
 
-  const trackSpam = () => {
+  const trackSpam = async () => {
     if (
       !spamProtectionEnabled ||
       !shouldTrackSpamMessage({
@@ -5973,10 +6093,62 @@ client.on("messageCreate", async (message) => {
     ) {
       return;
     }
-    const spamDetection = spamTracker.record(
-      `${message.guild.id}:${message.author.id}`,
-      message.createdTimestamp,
-    );
+    const policyContext = await guildSpamPolicyCache.get(message.guild.id);
+    let spamDetection;
+    if (policyContext.source === "guild" && policyContext.policy) {
+      const exclusion = shouldApplyGuildSpamPolicy({
+        policy: policyContext.policy,
+        isBot: message.author.bot,
+        isOwnBot: String(message.author.id) === String(client.user?.id),
+        isWebhook: Boolean(message.webhookId),
+        isAdmin: hasSpamAdminOrModeratorPermissions(message.member),
+        roleIds: message.member?.roles?.cache?.map?.((role) => role.id) ?? [],
+        channelId: message.channelId,
+      });
+      if (!exclusion.track) return;
+      const mentionCount = countSpamMentions({
+        userCount: message.mentions.users.size,
+        roleCount: message.mentions.roles.size,
+        everyone: message.mentions.everyone,
+      });
+      const linkCount = countSpamLinks(message.content);
+      spamDetection = guildSpamDetectionTracker.record({
+        guildId: message.guild.id,
+        userId: message.author.id,
+        channelId: message.channelId,
+        content: message.content,
+        mentionCount,
+        linkCount,
+        policy: policyContext.policy,
+        timestamp: message.createdTimestamp,
+      });
+      spamDetection = {
+        ...spamDetection,
+        policyContext,
+        signals: spamDetection.signals,
+      };
+    } else {
+      // A Guild without a saved row retains the deployed behavior. If the
+      // policy store is unavailable, keep detection on the known baseline but
+      // fail safe to LOG_ONLY rather than applying an unknown timeout action.
+      spamDetection = spamTracker.record(
+        `${message.guild.id}:${message.author.id}`,
+        message.createdTimestamp,
+      );
+      spamDetection = { ...spamDetection, signals: ["messages"] };
+      if (policyContext.source === "fallback") {
+        spamDetection.policyContext = {
+          isCustom: false,
+          source: "fallback",
+          policy: {
+            ...DEFAULT_GUILD_SPAM_POLICY,
+            messageCountThreshold: spamMessageLimit,
+            messageWindowSeconds: spamWindowMs / 1_000,
+            action: "LOG_ONLY",
+          },
+        };
+      }
+    }
     if (spamDetection.detected) {
       void handleSpamDetection(message, spamDetection).catch((error) =>
         console.error("Spam detection handling failed:", error),
@@ -5985,7 +6157,9 @@ client.on("messageCreate", async (message) => {
   };
 
   if (message.author.bot) {
-    trackSpam();
+    void trackSpam().catch((error) =>
+      console.error("Spam policy tracking failed:", error),
+    );
     return;
   }
 
@@ -6022,7 +6196,9 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  trackSpam();
+  void trackSpam().catch((error) =>
+    console.error("Spam policy tracking failed:", error),
+  );
 
   try {
     await messageRouter.create(message);

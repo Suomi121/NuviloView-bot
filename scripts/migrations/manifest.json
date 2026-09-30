@@ -134,6 +134,21 @@
       "checks": [
         { "kind": "column", "table": "security_policy", "name": "nukeProtectionMode" }
       ]
+    },
+    {
+      "id": "20260930-guild-spam-policy",
+      "file": "20260930-guild-spam-policy.sql",
+      "checksum": "809d5ffa8152cd450974f5f62ea4a121c4270a5985671e1ae1ec283d41f10970",
+      "description": "Add per-Guild spam detection policy and privacy-minimized policy change audit records.",
+      "risk": "medium",
+      "reversible": false,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "guild_spam_policy" },
+        { "kind": "table", "name": "guild_spam_policy_audit" },
+        { "kind": "index", "name": "guild_spam_policy_audit_guild_created_idx" }
+      ]
     }
   ]
 }

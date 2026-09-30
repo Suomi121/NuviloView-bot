@@ -124,6 +124,7 @@ const appFeatures = [
     href: "/dashboard",
   },
   { title: "表示設定", description: "時間帯を変更", href: "/settings" },
+  { title: "セキュリティ", description: "Guild別 Spam Detection", href: "/dashboard/security/spam" },
   {
     title: "ドキュメント",
     description: "Botとダッシュボードの使い方",

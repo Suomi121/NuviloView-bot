@@ -31,6 +31,10 @@ The web API stores policy in the existing shared Bot/Web PostgreSQL configured b
 
 The Bot caches each Guild result for 30 seconds and coalesces concurrent refreshes. A missing row uses legacy behavior. A DB read error uses the legacy detection threshold but fails safe to `LOG_ONLY`; it does not apply an unknown timeout policy. Changes become visible to separate Bot/Web processes after the Bot cache expires (at most 30 seconds).
 
+## Guild removal and retention
+
+When a Guild is removed from the Bot, its saved policy row and policy audit history are **not automatically deleted** by the Guild removal handler or this feature. The handler invalidates that Guild's in-memory policy cache and clears its in-memory spam-detection windows/cooldowns only. Persisted policy and audit data remain subject to separately managed database retention and deletion; this migration creates no purge schedule or deletion guarantee. Retaining the audit history avoids silently erasing prior administrative changes. A future Guild data-retention/purge feature should define authorization, audit, and retention requirements before deleting these records.
+
 Duplicate detection hashes normalized message text in memory and retains only the digest in the short-lived tracker window. Raw message content is not placed in policy rows, policy audit rows, or spam-policy logs. Dry-run analytics were not implemented; no moderation action is performed by any preview mechanism.
 
 ## Migration

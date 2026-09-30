@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, LoaderCircle, RotateCcw, ShieldAlert } from "lucide-react";
 import { useLocale } from "@/components/locale-provider";
 import {
@@ -10,6 +10,7 @@ import {
   type SpamAction,
   type SpamPreset,
 } from "@/lib/guild-spam-policy.mjs";
+import { createGuildSpamPolicyRequestGuard } from "@/lib/guild-spam-policy-request-guard.mjs";
 
 type Guild = { id: string; name: string };
 const clonePolicy = (policy: Readonly<GuildSpamPolicy>): GuildSpamPolicy => ({ ...policy, ignoredRoleIds: [...policy.ignoredRoleIds], ignoredChannelIds: [...policy.ignoredChannelIds] });
@@ -36,6 +37,20 @@ export function GuildSpamPolicyPanel() {
   const [status, setStatus] = useState("");
   const [roleIdsText, setRoleIdsText] = useState("");
   const [channelIdsText, setChannelIdsText] = useState("");
+  const requestGuardRef = useRef(createGuildSpamPolicyRequestGuard());
+  const selectedGuildIdRef = useRef("");
+  const policyLoadAbortRef = useRef<AbortController | null>(null);
+  const mutationAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const guard = requestGuardRef.current;
+    guard.mount();
+    return () => {
+      guard.unmount();
+      policyLoadAbortRef.current?.abort();
+      mutationAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -49,21 +64,30 @@ export function GuildSpamPolicyPanel() {
 
   useEffect(() => {
     if (!guildId) {
-      setPolicy(null); setSavedPolicy(null); setIsCustom(false); return;
+      setPolicy(null); setSavedPolicy(null); setIsCustom(false); setLoadingPolicy(false); return;
     }
-    let active = true;
+    const targetGuildId = guildId;
+    const request = requestGuardRef.current.begin("load", targetGuildId);
+    const controller = new AbortController();
+    policyLoadAbortRef.current?.abort();
+    policyLoadAbortRef.current = controller;
     setPolicy(null); setSavedPolicy(null); setLoadingPolicy(true); setStatus("");
-    fetch(`/api/guilds/${encodeURIComponent(guildId)}/security/spam-policy`, { cache: "no-store" })
+    fetch(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, { cache: "no-store", signal: controller.signal })
       .then((response) => response.ok ? response.json() : Promise.reject())
       .then((data) => {
-        if (!active || !data.policy) return;
+        if (!request.isCurrent() || !data.policy) return;
         const next = clonePolicy(data.policy);
         setPolicy(next); setSavedPolicy(clonePolicy(next)); setIsCustom(Boolean(data.isCustom));
         setRoleIdsText(next.ignoredRoleIds.join(", ")); setChannelIdsText(next.ignoredChannelIds.join(", "));
       })
-      .catch(() => { if (active) setStatus(en ? "Unable to load this server's spam settings." : "このサーバーのスパム設定を読み込めませんでした。"); })
-      .finally(() => { if (active) setLoadingPolicy(false); });
-    return () => { active = false; };
+      .catch(() => {
+        if (request.isCurrent() && !controller.signal.aborted) setStatus(en ? "Unable to load this server's spam settings." : "このサーバーのスパム設定を読み込めませんでした。");
+      })
+      .finally(() => {
+        if (request.isCurrent()) setLoadingPolicy(false);
+        if (policyLoadAbortRef.current === controller) policyLoadAbortRef.current = null;
+      });
+    return () => { controller.abort(); };
   }, [guildId, en]);
 
   const draft = useMemo(() => policy ? ({ ...policy, ignoredRoleIds: roleIdsText.split(/[\s,]+/).filter(Boolean), ignoredChannelIds: channelIdsText.split(/[\s,]+/).filter(Boolean) }) : null, [policy, roleIdsText, channelIdsText]);
@@ -83,38 +107,73 @@ export function GuildSpamPolicyPanel() {
     setStatus("");
   };
 
+  const selectGuild = (nextGuildId: string) => {
+    selectedGuildIdRef.current = nextGuildId;
+    requestGuardRef.current.selectGuild(nextGuildId);
+    policyLoadAbortRef.current?.abort();
+    policyLoadAbortRef.current = null;
+    mutationAbortRef.current?.abort();
+    mutationAbortRef.current = null;
+    setGuildId(nextGuildId);
+    setPolicy(null); setSavedPolicy(null); setIsCustom(false); setLoadingPolicy(Boolean(nextGuildId));
+    setSaving(false); setStatus(""); setRoleIdsText(""); setChannelIdsText("");
+  };
+
   const save = async () => {
-    if (!guildId || !draft) return;
+    const targetGuildId = selectedGuildIdRef.current;
+    if (!targetGuildId || !draft) return;
+    const request = requestGuardRef.current.begin("mutation", targetGuildId);
+    const controller = new AbortController();
+    mutationAbortRef.current?.abort();
+    mutationAbortRef.current = controller;
+    const submittedPolicy = clonePolicy(draft);
     setSaving(true); setStatus("");
     try {
-      const response = await fetch(`/api/guilds/${encodeURIComponent(guildId)}/security/spam-policy`, {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy: draft }),
+      const response = await fetch(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy: submittedPolicy }), signal: controller.signal,
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.policy) throw new Error();
+      if (!request.isCurrent() || selectedGuildIdRef.current !== targetGuildId) return;
       const next = clonePolicy(data.policy);
       setPolicy(next); setSavedPolicy(clonePolicy(next)); setIsCustom(true);
       setRoleIdsText(next.ignoredRoleIds.join(", ")); setChannelIdsText(next.ignoredChannelIds.join(", "));
       setStatus(en ? "Saved. The Bot refreshes this policy within 30 seconds." : "保存しました。Botには最大30秒以内に反映されます。");
     } catch {
-      setStatus(en ? "Could not save the spam settings. Please try again." : "スパム設定を保存できませんでした。時間をおいて再試行してください。");
-    } finally { setSaving(false); }
+      if (request.isCurrent() && selectedGuildIdRef.current === targetGuildId && !controller.signal.aborted) {
+        setStatus(en ? "Could not save the spam settings. Please try again." : "スパム設定を保存できませんでした。時間をおいて再試行してください。");
+      }
+    } finally {
+      if (request.isCurrent() && selectedGuildIdRef.current === targetGuildId) setSaving(false);
+      if (mutationAbortRef.current === controller) mutationAbortRef.current = null;
+    }
   };
 
   const reset = async () => {
-    if (!guildId) return;
+    const targetGuildId = selectedGuildIdRef.current;
+    if (!targetGuildId) return;
+    const request = requestGuardRef.current.begin("mutation", targetGuildId);
+    const controller = new AbortController();
+    mutationAbortRef.current?.abort();
+    mutationAbortRef.current = controller;
     setSaving(true); setStatus("");
     try {
-      const response = await fetch(`/api/guilds/${encodeURIComponent(guildId)}/security/spam-policy`, { method: "DELETE" });
+      const response = await fetch(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, { method: "DELETE", signal: controller.signal });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.policy) throw new Error();
+      if (!request.isCurrent() || selectedGuildIdRef.current !== targetGuildId) return;
       const next = clonePolicy(data.policy);
       setPolicy(next); setSavedPolicy(clonePolicy(next)); setIsCustom(false);
       setRoleIdsText(""); setChannelIdsText("");
       setStatus(en ? "Reset. This server uses the existing NuviloView default behavior." : "初期設定に戻しました。このサーバーでは従来のNuviloView既定動作を使用します。");
     } catch {
-      setStatus(en ? "Could not reset the spam settings. Please try again." : "初期設定に戻せませんでした。時間をおいて再試行してください。");
-    } finally { setSaving(false); }
+      if (request.isCurrent() && selectedGuildIdRef.current === targetGuildId && !controller.signal.aborted) {
+        setStatus(en ? "Could not reset the spam settings. Please try again." : "初期設定に戻せませんでした。時間をおいて再試行してください。");
+      }
+    } finally {
+      if (request.isCurrent() && selectedGuildIdRef.current === targetGuildId) setSaving(false);
+      if (mutationAbortRef.current === controller) mutationAbortRef.current = null;
+    }
   };
 
   const labels = en
@@ -132,7 +191,7 @@ export function GuildSpamPolicyPanel() {
 
   return <section className="rounded-2xl border border-border bg-card/65 p-5 shadow-xl shadow-black/10 sm:p-7">
     <div className="flex items-start gap-3"><span className="rounded-xl bg-primary/15 p-2.5 text-primary"><ShieldAlert className="h-5 w-5" /></span><div><h2 className="text-lg font-extrabold">{en ? "Spam Detection" : "Spam Detection"}</h2><p className="mt-1 text-sm text-muted-foreground">{en ? "Set detection thresholds and response separately for each Discord server." : "Discordサーバーごとに、検知条件と検知後の対応を設定します。"}</p></div></div>
-    <label className="mt-5 block text-sm font-semibold">{labels.choose}<select aria-label={labels.choose} disabled={loadingGuilds || !guilds.length} value={guildId} onChange={(event) => setGuildId(event.target.value)} className="mt-2 h-11 w-full rounded-lg border border-border bg-background px-3 text-sm">{guilds.length ? <><option value="">{loadingGuilds ? labels.loading : labels.choose}</option>{guilds.map((guild) => <option value={guild.id} key={guild.id}>{guild.name}</option>)}</> : <option value="">{loadingGuilds ? labels.loading : labels.noGuilds}</option>}</select></label>
+    <label className="mt-5 block text-sm font-semibold">{labels.choose}<select aria-label={labels.choose} disabled={loadingGuilds || !guilds.length} value={guildId} onChange={(event) => selectGuild(event.target.value)} className="mt-2 h-11 w-full rounded-lg border border-border bg-background px-3 text-sm">{guilds.length ? <><option value="">{loadingGuilds ? labels.loading : labels.choose}</option>{guilds.map((guild) => <option value={guild.id} key={guild.id}>{guild.name}</option>)}</> : <option value="">{loadingGuilds ? labels.loading : labels.noGuilds}</option>}</select></label>
     {guildId && <>
       {loadingPolicy && <p className="mt-5 text-sm text-muted-foreground">{labels.loading}</p>}
       {policy && draft && <>

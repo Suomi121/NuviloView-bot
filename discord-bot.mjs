@@ -5104,6 +5104,9 @@ client.on("guildCreate", (guild) =>
 
 client.on("guildDelete", (guild) => {
   updateBotPresence();
+  guildSpamPolicyCache.invalidate(guild.id);
+  guildSpamDetectionTracker.forgetGuild(guild.id);
+  spamTracker.forgetGuild(guild.id);
   channelAccessSnapshots.delete(guild.id);
   analyticsInventorySnapshots.delete(guild.id);
   clearGuildReactionRoleRules(guild.id);

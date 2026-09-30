@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   DEFAULT_GUILD_SPAM_POLICY,
   canAccessGuildSpamPolicy,
@@ -19,6 +20,7 @@ import {
 
 const guildA = '11111111111111111';
 const guildB = '22222222222222222';
+const botSource = readFileSync(new URL('../discord-bot.mjs', import.meta.url), 'utf8');
 const user = '33333333333333333';
 const channelA = '44444444444444444';
 const channelB = '55555555555555555';
@@ -107,12 +109,55 @@ test('database failures fall back and are safely cached', async () => {
   assert.equal(calls, 1);
 });
 
+test('invalidating a Guild while its policy read is in flight cannot cache the stale result', async () => {
+  const resolvers = [];
+  let calls = 0;
+  const cache = createGuildSpamPolicyCache({
+    loadPolicy: () => {
+      calls += 1;
+      return new Promise((resolve) => resolvers.push(resolve));
+    },
+    logger: { warn() {} },
+  });
+
+  const staleRead = cache.get(guildA);
+  cache.invalidate(guildA);
+  const currentRead = cache.get(guildA);
+  const customPolicy = normalizeGuildSpamPolicy(DEFAULT_GUILD_SPAM_POLICY);
+  resolvers[1](customPolicy);
+  assert.equal((await currentRead).source, 'guild');
+  resolvers[0](null);
+  await staleRead;
+  assert.equal((await cache.get(guildA)).source, 'guild');
+  assert.equal(calls, 2);
+});
+
 test('Guild A detection state never contributes to Guild B', () => {
   const tracker = createGuildSpamDetectionTracker({ cooldownMs: 60_000 });
   tracker.record({ guildId: guildA, userId: user, channelId: channelA, content: 'one', policy: DEFAULT_GUILD_SPAM_POLICY, timestamp: 1 });
   tracker.record({ guildId: guildA, userId: user, channelId: channelA, content: 'two', policy: DEFAULT_GUILD_SPAM_POLICY, timestamp: 2 });
   assert.equal(tracker.record({ guildId: guildB, userId: user, channelId: channelA, content: 'three', policy: DEFAULT_GUILD_SPAM_POLICY, timestamp: 3 }).detected, false);
   assert.equal(tracker.record({ guildId: guildA, userId: user, channelId: channelA, content: 'four', policy: DEFAULT_GUILD_SPAM_POLICY, timestamp: 4 }).detected, true);
+});
+
+test('Guild removal can clear only that Guild detection windows and cooldowns', () => {
+  const tracker = createGuildSpamDetectionTracker({ cooldownMs: 60_000 });
+  tracker.record({ guildId: guildA, userId: user, channelId: channelA, content: 'one', policy: DEFAULT_GUILD_SPAM_POLICY, timestamp: 1 });
+  tracker.record({ guildId: guildB, userId: user, channelId: channelB, content: 'one', policy: DEFAULT_GUILD_SPAM_POLICY, timestamp: 1 });
+  tracker.forgetGuild(guildA);
+  assert.equal(tracker.trackedWindowCount, 1);
+  assert.equal(tracker.cooldownCount, 0);
+  assert.equal(tracker.record({ guildId: guildA, userId: user, channelId: channelA, content: 'two', policy: DEFAULT_GUILD_SPAM_POLICY, timestamp: 2 }).count, 1);
+  assert.equal(tracker.trackedWindowCount, 2);
+});
+
+test('guildDelete invalidates transient spam state without deleting persisted policy or audit rows', () => {
+  const handler = botSource.match(/client\.on\("guildDelete", \(guild\) => \{([\s\S]*?)\n\}\);/)?.[1];
+  assert.ok(handler, 'guildDelete handler is present');
+  assert.match(handler, /guildSpamPolicyCache\.invalidate\(guild\.id\)/);
+  assert.match(handler, /guildSpamDetectionTracker\.forgetGuild\(guild\.id\)/);
+  assert.match(handler, /spamTracker\.forgetGuild\(guild\.id\)/);
+  assert.doesNotMatch(handler, /guild_spam_policy|guild_spam_policy_audit|\bDELETE\b|\bTRUNCATE\b/);
 });
 
 test('duplicate, mention, link, and cross-channel policies emit independent signals', () => {

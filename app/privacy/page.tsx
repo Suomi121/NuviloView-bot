@@ -17,7 +17,7 @@ export default function PrivacyPage() {
       <section className="mx-auto max-w-3xl px-6 pb-24 pt-32">
         <p className="text-sm font-bold tracking-widest text-primary">PRIVACY POLICY</p>
         <h1 className="mt-4 text-4xl font-extrabold tracking-tight">プライバシーポリシー</h1>
-        <p className="mt-3 text-sm text-muted-foreground">最終更新日：2026年8月14日</p>
+        <p className="mt-3 text-sm text-muted-foreground">最終更新日：2026年9月4日</p>
         <div className="mt-10 space-y-8 text-sm leading-7 text-muted-foreground">
           <PolicySection title="1. 運営者と適用範囲">
             <p>NuviloView:OEM運営者（以下「運営者」）は、本サービスで取り扱う情報を本ポリシーに従って管理します。本ポリシーはNuviloView:OEM、NuviloChan Bot、サポートフォームおよび関連機能に適用されます。本サービスはDiscord公式の提供・提携サービスではありません。</p>
@@ -25,7 +25,7 @@ export default function PrivacyPage() {
           </PolicySection>
           <PolicySection title="2. 取得する情報">
             <ul className="list-disc space-y-2 pl-5">
-              <li><strong className="text-foreground">アカウント・認証情報：</strong>DiscordユーザーID、表示名、アイコン、管理可能なサーバー情報、セッション情報、およびDiscord連携の維持に必要なアクセストークン・リフレッシュトークン等</li>
+              <li><strong className="text-foreground">アカウント・認証情報：</strong>DiscordユーザーID、表示名、アイコン、管理可能なサーバー情報、Googleアカウントの識別子、メールアドレス、表示名・アイコン、セッション情報、およびログイン・アカウント連携の維持に必要なOAuthトークン、IDトークン、権限範囲等</li>
               <li><strong className="text-foreground">サーバー活動情報：</strong>サーバー名・ID・アイコン・所有者ID、メンバー数、投稿数、リアクション数、参加・退出時の表示名、日別の発言者Discord ID、チャンネル名・IDおよびBotの読み取り権限状態。個々のリアクション内容やリアクションした利用者は保存せず、件数だけを集計します</li>
               <li><strong className="text-foreground">通話接続情報：</strong>通話時間の集計に必要な参加者のDiscord ID、チャンネルID、参加・退出時刻、およびサーバー内で人が通話していた時間</li>
               <li><strong className="text-foreground">検索用メッセージ情報：</strong>Botが閲覧できるチャンネルのメッセージ本文、投稿者のDiscord ID・表示名、チャンネル名、投稿日時およびメッセージID</li>
@@ -35,12 +35,12 @@ export default function PrivacyPage() {
               <li><strong className="text-foreground">廃止済みセキュリティ機能の履歴情報：</strong>過去の障害調査、説明責任およびロールバックに必要なDiscordユーザーID、サーバーID、監査ログエントリID、管理操作の種類・対象・発生日時、評価結果、対応状態、および当時保存されたサーバー構成情報。これらは新規収集せず、既存記録のみを隔離して保持します</li>
               <li><strong className="text-foreground">技術・問い合わせ情報：</strong>IPアドレス、ユーザーエージェント、アクセス・エラーログ、レート制限用にハッシュ化した識別子・時刻・回数、お名前、返信先メールアドレスおよびお問い合わせ内容</li>
             </ul>
-            <p className="mt-3">Discord OAuthではメールアドレスの権限を要求せず、Discordに登録されたメールアドレスは取得・保存しません。認証基盤の内部互換性のため、DiscordユーザーIDから生成した送信不能な識別子（<code className="rounded bg-secondary px-1 py-0.5 text-xs text-foreground">@users.invalid</code>）を保存します。サポートフォームで利用者が自ら入力した返信先メールアドレスは、お問い合わせ対応のためにのみ使用します。</p>
+            <p className="mt-3">Discord OAuthではメールアドレスの権限を要求せず、Discordに登録されたメールアドレスは取得・保存しません。認証基盤の内部互換性のため、DiscordユーザーIDから生成した送信不能な識別子（<code className="rounded bg-secondary px-1 py-0.5 text-xs text-foreground">@users.invalid</code>）を保存します。Googleログインでは本人確認とアカウント接続のため、Googleアカウントの基本プロフィールおよびメールアドレスを取得します。サポートフォームで利用者が自ら入力した返信先メールアドレスは、お問い合わせ対応のためにのみ使用します。</p>
             <p className="mt-3">DMの本文、音声通話の音声、映像、画面共有、添付ファイル本体、埋め込みおよびスタンプの内容は保存しません。</p>
           </PolicySection>
           <PolicySection title="3. 利用目的">
             <ul className="list-disc space-y-1 pl-5">
-              <li>本人確認、Discord OAuth連携およびログイン状態の維持</li>
+              <li>本人確認、Google・Discord OAuth連携、アカウント接続およびログイン状態の維持</li>
               <li>ダッシュボードの分析、ライブ更新、レポート出力、目標・テーマ設定</li>
               <li>サーバー内検索、翻訳、通知、Bot接続・権限不足の案内</li>
               <li>権限を持つサーバー運営者による個別BAN、Kick、Timeout、BAN解除、メッセージ整理、自動スパム検知およびその監査</li>
@@ -51,7 +51,7 @@ export default function PrivacyPage() {
             <p className="mt-3">Discord APIから取得したユーザー・サーバー情報やメッセージ本文は、広告のターゲティング、データブローカーへの提供・販売、またはAI・機械学習モデルの学習には使用しません。広告・アクセス解析事業者へは、広告表示やサイト利用状況の把握に必要な端末・閲覧情報だけが送信される場合があります。</p>
           </PolicySection>
           <PolicySection title="4. 取得方法と閲覧範囲">
-            <p>アカウント情報はDiscord OAuthの<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">identify</code>および<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">guilds</code>権限を通じて取得し、サーバー活動情報はBotが付与された権限の範囲で取得します。ダッシュボードには、Discord上で所有または管理権限を持つと確認できたサーバーを表示します。サーバー管理者は、メンバーに対して本サービスの導入と収集範囲を適切に案内してください。</p>
+            <p>Googleログインでは<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">openid</code>、<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">email</code>および<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">profile</code>の範囲で基本的な本人確認情報を取得し、Gmail、Google Drive、カレンダー、連絡先等への権限は要求しません。Discord連携では<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">identify</code>および<code className="mx-1 rounded bg-secondary px-1 py-0.5 text-xs text-foreground">guilds</code>権限を通じてアカウントと管理可能なサーバーを確認します。GoogleだけでログインしてもDiscordサーバーへの閲覧権限は付与されず、ダッシュボードには連携済みDiscordアカウントで所有または管理権限を持つと確認できたサーバーだけを表示します。サーバー活動情報はBotが付与された権限の範囲で取得します。サーバー管理者は、メンバーに対して本サービスの導入と収集範囲を適切に案内してください。</p>
             <p className="mt-3">zx?snipeの結果はコマンドを実行したチャンネルへ投稿され、そのチャンネルを閲覧できるメンバーは削除本文、投稿者および確認できた削除実行者等を閲覧できます。結果メッセージの削除操作は、コマンド実行者、サーバー所有者またはAdministratorに限定します。翻訳結果はコマンド実行者だけに表示します。</p>
             <p className="mt-3">サービスの安定運用、サポートおよび安全管理のため、権限を限定した運営者向け管理機能を使用する場合があります。管理設定、操作履歴および構成バックアップの閲覧は許可された運営者に限定し、アクセス制御や操作記録などの安全管理措置を講じます。</p>
           </PolicySection>
@@ -66,7 +66,7 @@ export default function PrivacyPage() {
             <p>翻訳機能（右クリック翻訳および/translate）は、Botの稼働環境上のLibreTranslateで処理します。選択または入力した本文は翻訳処理のため最大5分間だけBotメモリに保持され、その後破棄されます。翻訳元本文と翻訳結果はNuviloViewのデータベースへ保存せず、処理枠管理のため月ごとの翻訳文字数合計のみ記録します。機械翻訳の正確性は保証されません。</p>
           </PolicySection>
           <PolicySection title="7. 外部委託・第三者提供・国外処理">
-            <p>本サービスは、Discord（認証・Bot API）、Vercel（Webサイト配信・アクセス解析）、Neon（データベース）、Resend（サポートメール送信）、Google（広告）等のサービスを利用します。翻訳本文はBot稼働環境上のLibreTranslateで処理し、外部の翻訳APIへ送信しません。各事業者はサービス提供に必要な範囲で情報を処理し、日本国外の設備で処理・保管する場合があります。処理地域は各事業者の提供構成により変わる場合があり、各事業者による取扱いにはそれぞれのプライバシーポリシーが適用されます。</p>
+            <p>本サービスは、Discord（認証・Bot API）、Google（認証・広告）、Vercel（Webサイト配信・アクセス解析）、Neon等のデータベースサービス、Resend（サポートメール送信）等を利用します。Google認証で取得した情報や認証用トークンは、ログインおよび利用者が明示的に行うアカウント接続のために使用し、Gmail、Google Drive、カレンダー、連絡先等のデータ取得には使用しません。翻訳本文はBot稼働環境上のLibreTranslateで処理し、外部の翻訳APIへ送信しません。各事業者はサービス提供に必要な範囲で情報を処理し、日本国外の設備で処理・保管する場合があります。処理地域は各事業者の提供構成により変わる場合があり、各事業者による取扱いにはそれぞれのプライバシーポリシーが適用されます。</p>
             <p className="mt-3">法令に基づく場合、人の生命・財産の保護に必要な場合、または事業承継等に伴う場合を除き、本人の同意なく情報を目的外で第三者へ販売しません。</p>
           </PolicySection>
           <PolicySection title="8. Cookie・アクセス解析・広告">

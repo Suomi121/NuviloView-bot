@@ -53,17 +53,21 @@ function normalizeManagedGuilds(value: unknown): ManagedGuild[] {
   })
 }
 
-async function readManagedGuildCache(userId: string) {
+async function readManagedGuildCache(userId: string, linkedAccountId: string) {
   const row = await authStorage.guildAccess.getManagedGuildCache(userId) as ManagedGuildCacheRow | null
   if (!row) return null
+  // Bind cached permissions to this exact link, not merely the app user.
+  // Legacy unbound arrays are safely refreshed once; no schema migration.
+  const envelope = row.guilds as { linkedAccountId?: string; guilds?: unknown } | null
+  if (!envelope || envelope.linkedAccountId !== linkedAccountId) return null
   return {
-    guilds: normalizeManagedGuilds(row.guilds),
+    guilds: normalizeManagedGuilds(envelope.guilds),
     updatedAt: new Date(row.updatedAt).getTime(),
   }
 }
 
-async function writeManagedGuildCache(userId: string, guilds: ManagedGuild[]) {
-  await authStorage.guildAccess.setManagedGuildCache(userId, guilds)
+async function writeManagedGuildCache(userId: string, linkedAccountId: string, guilds: ManagedGuild[]) {
+  await authStorage.guildAccess.setManagedGuildCache(userId, { linkedAccountId, guilds })
 }
 
 async function refreshDiscordAccessToken(account: DiscordAccount) {
@@ -100,9 +104,9 @@ async function fetchDiscordGuilds(accessToken: string) {
   })
 }
 
-async function fetchManagedGuilds(userId: string): Promise<ManagedGuild[]> {
+async function fetchManagedGuilds(userId: string, expectedAccountId: string): Promise<ManagedGuild[]> {
   const linkedAccount = await authStorage.guildAccess.getDiscordAccount(userId) as DiscordAccount | null
-  if (!linkedAccount?.accessToken) return []
+  if (!linkedAccount?.accessToken || linkedAccount.id !== expectedAccountId) return []
 
   const expiresAt = linkedAccount.accessTokenExpiresAt ? new Date(linkedAccount.accessTokenExpiresAt).getTime() : Number.POSITIVE_INFINITY
   let accessToken = linkedAccount.accessToken
@@ -132,26 +136,33 @@ async function fetchManagedGuilds(userId: string): Promise<ManagedGuild[]> {
 }
 
 export async function getManagedGuilds(userId: string): Promise<ManagedGuild[]> {
-  const cached = await readManagedGuildCache(userId)
+  // A cached Guild list is not evidence that Discord is still linked.
+  const linkedAccount = await authStorage.guildAccess.getDiscordAccount(userId)
+  if (!linkedAccount?.accessToken) return []
+  const linkId = linkedAccount.id
+  const loadKey = `${userId}:${linkId}`
+  const cached = await readManagedGuildCache(userId, linkId)
   if (cached && Date.now() - cached.updatedAt < MANAGED_GUILD_CACHE_TTL_MS) {
     return cached.guilds
   }
 
   // Coalesce simultaneous dashboard, theme, goals and notification checks in
   // the same runtime. The Neon row provides the same cache across runtimes.
-  const existingLoad = managedGuildLoads.get(userId)
+  const existingLoad = managedGuildLoads.get(loadKey)
   if (existingLoad) return existingLoad
 
   const load = (async () => {
     try {
-      const guilds = await fetchManagedGuilds(userId)
-      await writeManagedGuildCache(userId, guilds)
+      const guilds = await fetchManagedGuilds(userId, linkId)
+      if ((await authStorage.guildAccess.getDiscordAccount(userId))?.id !== linkId) return []
+      await writeManagedGuildCache(userId, linkId, guilds)
       return guilds
     } catch (error) {
       // Discord can briefly return 429 while several protected endpoints open
       // together. A previously verified list keeps the dashboard usable; it is
       // refreshed again after the short TTL instead of weakening authorization.
-      const fallback = cached ?? await readManagedGuildCache(userId)
+      if ((await authStorage.guildAccess.getDiscordAccount(userId))?.id !== linkId) return []
+      const fallback = cached ?? await readManagedGuildCache(userId, linkId)
       if (fallback && Date.now() - fallback.updatedAt < MANAGED_GUILD_CACHE_STALE_MAX_MS) {
         return fallback.guilds
       }
@@ -159,10 +170,10 @@ export async function getManagedGuilds(userId: string): Promise<ManagedGuild[]> 
     }
   })()
 
-  managedGuildLoads.set(userId, load)
+  managedGuildLoads.set(loadKey, load)
   try {
     return await load
   } finally {
-    if (managedGuildLoads.get(userId) === load) managedGuildLoads.delete(userId)
+    if (managedGuildLoads.get(loadKey) === load) managedGuildLoads.delete(loadKey)
   }
 }

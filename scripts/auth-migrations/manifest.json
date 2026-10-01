@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "scope": "web-auth-only",
+  "migrations": [{
+    "id": "20260906-provider-identity-unique",
+    "file": "20260906-provider-identity-unique.sql",
+    "checksum": "aeba63ae0114ec3090c5aa0908c6a4b4e1a75cb6919d27737d5c3ff58f45b3c4",
+    "transactional": true,
+    "manualApprovalRequired": true,
+    "reversible": false,
+    "recovery": "Revert application code while retaining uniqueness; never remove this protection on an active linking service."
+  }]
+}

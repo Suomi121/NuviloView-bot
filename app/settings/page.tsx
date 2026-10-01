@@ -6,12 +6,12 @@ import {
   Clock3,
   Globe2,
   LoaderCircle,
-  LogOut,
   Save,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocale, type Locale } from "@/components/locale-provider";
-import { signOut, useSession } from "@/lib/auth-client";
+import { useSession } from "@/lib/auth-client";
+import { AccountLogout } from "@/components/account-logout";
 import { ThemeCustomizer } from "@/components/theme-customizer";
 import { MessageHistoryImportPanel } from "@/components/message-history-import-panel";
 
@@ -46,8 +46,6 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [guilds, setGuilds] = useState<Guild[]>([]);
-  const [signingOut, setSigningOut] = useState(false);
-  const [signOutError, setSignOutError] = useState("");
 
   useEffect(() => {
     fetch("/api/settings/timezone")
@@ -117,23 +115,6 @@ export default function SettingsPage() {
       setSaved(language === "en" ? "Saved" : "保存しました");
     }
     setSaving(false);
-  };
-
-  const logOut = async () => {
-    setSigningOut(true);
-    setSignOutError("");
-    try {
-      const result = await signOut();
-      if (result.error) throw new Error(result.error.message);
-      window.location.assign("/?landing=1");
-    } catch {
-      setSignOutError(
-        locale === "en"
-          ? "Could not log out. Please try again."
-          : "ログアウトできませんでした。もう一度お試しください。",
-      );
-      setSigningOut(false);
-    }
   };
 
   const en = locale === "en";
@@ -221,44 +202,7 @@ export default function SettingsPage() {
           </div>
           <MessageHistoryImportPanel guilds={guilds} locale={locale} />
           <ThemeCustomizer guilds={guilds} />
-          {session?.user && (
-            <div className="mt-4 rounded-xl border border-destructive/35 bg-destructive/[0.04] p-4">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0">
-                  <h2 className="text-sm font-bold">
-                    {en ? "Account session" : "アカウントセッション"}
-                  </h2>
-                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                    {en
-                      ? "Log out of NuviloView on this device."
-                      : "この端末のNuviloViewからログアウトします。"}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={signingOut}
-                  onClick={() => void logOut()}
-                  className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2.5 text-sm font-bold text-destructive transition-colors hover:bg-destructive/15 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {signingOut ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <LogOut className="h-4 w-4" />
-                  )}
-                  {signingOut
-                    ? en
-                      ? "Logging out…"
-                      : "ログアウト中…"
-                    : en
-                      ? "Log out"
-                      : "ログアウト"}
-                </button>
-              </div>
-              {signOutError && (
-                <p className="mt-3 text-xs text-destructive">{signOutError}</p>
-              )}
-            </div>
-          )}
+          {session?.user && <AccountLogout />}
         </div>
       </section>
       {(preferencesChanged || saved) && <div className="fixed inset-x-4 bottom-5 z-40 mx-auto flex max-w-xl translate-y-0 items-center justify-between gap-4 rounded-2xl border border-border bg-card/95 px-4 py-3 shadow-2xl shadow-black/40 backdrop-blur-xl transition-all duration-300 sm:inset-x-auto sm:w-[min(36rem,calc(100%-2rem))]">

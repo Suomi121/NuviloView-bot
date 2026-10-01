@@ -66,3 +66,33 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+  auth-identity-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18.4
+        env:
+          POSTGRES_USER: auth_test
+          POSTGRES_PASSWORD: isolated-ci-only
+          POSTGRES_DB: nuviloview_auth_identity_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auth_test -d nuviloview_auth_identity_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_AUTH_IDENTITY_DATABASE_URL: postgresql://auth_test:isolated-ci-only@127.0.0.1:5432/nuviloview_auth_identity_test
+      TEST_AUTH_IDENTITY_ISOLATED: "1"
+      AUTH_IDENTITY_STRESS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Test Auth identity migration and parallel OAuth callbacks
+        run: pnpm run test:auth:postgres

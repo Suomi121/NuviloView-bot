@@ -82,8 +82,9 @@ try {
   }
   async function begin(jar, provider, link = false) {
     const response = await request(jar, link ? 'link-social' : 'sign-in/social', { provider, callbackURL: `${origin}/account`, disableRedirect: true });
-    assert.equal(response.status, 200, 'OAuth initiation must succeed');
-    return new URL((await response.json()).url).searchParams.get('state');
+    const payload = await response.json().catch(() => null);
+    assert.equal(response.status, 200, `OAuth initiation failed provider=${provider} link=${link} code=${payload?.code ?? 'unknown'}`);
+    return new URL(payload.url).searchParams.get('state');
   }
   async function complete(jar, provider, state, id) {
     const code = randomBytes(12).toString('hex');
@@ -96,6 +97,11 @@ try {
   async function user(jar) { return (await (await request(jar, 'get-session')).json())?.user; }
   async function countIdentity(provider, id) {
     return (await pool.query('SELECT count(*)::int AS rows, count(DISTINCT "userId")::int AS users FROM account WHERE "providerId"=$1 AND "accountId"=$2', [provider,id])).rows[0];
+  }
+  async function seedGoogleOnlyIdentity(id) {
+    const userId = `scenario-${id}`;
+    await pool.query('INSERT INTO public."user" (id,name,email) VALUES ($1,$2,$3)', [userId, `Synthetic ${id}`, `google-${id}@users.invalid`]);
+    await pool.query('INSERT INTO public.account (id,"providerId","accountId","userId") VALUES ($1,$2,$3,$4)', [`${userId}-google`, 'google', id, userId]);
   }
   const a = new Jar(), b = new Jar(), discordOnly = new Jar();
   const unknownGoogle = new Jar();
@@ -120,7 +126,9 @@ try {
   const aAfterLink = (await user(a)).id;
   const linkedCount = (await pool.query('SELECT count(*)::int AS n FROM account WHERE "userId"=$1',[aUser])).rows[0].n;
   record('Google to Discord explicit linking preserves one user', link.location === `${origin}/account` && aAfterLink === aUser && linkedCount === 2, { identities: linkedCount });
-  await login(b, 'google', 'google-b');
+  const bLogin = await login(b, 'google', 'google-b');
+  record('Existing Google-only User B can authenticate before identity conflict test',
+    bLogin.location === `${origin}/account` && Boolean(await user(b)));
   for (const [provider,id] of [['discord','discord-x'],['google','google-a']]) {
     const collision = await complete(b, provider, await begin(b, provider, true), id);
     const counts = await countIdentity(provider,id);
@@ -183,7 +191,9 @@ try {
       const actors = [];
       for (let i=0;i<n;i++) {
         const jar = new Jar();
-        await login(jar,'google',`actor-${provider}-${n}-${i}`);
+        const actorIdentity = `actor-${provider}-${n}-${i}`;
+        await seedGoogleOnlyIdentity(actorIdentity);
+        await login(jar,'google',actorIdentity);
         actors.push({jar,state:await begin(jar,provider,true)});
       }
       let arrived=0, release;
@@ -205,7 +215,10 @@ try {
     const id = `natural-race-${provider}`;
     const actors = [];
     for(let i=0;i<10;i++) {
-      const jar=new Jar(); await login(jar,'google',`natural-actor-${provider}-${i}`);
+      const jar=new Jar();
+      const actorIdentity = `natural-actor-${provider}-${i}`;
+      await seedGoogleOnlyIdentity(actorIdentity);
+      await login(jar,'google',actorIdentity);
       actors.push({jar,state:await begin(jar,provider,true)});
     }
     const outcomes=await Promise.all(actors.map(({jar,state})=>complete(jar,provider,state,id)));

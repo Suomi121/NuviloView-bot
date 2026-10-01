@@ -104,6 +104,13 @@ test('Auth identity migration and real Better Auth callbacks on isolated Postgre
             ('credential-a','credential','fixture-a','fixture-a'),
             ('credential-b','credential','fixture-b','fixture-b')`)
   })
+  // The callback scenarios include a legacy Google-only user. Seed that
+  // already-linked identity explicitly: a new Google identity must remain
+  // blocked by Discord-first onboarding and cannot be used to create this row.
+  await valid.pool.query(`INSERT INTO public."user" (id,name,email)
+    VALUES ('scenario-google-only','Synthetic Google-only','google-google-a@users.invalid')`)
+  await valid.pool.query(`INSERT INTO public.account (id,"providerId","accountId","userId")
+    VALUES ('scenario-google-only-account','google','google-a','scenario-google-only')`)
   const outcomes = []
   await runAuthIdentityScenarios({
     ...valid,

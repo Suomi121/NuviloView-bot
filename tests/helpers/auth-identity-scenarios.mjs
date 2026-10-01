@@ -98,6 +98,14 @@ try {
     return (await pool.query('SELECT count(*)::int AS rows, count(DISTINCT "userId")::int AS users FROM account WHERE "providerId"=$1 AND "accountId"=$2', [provider,id])).rows[0];
   }
   const a = new Jar(), b = new Jar(), discordOnly = new Jar();
+  const unknownGoogle = new Jar();
+  const usersBeforeUnknownGoogle = Number((await pool.query('SELECT count(*)::int n FROM public."user"')).rows[0].n);
+  const unknownGoogleLogin = await login(unknownGoogle, 'google', 'google-never-linked');
+  const unknownGoogleSession = await user(unknownGoogle);
+  const usersAfterUnknownGoogle = Number((await pool.query('SELECT count(*)::int n FROM public."user"')).rows[0].n);
+  record('Unknown Google identity cannot create a user or session in the real callback',
+    unknownGoogleLogin.location.includes('signup_disabled') && unknownGoogleSession === null && usersAfterUnknownGoogle === usersBeforeUnknownGoogle,
+    { usersBefore: usersBeforeUnknownGoogle, usersAfter: usersAfterUnknownGoogle, sessionCreated: Boolean(unknownGoogleSession) });
   assert.equal((await login(a, 'google', 'google-a')).location, `${origin}/account`);
   const aUser = (await user(a)).id;
   const { getManagedGuilds } = await import(pathToFileURL(resolve(repo, 'lib/discord.ts')));

@@ -108,9 +108,11 @@ else
   printf 'Runtime Mode: UNKNOWN\nNeon: UNKNOWN\nMessage Storage: UNKNOWN\nCross-Host Leadership: UNKNOWN\n'
 fi
 
+worker_liveness="Sync Worker: DISABLED"
 if nv_env_enabled "$(nv_get_env_value "$ENV_FILE" SYNC_WORKER_ENABLED)"; then
   process_status "Sync Worker Runner" "$WORKER_RUNNER_PID_FILE" "run-sync-worker-forever.sh" "$WORKER_STATE_FILE"
-  process_status "Sync Worker" "$WORKER_PID_FILE" "scripts/run-sync-worker.mjs"
+  worker_liveness="$(node "--env-file=$ENV_FILE" "$SCRIPT_DIR/../scripts/supervise-sync-worker.mjs" --status "$PROJECT_ROOT" "$RUNTIME_DIR" "$PROJECT_ROOT/Android/logs")"
+  printf '%s\n' "$worker_liveness"
 else
   printf 'Sync Worker Runner: DISABLED\nSync Worker: DISABLED\n'
 fi
@@ -119,10 +121,16 @@ metrics_path="$(nv_get_env_value "$ENV_FILE" SYNC_METRICS_PATH)"
 [[ -n "$metrics_path" ]] || metrics_path="./data/runtime/sync-worker-health.json"
 [[ "$metrics_path" == /* ]] || metrics_path="$PROJECT_ROOT/${metrics_path#./}"
 if [[ -f "$metrics_path" ]] && command -v node >/dev/null 2>&1; then
-  node -e '
+  SYNC_OBSERVED_LIVENESS="$worker_liveness" node -e '
     const fs = require("fs");
     try {
       const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      if (process.env.SYNC_OBSERVED_LIVENESS !== "Sync Worker: RUNNING") {
+        console.log(`Sync Health: ${process.env.SYNC_OBSERVED_LIVENESS || "UNKNOWN"}`);
+        console.log("Saved provider/circuit/queue metrics are historical; not current health.");
+        console.log(`Saved metrics timestamp: ${value.generatedAt ?? "UNKNOWN"}`);
+        process.exit(0);
+      }
       console.log(`Sync Health: ${value.workerStatus ?? "UNKNOWN"}`);
       console.log(`Circuit: ${value.circuitState ?? value.circuit?.state ?? "UNKNOWN"}`);
       console.log(`Pending: ${Number(value.pendingCount ?? 0)}`);

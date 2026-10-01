@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+import { installWorkerCrashDiagnostics } from "../lib/sync/worker-diagnostics.mjs";
 import { Pool } from "pg";
 import { createStorage } from "../lib/storage/index.mjs";
 import { createNeonReplicaAdapter } from "../lib/sync/neon-replica.mjs";
@@ -102,6 +103,7 @@ export async function runSyncWorker({ env = process.env, logger = console } = {}
 const isMain =
   process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
+  installWorkerCrashDiagnostics();
   runSyncWorker().catch((error) => {
     console.error(`[sync-worker] ${sanitizeSyncError(error)}`);
     process.exitCode = 1;

@@ -4,11 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, LoaderCircle, RotateCcw, ShieldAlert } from "lucide-react";
 import { useLocale } from "@/components/locale-provider";
 import {
-  getSpamPolicyPreset,
+  applySpamProtectionStrength,
+  spamProtectionLevel,
+  strengthToSpamPolicy,
   withCustomPresetOnManualChange,
   type GuildSpamPolicy,
   type SpamAction,
-  type SpamPreset,
 } from "@/lib/guild-spam-policy.mjs";
 import { createGuildSpamPolicyRequestGuard } from "@/lib/guild-spam-policy-request-guard.mjs";
 
@@ -21,6 +22,14 @@ const numericFields = [
   { count: "mentionCountThreshold", window: "mentionWindowSeconds", key: "mentions", unit: "mentions" },
   { count: "linkCountThreshold", window: "linkWindowSeconds", key: "links", unit: "links" },
   { count: "crossChannelThreshold", window: "crossChannelWindowSeconds", key: "crossChannel", unit: "channels" },
+] as const;
+
+const moduleFields = [
+  { key: "messageBurstEnabled", label: "messages" },
+  { key: "duplicateEnabled", label: "duplicates" },
+  { key: "mentionEnabled", label: "mentions" },
+  { key: "linkEnabled", label: "links" },
+  { key: "crossChannelEnabled", label: "crossChannel" },
 ] as const;
 
 export function GuildSpamPolicyPanel() {
@@ -97,16 +106,6 @@ export function GuildSpamPolicyPanel() {
     setStatus("");
   };
 
-  const choosePreset = (preset: SpamPreset) => {
-    setPolicy((current) => {
-      if (!current) return current;
-      if (preset === "CUSTOM") return { ...current, preset: "CUSTOM" };
-      const values = getSpamPolicyPreset(preset);
-      return values ? { ...current, ...values } : current;
-    });
-    setStatus("");
-  };
-
   const selectGuild = (nextGuildId: string) => {
     selectedGuildIdRef.current = nextGuildId;
     requestGuardRef.current.selectGuild(nextGuildId);
@@ -177,8 +176,8 @@ export function GuildSpamPolicyPanel() {
   };
 
   const labels = en
-    ? { preset: "Preset", relaxed: "Relaxed", normal: "Normal", strict: "Strict", custom: "Custom", messages: "Messages", duplicates: "Duplicates", mentions: "Mentions", links: "Links", crossChannel: "Cross-channel", threshold: "Count", window: "Window", enabled: "Spam detection enabled", action: "After detection", log: "Log only", alert: "Alert moderators", incident: "Create incident + alert", ignoreBots: "Ignore other bots", ignoreAdmins: "Ignore owners and moderators", roles: "Ignored role IDs", channels: "Ignored channel IDs", choose: "Choose a server", loading: "Loading…", current: "Current", next: "New settings", reset: "Reset to default", save: "Save", noGuilds: "No manageable servers are available." }
-    : { preset: "プリセット", relaxed: "ゆるめ", normal: "標準", strict: "厳しめ", custom: "カスタム", messages: "連続投稿", duplicates: "同一内容", mentions: "メンション", links: "リンク", crossChannel: "複数チャンネル", threshold: "件数", window: "時間", enabled: "スパム検知を有効にする", action: "検知後の動作", log: "記録のみ", alert: "管理者へ通知", incident: "インシデント記録＋通知", ignoreBots: "他のBotを除外", ignoreAdmins: "所有者・モデレーターを除外", roles: "除外するロールID", channels: "除外するチャンネルID", choose: "サーバーを選択", loading: "読み込み中…", current: "現在", next: "変更後", reset: "従来の既定動作へ戻す", save: "保存", noGuilds: "管理できるサーバーがありません。" };
+    ? { relaxed: "Relaxed", normal: "Normal", strict: "Strict", custom: "Custom", messages: "Message Burst", duplicates: "Duplicate Spam", mentions: "Mention Spam", links: "Link Spam", crossChannel: "Cross-channel Spam", threshold: "Count", window: "Window", enabled: "Spam Protection", strength: "Spam Protection Strength", currentLevel: "Current level", action: "After detection", log: "Log only", alert: "Alert moderators", incident: "Create incident + alert", ignoreBots: "Ignore other bots", ignoreAdmins: "Ignore owners and moderators", roles: "Ignored role IDs", channels: "Ignored channel IDs", advanced: "Advanced Settings", choose: "Choose a server", loading: "Loading…", current: "Current", next: "Preview", reset: "Reset to default", save: "Save", on: "ON", off: "OFF", customSliderWarning: "Moving the slider replaces the custom thresholds with strength-based values.", noGuilds: "No manageable servers are available." }
+    : { relaxed: "ゆるめ", normal: "標準", strict: "厳しめ", custom: "カスタム", messages: "連続投稿", duplicates: "同一内容", mentions: "メンション", links: "リンク", crossChannel: "複数チャンネル", threshold: "件数", window: "時間", enabled: "Spam Protection", strength: "Spam Protection の強度", currentLevel: "現在のレベル", action: "検知後の動作", log: "記録のみ", alert: "管理者へ通知", incident: "インシデント記録＋通知", ignoreBots: "他のBotを除外", ignoreAdmins: "所有者・モデレーターを除外", roles: "除外するロールID", channels: "除外するチャンネルID", advanced: "詳細設定", choose: "サーバーを選択", loading: "読み込み中…", current: "現在", next: "プレビュー", reset: "従来の既定動作へ戻す", save: "保存", on: "ON", off: "OFF", customSliderWarning: "スライダーを動かすと、カスタムの閾値は強度に応じた値へ置き換わります。", noGuilds: "管理できるサーバーがありません。" };
 
   const describe = (value: GuildSpamPolicy | null) => value ? [
     `${en ? "Messages" : "連続投稿"} ${value.messageCountThreshold}/${value.messageWindowSeconds}s`,
@@ -188,6 +187,8 @@ export function GuildSpamPolicyPanel() {
     `${en ? "Channels" : "複数ch"} ${value.crossChannelThreshold}/${value.crossChannelWindowSeconds}s`,
     `${en ? "Action" : "対応"} ${value.action}`,
   ].join(" · ") : "—";
+  const draftLevel = !draft ? "—" : draft.mode === "CUSTOM" ? labels.custom : spamProtectionLevel(draft.strength ?? 50);
+  const strengthPreview = draft && draft.mode === "CUSTOM" ? null : draft ? strengthToSpamPolicy(draft.strength ?? 50) : null;
 
   return <section className="rounded-2xl border border-border bg-card/65 p-5 shadow-xl shadow-black/10 sm:p-7">
     <div className="flex items-start gap-3"><span className="rounded-xl bg-primary/15 p-2.5 text-primary"><ShieldAlert className="h-5 w-5" /></span><div><h2 className="text-lg font-extrabold">{en ? "Spam Detection" : "Spam Detection"}</h2><p className="mt-1 text-sm text-muted-foreground">{en ? "Set detection thresholds and response separately for each Discord server." : "Discordサーバーごとに、検知条件と検知後の対応を設定します。"}</p></div></div>
@@ -196,14 +197,24 @@ export function GuildSpamPolicyPanel() {
       {loadingPolicy && <p className="mt-5 text-sm text-muted-foreground">{labels.loading}</p>}
       {policy && draft && <>
         {!isCustom && <p className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">{en ? "No custom policy is saved. The Bot's existing environment-based behavior remains active (code defaults: 3 messages / 5 seconds and a 5-minute timeout; environment overrides may apply). Saving below switches this server to the selected non-automatic action." : "個別設定は未保存です。従来のBot環境設定を維持します（コード既定は5秒以内に3件・5分タイムアウト。環境変数で上書きされる場合があります）。下記を保存すると、このサーバーでは選択した自動処分なしの動作に切り替わります。"}</p>}
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <label className="flex items-center gap-3 rounded-xl border border-border bg-background/50 p-3"><input type="checkbox" checked={policy.enabled} onChange={(event) => setField("enabled", event.target.checked)} /><span className="text-sm font-semibold">{labels.enabled}</span></label>
-          <label className="text-sm font-semibold">{labels.preset}<select value={policy.preset} onChange={(event) => choosePreset(event.target.value as SpamPreset)} className="mt-2 h-10 w-full rounded-lg border border-border bg-background px-3 text-sm"><option value="RELAXED">{labels.relaxed}</option><option value="NORMAL">{labels.normal}</option><option value="STRICT">{labels.strict}</option><option value="CUSTOM">{labels.custom}</option></select></label>
+        <label className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/50 p-4"><span className="text-sm font-bold">{labels.enabled}</span><span className="flex items-center gap-2 text-sm"><span>{policy.enabled ? labels.on : labels.off}</span><input type="checkbox" role="switch" aria-label={labels.enabled} checked={policy.enabled} onChange={(event) => setField("enabled", event.target.checked)} /></span></label>
+        <div className="mt-5 rounded-xl border border-border bg-background/40 p-4">
+          <label htmlFor="spam-strength" className="flex items-center justify-between gap-3 text-sm font-bold"><span>{labels.strength}</span><span>{draft.strength ?? "—"} / 100</span></label>
+          <input id="spam-strength" aria-label={labels.strength} type="range" min={0} max={100} step={1} value={draft.strength ?? 50} onChange={(event) => { setPolicy((current) => current ? applySpamProtectionStrength(current, Number(event.target.value)) : current); setStatus(""); }} className="mt-3 w-full accent-primary" />
+          <div className="flex justify-between text-xs text-muted-foreground"><span>0 · {labels.off}</span><span>33 · {labels.relaxed}</span><span>66 · {labels.normal}</span><span>100 · {labels.strict}</span></div>
+          <p className="mt-2 text-sm">{labels.currentLevel}: <strong>{draftLevel}</strong>{draft.mode === "CUSTOM" && <span className="ml-2 text-xs text-muted-foreground">{labels.customSliderWarning}</span>}</p>
+          {strengthPreview && <p className="mt-2 text-xs text-muted-foreground">{labels.next}: {describe({ ...draft, ...strengthPreview })}</p>}
         </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">{numericFields.map(({ count, window, key, unit }) => <div key={key} className="rounded-xl border border-border bg-background/50 p-3"><p className="mb-2 text-sm font-bold">{labels[key]}</p><div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-2"><label className="sr-only" htmlFor={`spam-${count}`}>{labels.threshold}</label><input id={`spam-${count}`} type="number" min={1} max={100} value={policy[count]} onChange={(event) => setField(count, Number(event.target.value) as GuildSpamPolicy[typeof count])} className="h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm" /><span className="text-xs text-muted-foreground">{unit} /</span><label className="sr-only" htmlFor={`spam-${window}`}>{labels.window}</label><input id={`spam-${window}`} type="number" min={1} max={300} value={policy[window]} onChange={(event) => setField(window, Number(event.target.value) as GuildSpamPolicy[typeof window])} className="h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm" /><span className="text-xs text-muted-foreground">sec</span></div></div>)}</div>
-        <label className="mt-4 block text-sm font-semibold">{labels.action}<select value={policy.action} onChange={(event) => setField("action", event.target.value as SpamAction)} className="mt-2 h-10 w-full rounded-lg border border-border bg-background px-3 text-sm"><option value="LOG_ONLY">{labels.log}</option><option value="ALERT">{labels.alert}</option><option value="INCIDENT">{labels.incident}</option></select></label>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="flex items-center gap-2 rounded-lg border border-border bg-background/50 p-3 text-sm"><input type="checkbox" checked={policy.ignoreBots} onChange={(event) => setField("ignoreBots", event.target.checked)} />{labels.ignoreBots}</label><label className="flex items-center gap-2 rounded-lg border border-border bg-background/50 p-3 text-sm"><input type="checkbox" checked={policy.ignoreAdmins} onChange={(event) => setField("ignoreAdmins", event.target.checked)} />{labels.ignoreAdmins}</label></div>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm font-semibold">{labels.roles}<textarea rows={2} value={roleIdsText} onChange={(event) => { setRoleIdsText(event.target.value); setField("ignoredRoleIds", event.target.value.split(/[\s,]+/).filter(Boolean)); }} placeholder="123456789012345678, …" className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs" /></label><label className="text-sm font-semibold">{labels.channels}<textarea rows={2} value={channelIdsText} onChange={(event) => { setChannelIdsText(event.target.value); setField("ignoredChannelIds", event.target.value.split(/[\s,]+/).filter(Boolean)); }} placeholder="123456789012345678, …" className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs" /></label></div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {moduleFields.map(({ key, label }) => <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-3 text-sm"><span>{labels[label]}</span><span className="flex items-center gap-2"><span>{policy[key] ? labels.on : labels.off}</span><input type="checkbox" role="switch" aria-label={labels[label]} checked={policy[key]} onChange={(event) => setField(key, event.target.checked)} /></span></label>)}
+        </div>
+        <details className="mt-5 rounded-xl border border-border bg-background/30 p-4">
+          <summary className="cursor-pointer text-sm font-bold">{labels.advanced}</summary>
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">{numericFields.map(({ count, window, key, unit }) => <div key={key} className="rounded-xl border border-border bg-background/50 p-3"><p className="mb-2 text-sm font-bold">{labels[key]}</p><div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-2"><label className="sr-only" htmlFor={`spam-${count}`}>{labels.threshold}</label><input id={`spam-${count}`} type="number" min={1} max={100} value={policy[count]} onChange={(event) => setField(count, Number(event.target.value) as GuildSpamPolicy[typeof count])} className="h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm" /><span className="text-xs text-muted-foreground">{unit} /</span><label className="sr-only" htmlFor={`spam-${window}`}>{labels.window}</label><input id={`spam-${window}`} type="number" min={1} max={300} value={policy[window]} onChange={(event) => setField(window, Number(event.target.value) as GuildSpamPolicy[typeof window])} className="h-10 min-w-0 rounded-lg border border-border bg-background px-2 text-sm" /><span className="text-xs text-muted-foreground">sec</span></div></div>)}</div>
+          <label className="mt-4 block text-sm font-semibold">{labels.action}<select value={policy.action} onChange={(event) => setField("action", event.target.value as SpamAction)} className="mt-2 h-10 w-full rounded-lg border border-border bg-background px-3 text-sm"><option value="LOG_ONLY">{labels.log}</option><option value="ALERT">{labels.alert}</option><option value="INCIDENT">{labels.incident}</option></select></label>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="flex items-center gap-2 rounded-lg border border-border bg-background/50 p-3 text-sm"><input type="checkbox" checked={policy.ignoreBots} onChange={(event) => setField("ignoreBots", event.target.checked)} />{labels.ignoreBots}</label><label className="flex items-center gap-2 rounded-lg border border-border bg-background/50 p-3 text-sm"><input type="checkbox" checked={policy.ignoreAdmins} onChange={(event) => setField("ignoreAdmins", event.target.checked)} />{labels.ignoreAdmins}</label></div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm font-semibold">{labels.roles}<textarea rows={2} value={roleIdsText} onChange={(event) => { setRoleIdsText(event.target.value); setField("ignoredRoleIds", event.target.value.split(/[\s,]+/).filter(Boolean)); }} placeholder="123456789012345678, …" className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs" /></label><label className="text-sm font-semibold">{labels.channels}<textarea rows={2} value={channelIdsText} onChange={(event) => { setChannelIdsText(event.target.value); setField("ignoredChannelIds", event.target.value.split(/[\s,]+/).filter(Boolean)); }} placeholder="123456789012345678, …" className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs" /></label></div>
+        </details>
         <div className="mt-4 grid gap-3 rounded-xl border border-border bg-background/40 p-3 text-xs sm:grid-cols-2"><p><span className="font-bold">{labels.current}:</span> {isCustom ? describe(savedPolicy) : en ? "Legacy default · environment may override code defaults (3 messages / 5 sec)" : "従来の既定 · Bot環境変数で上書きされる場合があります（コード既定 3件 / 5秒）"}</p><p><span className="font-bold">{labels.next}:</span> {describe(draft)}</p></div>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p role="status" className={`text-sm ${status.includes("ません") || status.includes("Unable") || status.includes("Could not") ? "text-destructive" : "text-emerald-500"}`}>{status}</p><button type="button" disabled={saving || loadingPolicy} onClick={() => void reset()} className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-semibold disabled:opacity-50"><RotateCcw className="h-4 w-4" />{labels.reset}</button></div>
         {isDirty && <div className="mt-3 flex justify-end"><button type="button" disabled={saving || loadingPolicy} onClick={() => void save()} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-50">{saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{labels.save}</button></div>}

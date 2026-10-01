@@ -8,6 +8,7 @@ import {
   DEFAULT_GUILD_SPAM_POLICY,
   canAccessGuildSpamPolicy,
   getChangedSpamPolicyFields,
+  getSpamPolicyAuditChanges,
   normalizeGuildSpamPolicy,
   parseGuildSpamPolicyRow,
   type GuildSpamPolicy,
@@ -80,6 +81,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ guil
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`nuviloview:spam-policy:${guildId}`])
     const previousResult = await client.query('SELECT * FROM "guild_spam_policy" WHERE "guild_id" = $1 FOR UPDATE', [guildId])
     const previous = parseGuildSpamPolicyRow(previousResult.rows[0] ?? null)
     const values = [
@@ -88,15 +90,18 @@ export async function PUT(request: Request, { params }: { params: Promise<{ guil
       policy.mentionWindowSeconds, policy.linkCountThreshold, policy.linkWindowSeconds,
       policy.crossChannelThreshold, policy.crossChannelWindowSeconds, policy.action,
       policy.ignoreBots, policy.ignoreAdmins, policy.ignoredRoleIds, policy.ignoredChannelIds,
-      access.session.user.id,
+      access.session.user.id, policy.strength, policy.mode,
+      policy.messageBurstEnabled, policy.duplicateEnabled, policy.mentionEnabled,
+      policy.linkEnabled, policy.crossChannelEnabled,
     ]
     const savedResult = await client.query(`
       INSERT INTO "guild_spam_policy" (
         "guild_id", "enabled", "preset", "message_count_threshold", "message_window_seconds",
         "duplicate_count_threshold", "duplicate_window_seconds", "mention_count_threshold", "mention_window_seconds",
         "link_count_threshold", "link_window_seconds", "cross_channel_threshold", "cross_channel_window_seconds",
-        "action", "ignore_bots", "ignore_admins", "ignored_role_ids", "ignored_channel_ids", "updated_by", "updated_at"
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
+        "action", "ignore_bots", "ignore_admins", "ignored_role_ids", "ignored_channel_ids", "updated_by", "updated_at",
+        "strength", "policy_mode", "message_burst_enabled", "duplicate_enabled", "mention_enabled", "link_enabled", "cross_channel_enabled"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now(), $20, $21, $22, $23, $24, $25, $26)
       ON CONFLICT ("guild_id") DO UPDATE SET
         "enabled" = EXCLUDED."enabled", "preset" = EXCLUDED."preset",
         "message_count_threshold" = EXCLUDED."message_count_threshold", "message_window_seconds" = EXCLUDED."message_window_seconds",
@@ -106,14 +111,18 @@ export async function PUT(request: Request, { params }: { params: Promise<{ guil
         "cross_channel_threshold" = EXCLUDED."cross_channel_threshold", "cross_channel_window_seconds" = EXCLUDED."cross_channel_window_seconds",
         "action" = EXCLUDED."action", "ignore_bots" = EXCLUDED."ignore_bots", "ignore_admins" = EXCLUDED."ignore_admins",
         "ignored_role_ids" = EXCLUDED."ignored_role_ids", "ignored_channel_ids" = EXCLUDED."ignored_channel_ids",
+        "strength" = EXCLUDED."strength", "policy_mode" = EXCLUDED."policy_mode",
+        "message_burst_enabled" = EXCLUDED."message_burst_enabled", "duplicate_enabled" = EXCLUDED."duplicate_enabled",
+        "mention_enabled" = EXCLUDED."mention_enabled", "link_enabled" = EXCLUDED."link_enabled",
+        "cross_channel_enabled" = EXCLUDED."cross_channel_enabled",
         "updated_by" = EXCLUDED."updated_by", "updated_at" = now()
       RETURNING *
     `, [guildId, ...values])
     const changedFields = getChangedSpamPolicyFields(previous, policy)
     await client.query(`
-      INSERT INTO "guild_spam_policy_audit" ("guild_id", "changed_by", "old_preset", "new_preset", "changed_fields")
-      VALUES ($1, $2, $3, $4, $5::jsonb)
-    `, [guildId, access.session.user.id, previous?.preset ?? null, policy.preset, JSON.stringify(changedFields)])
+      INSERT INTO "guild_spam_policy_audit" ("guild_id", "changed_by", "old_preset", "new_preset", "changed_fields", "changes")
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+    `, [guildId, access.session.user.id, previous?.preset ?? null, policy.preset, JSON.stringify(changedFields), JSON.stringify(getSpamPolicyAuditChanges(previous, policy))])
     await client.query('COMMIT')
     const saved = parseGuildSpamPolicyRow(savedResult.rows[0])
     return NextResponse.json({ policy: saved ? publicPolicy(saved) : null, isCustom: true }, { headers: { 'Cache-Control': 'private, no-store' } })
@@ -133,14 +142,16 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ g
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const previousResult = await client.query('SELECT "preset" FROM "guild_spam_policy" WHERE "guild_id" = $1 FOR UPDATE', [guildId])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`nuviloview:spam-policy:${guildId}`])
+    const previousResult = await client.query('SELECT * FROM "guild_spam_policy" WHERE "guild_id" = $1 FOR UPDATE', [guildId])
+    const previous = parseGuildSpamPolicyRow(previousResult.rows[0] ?? null)
     const oldPreset = previousResult.rows[0]?.preset ?? null
-    if (oldPreset) {
+    if (previous) {
       await client.query('DELETE FROM "guild_spam_policy" WHERE "guild_id" = $1', [guildId])
       await client.query(`
-        INSERT INTO "guild_spam_policy_audit" ("guild_id", "changed_by", "old_preset", "new_preset", "changed_fields")
-        VALUES ($1, $2, $3, 'DEFAULT', '["reset"]'::jsonb)
-      `, [guildId, access.session.user.id, oldPreset])
+        INSERT INTO "guild_spam_policy_audit" ("guild_id", "changed_by", "old_preset", "new_preset", "changed_fields", "changes")
+        VALUES ($1, $2, $3, 'DEFAULT', $4::jsonb, $5::jsonb)
+      `, [guildId, access.session.user.id, oldPreset, JSON.stringify(['reset', ...getChangedSpamPolicyFields(previous, DEFAULT_GUILD_SPAM_POLICY)]), JSON.stringify(getSpamPolicyAuditChanges(previous, DEFAULT_GUILD_SPAM_POLICY))])
     }
     await client.query('COMMIT')
     return NextResponse.json({ policy: publicPolicy(DEFAULT_GUILD_SPAM_POLICY), isCustom: false }, { headers: { 'Cache-Control': 'private, no-store' } })

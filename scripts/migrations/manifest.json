@@ -149,6 +149,26 @@
         { "kind": "table", "name": "guild_spam_policy_audit" },
         { "kind": "index", "name": "guild_spam_policy_audit_guild_created_idx" }
       ]
+    },
+    {
+      "id": "20261001-guild-spam-protection-controls",
+      "file": "20261001-guild-spam-protection-controls.sql",
+      "checksum": "3a66eebe75b7667145a8ef75a166bc9279d816d0366271a3cf6679095d681b49",
+      "description": "Add strength, module toggles, mode, and before/after policy audit values.",
+      "risk": "medium",
+      "reversible": false,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        { "kind": "column", "table": "guild_spam_policy", "name": "strength" },
+        { "kind": "column", "table": "guild_spam_policy", "name": "policy_mode" },
+        { "kind": "column", "table": "guild_spam_policy", "name": "message_burst_enabled" },
+        { "kind": "column", "table": "guild_spam_policy", "name": "duplicate_enabled" },
+        { "kind": "column", "table": "guild_spam_policy", "name": "mention_enabled" },
+        { "kind": "column", "table": "guild_spam_policy", "name": "link_enabled" },
+        { "kind": "column", "table": "guild_spam_policy", "name": "cross_channel_enabled" },
+        { "kind": "column", "table": "guild_spam_policy_audit", "name": "changes" }
+      ]
     }
   ]
 }

@@ -104,7 +104,7 @@ try {
   const unknownGoogleSession = await user(unknownGoogle);
   const usersAfterUnknownGoogle = Number((await pool.query('SELECT count(*)::int n FROM public."user"')).rows[0].n);
   record('Unknown Google identity cannot create a user or session in the real callback',
-    unknownGoogleLogin.location.includes('signup_disabled') && unknownGoogleSession === null && usersAfterUnknownGoogle === usersBeforeUnknownGoogle,
+    unknownGoogleLogin.location.includes('signup_disabled') && !unknownGoogleSession && usersAfterUnknownGoogle === usersBeforeUnknownGoogle,
     { usersBefore: usersBeforeUnknownGoogle, usersAfter: usersAfterUnknownGoogle, sessionCreated: Boolean(unknownGoogleSession) });
   assert.equal((await login(a, 'google', 'google-a')).location, `${origin}/account`);
   const aUser = (await user(a)).id;

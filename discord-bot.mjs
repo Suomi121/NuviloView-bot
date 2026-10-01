@@ -76,6 +76,21 @@ import {
   shouldTrackSpamMessage,
 } from "./lib/spam-protection.mjs";
 import {
+  DEFAULT_GUILD_SPAM_POLICY,
+  applySpamProtectionCommand,
+  createGuildSpamDetectionTracker,
+  createGuildSpamPolicyCache,
+  countSpamLinks,
+  countSpamMentions,
+  parseGuildSpamPolicyRow,
+  spamPolicyToDatabaseFields,
+  getChangedSpamPolicyFields,
+  isSpamProtectionActive,
+  SPAM_POLICY_MODULES,
+  resolveSpamPolicyAction,
+  shouldApplyGuildSpamPolicy,
+} from "./lib/guild-spam-policy.mjs";
+import {
   SNIPE_HISTORY_LIMIT,
   SNIPE_RETENTION_MS,
   SNIPE_RESULT_SESSION_MS,
@@ -366,6 +381,225 @@ const spamTracker = createSpamTracker({
   windowMs: spamWindowMs,
   detectionCooldownMs: spamDetectionCooldownMs,
 });
+const guildSpamDetectionTracker = createGuildSpamDetectionTracker({
+  cooldownMs: spamDetectionCooldownMs,
+});
+let spamPolicyTableCheckedAt = 0;
+let spamPolicyTableExists = false;
+const guildSpamPolicyCache = createGuildSpamPolicyCache({
+  ttlMs: 30_000,
+  loadPolicy: async (guildId) => {
+    if (Date.now() - spamPolicyTableCheckedAt >= 30_000) {
+      const tableResult = await sql.query(
+        `SELECT to_regclass('public.guild_spam_policy') AS table_name`,
+        [],
+      );
+      const tableRows = Array.isArray(tableResult?.rows) ? tableResult.rows : tableResult;
+      spamPolicyTableExists = Boolean(tableRows?.[0]?.table_name);
+      spamPolicyTableCheckedAt = Date.now();
+    }
+    if (!spamPolicyTableExists) return null;
+    const result = await sql.query(
+      `SELECT * FROM "guild_spam_policy" WHERE "guild_id" = $1 LIMIT 1`,
+      [guildId],
+    );
+    const rows = Array.isArray(result?.rows) ? result.rows : result;
+    const policy = parseGuildSpamPolicyRow(rows?.[0] ?? null);
+    if (rows?.[0] && !policy) {
+      throw Object.assign(new Error("Stored Guild spam policy is invalid."), {
+        code: "SPAM_POLICY_INVALID",
+      });
+    }
+    return policy;
+  },
+});
+
+const defaultSpamPolicyDatabaseFields = spamPolicyToDatabaseFields(DEFAULT_GUILD_SPAM_POLICY);
+
+const SAVE_SPAM_POLICY_COMMAND_SQL = `
+  WITH lock_row AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtext($1))
+  ), previous AS MATERIALIZED (
+    SELECT to_jsonb(policy) AS value
+    FROM "guild_spam_policy" AS policy CROSS JOIN lock_row
+    WHERE policy."guild_id" = $1
+    FOR UPDATE OF policy
+  ), previous_snapshot AS (
+    SELECT COALESCE((SELECT value FROM previous), '{}'::jsonb) AS value
+  ), prepared AS (
+    SELECT jsonb_populate_record(
+      NULL::"guild_spam_policy",
+      COALESCE(NULLIF(previous_snapshot.value, '{}'::jsonb), $2::jsonb)
+        || $3::jsonb
+        || jsonb_build_object('guild_id', $1, 'updated_by', $4, 'updated_at', now())
+    ) AS policy_row
+    FROM previous_snapshot
+  ), saved AS (
+    INSERT INTO "guild_spam_policy" (
+      "guild_id", "enabled", "preset", "message_count_threshold", "message_window_seconds",
+      "duplicate_count_threshold", "duplicate_window_seconds", "mention_count_threshold", "mention_window_seconds",
+      "link_count_threshold", "link_window_seconds", "cross_channel_threshold", "cross_channel_window_seconds",
+      "action", "ignore_bots", "ignore_admins", "ignored_role_ids", "ignored_channel_ids", "updated_by", "updated_at",
+      "strength", "policy_mode", "message_burst_enabled", "duplicate_enabled", "mention_enabled", "link_enabled", "cross_channel_enabled"
+    )
+    SELECT (prepared.policy_row).* FROM prepared
+    ON CONFLICT ("guild_id") DO UPDATE SET
+      "enabled" = EXCLUDED."enabled", "preset" = EXCLUDED."preset",
+      "message_count_threshold" = EXCLUDED."message_count_threshold", "message_window_seconds" = EXCLUDED."message_window_seconds",
+      "duplicate_count_threshold" = EXCLUDED."duplicate_count_threshold", "duplicate_window_seconds" = EXCLUDED."duplicate_window_seconds",
+      "mention_count_threshold" = EXCLUDED."mention_count_threshold", "mention_window_seconds" = EXCLUDED."mention_window_seconds",
+      "link_count_threshold" = EXCLUDED."link_count_threshold", "link_window_seconds" = EXCLUDED."link_window_seconds",
+      "cross_channel_threshold" = EXCLUDED."cross_channel_threshold", "cross_channel_window_seconds" = EXCLUDED."cross_channel_window_seconds",
+      "action" = EXCLUDED."action", "ignore_bots" = EXCLUDED."ignore_bots", "ignore_admins" = EXCLUDED."ignore_admins",
+      "ignored_role_ids" = EXCLUDED."ignored_role_ids", "ignored_channel_ids" = EXCLUDED."ignored_channel_ids",
+      "updated_by" = EXCLUDED."updated_by", "updated_at" = now(), "strength" = EXCLUDED."strength",
+      "policy_mode" = EXCLUDED."policy_mode", "message_burst_enabled" = EXCLUDED."message_burst_enabled",
+      "duplicate_enabled" = EXCLUDED."duplicate_enabled", "mention_enabled" = EXCLUDED."mention_enabled",
+      "link_enabled" = EXCLUDED."link_enabled", "cross_channel_enabled" = EXCLUDED."cross_channel_enabled"
+    RETURNING *
+  ), audit_diff AS (
+    SELECT changes.field, changes.before_value, changes.after_value
+    FROM previous_snapshot
+    CROSS JOIN saved
+    CROSS JOIN LATERAL (
+      SELECT COALESCE(old_value.key, new_value.key) AS field,
+        old_value.value AS before_value, new_value.value AS after_value
+      FROM jsonb_each(previous_snapshot.value - 'guild_id' - 'updated_by' - 'updated_at') AS old_value
+      FULL OUTER JOIN jsonb_each(to_jsonb(saved) - 'guild_id' - 'updated_by' - 'updated_at') AS new_value USING (key)
+    ) AS changes
+    WHERE changes.before_value IS DISTINCT FROM changes.after_value
+  ), audit_values AS (
+    SELECT COALESCE(jsonb_agg(field), '[]'::jsonb) AS fields,
+      COALESCE(jsonb_object_agg(field, jsonb_build_object('before', before_value, 'after', after_value)), '{}'::jsonb) AS changes
+    FROM audit_diff
+  ), audited AS (
+    INSERT INTO "guild_spam_policy_audit" ("guild_id", "changed_by", "old_preset", "new_preset", "changed_fields", "changes")
+    SELECT $1, $4, NULLIF(previous_snapshot.value ->> 'preset', ''), saved."preset", audit_values.fields, audit_values.changes
+    FROM saved CROSS JOIN previous_snapshot CROSS JOIN audit_values
+    RETURNING "id"
+  )
+  SELECT to_jsonb(saved) AS policy FROM saved CROSS JOIN audited
+`;
+
+const RESET_SPAM_POLICY_COMMAND_SQL = `
+  WITH lock_row AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtext($1))
+  ), deleted AS (
+    DELETE FROM "guild_spam_policy" AS policy USING lock_row
+    WHERE policy."guild_id" = $1
+    RETURNING to_jsonb(policy) AS value
+  ), diff_rows AS (
+    SELECT changes.field, changes.before_value, changes.after_value
+    FROM deleted
+    CROSS JOIN LATERAL (
+      SELECT COALESCE(old_value.key, new_value.key) AS field,
+        old_value.value AS before_value, new_value.value AS after_value
+      FROM jsonb_each(deleted.value - 'guild_id' - 'updated_by' - 'updated_at') AS old_value
+      FULL OUTER JOIN jsonb_each($2::jsonb) AS new_value USING (key)
+    ) AS changes
+    WHERE changes.before_value IS DISTINCT FROM changes.after_value
+  ), audit_values AS (
+    SELECT COALESCE(jsonb_agg(field), '[]'::jsonb) AS fields,
+      COALESCE(jsonb_object_agg(field, jsonb_build_object('before', before_value, 'after', after_value)), '{}'::jsonb) AS changes
+    FROM diff_rows
+  ), audited AS (
+    INSERT INTO "guild_spam_policy_audit" ("guild_id", "changed_by", "old_preset", "new_preset", "changed_fields", "changes")
+    SELECT $1, $3, deleted.value ->> 'preset', 'DEFAULT', audit_values.fields || '["reset"]'::jsonb,
+      audit_values.changes || jsonb_build_object('reset', jsonb_build_object('before', false, 'after', true))
+    FROM deleted CROSS JOIN audit_values
+    RETURNING "id"
+  )
+  SELECT true AS reset FROM audited
+`;
+
+async function handleSpamProtectionCommand(interaction) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: "このコマンドはサーバー内でのみ使用できます。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const permissions = interaction.memberPermissions;
+  if (!permissions?.has(PermissionFlagsBits.Administrator) && !permissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.reply({ content: "このコマンドを変更できるのはサーバー管理者のみです。", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const operation = interaction.options.getSubcommand();
+  const guildId = interaction.guildId;
+  const replyStatus = (policy, source = "guild") => {
+    const level = policy.mode === "CUSTOM" ? "Custom" : `${spamProtectionLevel(policy.strength ?? 50)} (${policy.strength ?? 50}/100)`;
+    const modules = [
+      ["Message Burst", policy.messageBurstEnabled], ["Duplicate", policy.duplicateEnabled],
+      ["Mentions", policy.mentionEnabled], ["Links", policy.linkEnabled], ["Cross-channel", policy.crossChannelEnabled],
+    ].map(([name, enabled]) => `${name}: ${enabled ? "ON" : "OFF"}`).join("\n");
+    return `Spam Protection\n${policy.enabled ? "Enabled" : "Disabled"}\nStrength\n${policy.strength ?? "Custom"} / 100\nLevel\n${level}\n${modules}\nMode\n${policy.mode === "CUSTOM" ? "Custom" : "Strength"}${source === "default" ? "\nUsing legacy/default settings until saved" : ""}\n\nChanges apply within 30 seconds.`;
+  };
+  try {
+    if (operation === "reset") {
+      await sql.query(RESET_SPAM_POLICY_COMMAND_SQL, [guildId, JSON.stringify(defaultSpamPolicyDatabaseFields), interaction.user.id]);
+      guildSpamPolicyCache.invalidate(guildId);
+      await interaction.reply({ content: "このサーバーの設定を従来の既定動作へ戻しました。", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    guildSpamPolicyCache.invalidate(guildId);
+    const context = await guildSpamPolicyCache.get(guildId);
+    const base = context.policy ?? DEFAULT_GUILD_SPAM_POLICY;
+    if (operation === "status") {
+      await interaction.reply({ content: replyStatus(base, context.source), flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (context.source === "fallback") {
+      await interaction.reply({ content: "現在設定を保存できません。少し待ってからもう一度お試しください。", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const value = operation === "level"
+      ? interaction.options.getInteger("strength", true)
+      : ["messages", "duplicate", "mentions", "links", "cross-channel"].includes(operation)
+        ? interaction.options.getBoolean("enabled", true)
+        : undefined;
+    const next = normalizeSpamCommandPolicy(applySpamProtectionCommand(base, operation, value));
+    if (!next) {
+      await interaction.reply({ content: "指定された設定値を確認してください。", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const changed = getChangedSpamPolicyFields(base, next);
+    if (!changed.length) {
+      await interaction.reply({ content: replyStatus(base, context.source), flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const fieldsToPersist = operation === "level"
+      ? [...new Set([...changed, "strength", "mode", "preset", "messageCountThreshold", "messageWindowSeconds", "duplicateCountThreshold", "duplicateWindowSeconds", "mentionCountThreshold", "mentionWindowSeconds", "linkCountThreshold", "linkWindowSeconds", "crossChannelThreshold", "crossChannelWindowSeconds"])]
+      : changed;
+    const patch = spamPolicyToDatabaseFields(next, fieldsToPersist);
+    const result = await sql.query(SAVE_SPAM_POLICY_COMMAND_SQL, [
+      guildId, JSON.stringify(defaultSpamPolicyDatabaseFields), JSON.stringify(patch), interaction.user.id,
+    ]);
+    const rows = Array.isArray(result?.rows) ? result.rows : result;
+    const saved = parseGuildSpamPolicyRow(rows?.[0]?.policy ?? null);
+    if (!saved) throw new Error("SPAM_POLICY_SAVE_INVALID_RESULT");
+    guildSpamPolicyCache.invalidate(guildId);
+    await interaction.reply({ content: replyStatus(saved), flags: MessageFlags.Ephemeral });
+  } catch (error) {
+    const code = String(error?.code ?? error?.name ?? "SPAM_POLICY_COMMAND_ERROR").slice(0, 40);
+    console.warn(`[spam-policy-command] setting update failed (${code}).`);
+    await interaction.reply({ content: "設定を保存できませんでした。少し待ってからもう一度お試しください。", flags: MessageFlags.Ephemeral }).catch(() => {});
+  }
+}
+
+function normalizeSpamCommandPolicy(policy) {
+  return policy ? parseGuildSpamPolicyRow({
+    enabled: policy.enabled, strength: policy.strength, policy_mode: policy.mode, preset: policy.preset,
+    message_count_threshold: policy.messageCountThreshold, message_window_seconds: policy.messageWindowSeconds,
+    duplicate_count_threshold: policy.duplicateCountThreshold, duplicate_window_seconds: policy.duplicateWindowSeconds,
+    mention_count_threshold: policy.mentionCountThreshold, mention_window_seconds: policy.mentionWindowSeconds,
+    link_count_threshold: policy.linkCountThreshold, link_window_seconds: policy.linkWindowSeconds,
+    cross_channel_threshold: policy.crossChannelThreshold, cross_channel_window_seconds: policy.crossChannelWindowSeconds,
+    message_burst_enabled: policy.messageBurstEnabled, duplicate_enabled: policy.duplicateEnabled,
+    mention_enabled: policy.mentionEnabled, link_enabled: policy.linkEnabled,
+    cross_channel_enabled: policy.crossChannelEnabled, action: policy.action,
+    ignore_bots: policy.ignoreBots, ignore_admins: policy.ignoreAdmins,
+    ignored_role_ids: policy.ignoredRoleIds, ignored_channel_ids: policy.ignoredChannelIds,
+  }) : null;
+}
+
 const spamActionLocks = new Set();
 const spamAlertMessages = new Map();
 const reactionRoleRules = new Map();
@@ -374,7 +608,10 @@ const snipeHistoryCleanupTimers = new Map();
 const ignoredSnipeDeleteIds = new Set();
 const snipeResultSessions = new Map();
 const spamTrackerPruneTimer = setInterval(
-  () => spamTracker.prune(),
+  () => {
+    spamTracker.prune();
+    guildSpamDetectionTracker.prune();
+  },
   Math.max(spamWindowMs * 2, 60_000),
 );
 spamTrackerPruneTimer.unref();
@@ -412,6 +649,34 @@ const weekCommand = new SlashCommandBuilder()
   .setName("week")
   .setDescription("このサーバーの直近7日間の活動を表示します")
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .toJSON();
+const spamProtectionCommand = new SlashCommandBuilder()
+  .setName("spamprotection")
+  .setDescription("このサーバーのスパム保護設定を確認・変更します")
+  .setDMPermission(false)
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .addSubcommand((subcommand) => subcommand.setName("status").setDescription("現在のスパム保護設定を表示します"))
+  .addSubcommand((subcommand) => subcommand.setName("on").setDescription("スパム保護を有効にします"))
+  .addSubcommand((subcommand) => subcommand.setName("off").setDescription("スパム保護を停止します"))
+  .addSubcommand((subcommand) => subcommand
+    .setName("level").setDescription("スパム保護の強度を設定します")
+    .addIntegerOption((option) => option.setName("strength").setDescription("0〜100").setMinValue(0).setMaxValue(100).setRequired(true)))
+  .addSubcommand((subcommand) => subcommand
+    .setName("messages").setDescription("連続投稿検知を切り替えます")
+    .addBooleanOption((option) => option.setName("enabled").setDescription("有効にするか").setRequired(true)))
+  .addSubcommand((subcommand) => subcommand
+    .setName("duplicate").setDescription("同一内容検知を切り替えます")
+    .addBooleanOption((option) => option.setName("enabled").setDescription("有効にするか").setRequired(true)))
+  .addSubcommand((subcommand) => subcommand
+    .setName("mentions").setDescription("メンション検知を切り替えます")
+    .addBooleanOption((option) => option.setName("enabled").setDescription("有効にするか").setRequired(true)))
+  .addSubcommand((subcommand) => subcommand
+    .setName("links").setDescription("リンク検知を切り替えます")
+    .addBooleanOption((option) => option.setName("enabled").setDescription("有効にするか").setRequired(true)))
+  .addSubcommand((subcommand) => subcommand
+    .setName("cross-channel").setDescription("複数チャンネル検知を切り替えます")
+    .addBooleanOption((option) => option.setName("enabled").setDescription("有効にするか").setRequired(true)))
+  .addSubcommand((subcommand) => subcommand.setName("reset").setDescription("このサーバーを従来の既定動作へ戻します"))
   .toJSON();
 const dashboardCommand = new SlashCommandBuilder()
   .setName("dashboard")
@@ -724,6 +989,7 @@ const publicCommands = [
 // These are registered per guild so newly-added management tools can appear
 // immediately without duplicating the small global command set.
 const extendedCommands = [
+  spamProtectionCommand,
   permissionsCommand,
   sucCommand,
   weekCommand,
@@ -2460,9 +2726,9 @@ async function handleSecurityHelpCommand(message, args) {
       ),
       new TextDisplayBuilder().setContent(
         `### 🚨 自動スパム検知 — ${spamProtectionEnabled ? "稼働中" : "停止中"}\n` +
-          `${spamWindowMs / 1_000}秒以内に同一ユーザーまたはBotが${spamMessageLimit}件送信すると、` +
-          `${spamTimeoutMinutes}分タイムアウトを試行します。\n` +
-          "-# 検知カードからTimeout解除・Kick・BANを選択でき、成功後はカードを自動削除します。",
+          `個別設定がないサーバーでは、${spamWindowMs / 1_000}秒以内の${spamMessageLimit}件投稿を検知し、` +
+          `従来どおり${spamTimeoutMinutes}分のタイムアウトを試行します。\n` +
+          "-# 個別設定のあるサーバーはDashboardの Security → Spam Detection で条件と対応方法を確認できます。",
       ),
       new TextDisplayBuilder().setContent(
         "### 🔐 権限・実行可否チェック\n" +
@@ -3433,6 +3699,9 @@ async function sendSpamDetectionAlert(message, {
   detectedCount,
   actionResult,
   protectedReason = null,
+  windowSeconds = spamWindowMs / 1_000,
+  signals = ["messages"],
+  allowActions = true,
 }) {
   const botMember =
     message.guild.members.me ?? (await message.guild.members.fetchMe());
@@ -3449,28 +3718,50 @@ async function sendSpamDetectionAlert(message, {
       targetMember.user.globalName ??
       targetMember.user.username,
   );
+  const signalLabels = {
+    messages: "短時間の連続投稿",
+    duplicates: "同一内容の繰り返し",
+    mentions: "メンション数",
+    links: "リンク数",
+    cross_channel: "複数チャンネルへの投稿",
+  };
+  const reasonText = signals.map((signal) => signalLabels[signal] ?? "投稿パターン").join("・");
   const content =
     `🚨 **スパムを検知しました**\n` +
     `対象: **${targetName}**（\`${targetMember.id}\`）\n` +
-    `検知条件: ${(spamWindowMs / 1_000).toLocaleString("ja-JP")}秒以内に` +
+    `検知条件: ${reasonText}（${windowSeconds.toLocaleString("ja-JP")}秒以内） · ` +
     `${detectedCount.toLocaleString("ja-JP")}件\n` +
     `自動対応: ${actionResult}` +
     (protectedReason ? `\n保護理由: ${protectedReason}` : "") +
-    `\n-# 所有者・Administrator・対応権限を持つ運営者が操作できます · 監査ID: ${auditId}`;
+    `\n-# 検知ID: ${auditId}`;
   const alertMessage = await alertChannel.send({
     content,
-    components: protectedReason ? [] : [createSpamActionRow(auditId)],
+    components: allowActions && !protectedReason ? [createSpamActionRow(auditId)] : [],
     allowedMentions: { parse: [] },
   });
-  spamAlertMessages.set(auditId, {
-    channelId: alertMessage.channelId,
-    messageId: alertMessage.id,
-  });
-  const cleanupTimer = setTimeout(
-    () => spamAlertMessages.delete(auditId),
-    24 * 60 * 60 * 1_000,
-  );
-  cleanupTimer.unref();
+  if (allowActions && !protectedReason) {
+    spamAlertMessages.set(auditId, {
+      channelId: alertMessage.channelId,
+      messageId: alertMessage.id,
+    });
+    const cleanupTimer = setTimeout(
+      () => spamAlertMessages.delete(auditId),
+      24 * 60 * 60 * 1_000,
+    );
+    cleanupTimer.unref();
+  }
+}
+
+function hasSpamAdminOrModeratorPermissions(member) {
+  if (!member) return false;
+  return member.id === member.guild.ownerId || [
+    PermissionFlagsBits.Administrator,
+    PermissionFlagsBits.ManageGuild,
+    PermissionFlagsBits.ManageMessages,
+    PermissionFlagsBits.ModerateMembers,
+    PermissionFlagsBits.KickMembers,
+    PermissionFlagsBits.BanMembers,
+  ].some((permission) => member.permissions.has(permission));
 }
 
 async function handleSpamDetection(message, detection) {
@@ -3491,6 +3782,50 @@ async function handleSpamDetection(message, detection) {
     user: client.user,
     member: botMember,
   };
+  const policyContext = detection.policyContext;
+  const actionMode = resolveSpamPolicyAction({
+    isCustom: Boolean(policyContext?.isCustom),
+    policy: policyContext?.policy,
+    source: policyContext?.source,
+  });
+  if (actionMode !== "LEGACY_TIMEOUT") {
+    const signalText = detection.signals.join(", ");
+    const auditId = randomUUID();
+    let storedAuditId = auditId;
+    if (actionMode === "LOG_ONLY" || actionMode === "INCIDENT") {
+      try {
+        storedAuditId = await startModerationAudit(context, {
+          action: actionMode === "INCIDENT" ? "spam_policy_incident" : "spam_policy_log",
+          targetId: targetMember.id,
+          targetName: (
+            targetMember.displayName ??
+            targetMember.user.globalName ??
+            targetMember.user.username
+          ).slice(0, 100),
+          channelId: message.channelId,
+          reason: `Guild Spam Policy detection: ${signalText}`.slice(0, 500),
+          requestedCount: detection.count,
+        });
+        await finishModerationAudit(storedAuditId, { status: "success", affectedCount: 0 });
+      } catch (error) {
+        console.error("Failed to record Guild Spam Policy detection:", error);
+        if (actionMode === "LOG_ONLY" || actionMode === "INCIDENT") return;
+      }
+    }
+    if (actionMode !== "LOG_ONLY") {
+      await sendSpamDetectionAlert(message, {
+        auditId: storedAuditId,
+        targetMember,
+        detectedCount: detection.count,
+        actionResult: "自動処分なし（管理者への通知のみ）",
+        protectedReason: getSpamProtectedReason(targetMember),
+        windowSeconds: detection.policyContext.policy.messageWindowSeconds,
+        signals: detection.signals,
+        allowActions: false,
+      }).catch((error) => console.error("Failed to send spam policy alert:", error));
+    }
+    return;
+  }
   const reason =
     `自動スパム検知: ${spamWindowMs / 1_000}秒以内に` +
     `${detection.count}件のメッセージ`;
@@ -3525,6 +3860,8 @@ async function handleSpamDetection(message, detection) {
       detectedCount: detection.count,
       actionResult: "保護対象のため自動タイムアウトなし",
       protectedReason,
+      windowSeconds: spamWindowMs / 1_000,
+      signals: detection.signals ?? ["messages"],
     }).catch((error) =>
       console.error("Failed to send protected spam alert:", error),
     );
@@ -3549,6 +3886,8 @@ async function handleSpamDetection(message, detection) {
       targetMember,
       detectedCount: detection.count,
       actionResult: "Bot権限またはロール階層不足のためタイムアウト失敗",
+      windowSeconds: spamWindowMs / 1_000,
+      signals: detection.signals ?? ["messages"],
     }).catch((error) => console.error("Failed to send spam alert:", error));
     return;
   }
@@ -3592,6 +3931,8 @@ async function handleSpamDetection(message, detection) {
     targetMember,
     detectedCount: detection.count,
     actionResult,
+    windowSeconds: spamWindowMs / 1_000,
+    signals: detection.signals ?? ["messages"],
   }).catch((error) => console.error("Failed to send spam alert:", error));
 }
 
@@ -4984,6 +5325,9 @@ client.on("guildCreate", (guild) =>
 
 client.on("guildDelete", (guild) => {
   updateBotPresence();
+  guildSpamPolicyCache.invalidate(guild.id);
+  guildSpamDetectionTracker.forgetGuild(guild.id);
+  spamTracker.forgetGuild(guild.id);
   channelAccessSnapshots.delete(guild.id);
   analyticsInventorySnapshots.delete(guild.id);
   clearGuildReactionRoleRules(guild.id);
@@ -5178,6 +5522,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === "spamprotection") {
+    await handleSpamProtectionCommand(interaction);
+    return;
+  }
   if (interaction.commandName === "translate") {
     try {
       await handleTranslateSlashCommand(interaction);
@@ -5962,7 +6310,7 @@ client.on("interactionCreate", async (interaction) => {
 client.on("messageCreate", async (message) => {
   if (!message.guild || isGuildBlocked(message.guild.id)) return;
 
-  const trackSpam = () => {
+  const trackSpam = async () => {
     if (
       !spamProtectionEnabled ||
       !shouldTrackSpamMessage({
@@ -5973,10 +6321,67 @@ client.on("messageCreate", async (message) => {
     ) {
       return;
     }
-    const spamDetection = spamTracker.record(
-      `${message.guild.id}:${message.author.id}`,
-      message.createdTimestamp,
-    );
+    const policyContext = await guildSpamPolicyCache.get(message.guild.id);
+    let spamDetection;
+    if (policyContext.source === "guild" && policyContext.policy) {
+      const exclusion = shouldApplyGuildSpamPolicy({
+        policy: policyContext.policy,
+        isBot: message.author.bot,
+        isOwnBot: String(message.author.id) === String(client.user?.id),
+        isWebhook: Boolean(message.webhookId),
+        isAdmin: hasSpamAdminOrModeratorPermissions(message.member),
+        roleIds: message.member?.roles?.cache?.map?.((role) => role.id) ?? [],
+        channelId: message.channelId,
+      });
+      if (!exclusion.track) {
+        if (!isSpamProtectionActive(policyContext.policy) || SPAM_POLICY_MODULES.every((module) => policyContext.policy[module] === false)) {
+          guildSpamDetectionTracker.forgetUser(message.guild.id, message.author.id);
+        }
+        return;
+      }
+      const mentionCount = countSpamMentions({
+        userCount: message.mentions.users.size,
+        roleCount: message.mentions.roles.size,
+        everyone: message.mentions.everyone,
+      });
+      const linkCount = countSpamLinks(message.content);
+      spamDetection = guildSpamDetectionTracker.record({
+        guildId: message.guild.id,
+        userId: message.author.id,
+        channelId: message.channelId,
+        content: message.content,
+        mentionCount,
+        linkCount,
+        policy: policyContext.policy,
+        timestamp: message.createdTimestamp,
+      });
+      spamDetection = {
+        ...spamDetection,
+        policyContext,
+        signals: spamDetection.signals,
+      };
+    } else {
+      // A Guild without a saved row retains the deployed behavior. If the
+      // policy store is unavailable, keep detection on the known baseline but
+      // fail safe to LOG_ONLY rather than applying an unknown timeout action.
+      spamDetection = spamTracker.record(
+        `${message.guild.id}:${message.author.id}`,
+        message.createdTimestamp,
+      );
+      spamDetection = { ...spamDetection, signals: ["messages"] };
+      if (policyContext.source === "fallback") {
+        spamDetection.policyContext = {
+          isCustom: false,
+          source: "fallback",
+          policy: {
+            ...DEFAULT_GUILD_SPAM_POLICY,
+            messageCountThreshold: spamMessageLimit,
+            messageWindowSeconds: spamWindowMs / 1_000,
+            action: "LOG_ONLY",
+          },
+        };
+      }
+    }
     if (spamDetection.detected) {
       void handleSpamDetection(message, spamDetection).catch((error) =>
         console.error("Spam detection handling failed:", error),
@@ -5985,7 +6390,9 @@ client.on("messageCreate", async (message) => {
   };
 
   if (message.author.bot) {
-    trackSpam();
+    void trackSpam().catch((error) =>
+      console.error("Spam policy tracking failed:", error),
+    );
     return;
   }
 
@@ -6022,7 +6429,9 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  trackSpam();
+  void trackSpam().catch((error) =>
+    console.error("Spam policy tracking failed:", error),
+  );
 
   try {
     await messageRouter.create(message);

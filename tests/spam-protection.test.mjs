@@ -66,6 +66,18 @@ test("prune removes inactive windows and expired cooldowns", () => {
   assert.equal(tracker.cooldownCount, 0);
 });
 
+test("forgetGuild removes only that Guild's spam windows and cooldowns", () => {
+  const tracker = createSpamTracker({ messageLimit: 2, windowMs: 1_000, detectionCooldownMs: 10_000 });
+  tracker.record("guild-a:user", 0);
+  tracker.record("guild-a:user", 1);
+  tracker.record("guild-b:user", 0);
+  tracker.forgetGuild("guild-a");
+  assert.equal(tracker.trackedWindowCount, 1);
+  assert.equal(tracker.cooldownCount, 0);
+  assert.equal(tracker.record("guild-a:user", 2).count, 1);
+  assert.equal(tracker.trackedWindowCount, 2);
+});
+
 test("automatic timeout includes bots while protecting owners and human moderators", () => {
   assert.equal(
     getAutomaticSpamProtectionBlockReason({

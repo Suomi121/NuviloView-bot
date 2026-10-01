@@ -144,7 +144,7 @@ test('OAuth security settings and friendly unavailable UX remain present', async
   assert.match(authSource, /trustedOrigins/)
   assert.match(authSource, /useSecureCookies/)
   assert.match(authSource, /errorURL:\s*'\/auth-error'/)
-  assert.match(loginButton, /errorCallbackURL:\s*'\/auth-error'/)
+  assert.match(loginButton, /errorCallbackURL:\s*`\/auth-error\?provider=\$\{provider\}`/)
   assert.match(loginButton, /result\.error/)
   assert.match(loginButton, /router\.push\('\/auth-error'\)/)
   assert.match(errorPage, /ログインサービスが一時的に利用できません/)

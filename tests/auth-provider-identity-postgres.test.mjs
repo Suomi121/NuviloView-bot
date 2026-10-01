@@ -108,9 +108,11 @@ test('Auth identity migration and real Better Auth callbacks on isolated Postgre
   // already-linked identity explicitly: a new Google identity must remain
   // blocked by Discord-first onboarding and cannot be used to create this row.
   await valid.pool.query(`INSERT INTO public."user" (id,name,email)
-    VALUES ('scenario-google-only','Synthetic Google-only','google-google-a@users.invalid')`)
+    VALUES ('scenario-google-only-a','Synthetic Google-only A','google-google-a@users.invalid'),
+           ('scenario-google-only-b','Synthetic Google-only B','google-google-b@users.invalid')`)
   await valid.pool.query(`INSERT INTO public.account (id,"providerId","accountId","userId")
-    VALUES ('scenario-google-only-account','google','google-a','scenario-google-only')`)
+    VALUES ('scenario-google-only-account-a','google','google-a','scenario-google-only-a'),
+           ('scenario-google-only-account-b','google','google-b','scenario-google-only-b')`)
   const outcomes = []
   await runAuthIdentityScenarios({
     ...valid,

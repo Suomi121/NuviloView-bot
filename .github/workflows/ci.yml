@@ -43,6 +43,17 @@ jobs:
       - name: Validate migration manifest
         run: pnpm run migration:validate
 
+      - name: Guard production feature baseline
+        run: node scripts/production-contract.mjs
+
+      - name: Focused production regression gates (no live services)
+        run: >-
+          node --test tests/auth-*.test.mjs tests/account-*.test.mjs
+          tests/social-login-rate-limit.test.mjs tests/security-navigation-link.test.mjs
+          tests/guild-spam-*.test.mjs tests/spam-protection.test.mjs
+          tests/guild-onboarding.test.mjs tests/worker-supervisor.test.mjs
+          tests/sync-worker.test.mjs tests/runtime-*.test.mjs tests/multi-db-sync.test.mjs
+
       - name: Check static schema drift
         run: pnpm run migration:drift:static
 
@@ -66,6 +77,9 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+      - name: Verify built production routes
+        run: node scripts/production-contract.mjs --build
 
   auth-identity-postgres:
     runs-on: ubuntu-latest

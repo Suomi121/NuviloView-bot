@@ -12,13 +12,14 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
 }).outputText
 
-function render({ compact = false, locale = 'ja', signedIn = true } = {}) {
+function render({ compact = false, locale = 'ja', signedIn = true, seconds = 0, pending = false } = {}) {
   const mod = { exports: {} }
   const scopedRequire = (id) => {
     if (id === '@/lib/auth-client') return { useSession: () => ({ data: signedIn ? { user: {} } : null }) }
     if (id === '@/components/locale-provider') return { useLocale: () => ({ locale }) }
     if (id === 'next/navigation') return { useRouter: () => ({}) }
     if (id === '@/lib/auth-redirect') return {}
+    if (id === '@/lib/use-social-login') return { useSocialLogin: () => ({ pending, seconds }) }
     if (id === '@/components/discord-icon') return { DiscordIcon: () => null }
     if (id === '@/components/google-icon') return { GoogleIcon: () => null }
     return require(id)
@@ -43,4 +44,19 @@ test('signed-out Discord CTA still has primary background', () => {
   assert.match(html, /Discordで続行/)
   assert.match(html, /class="[^"]*\bbg-primary\b/)
   assert.doesNotMatch(html, /ダッシュボードを開く/)
+})
+
+for (const compact of [false, true]) {
+  for (const locale of ['ja', 'en']) {
+    test(`rate limit guidance renders safely: compact=${compact}, locale=${locale}`, () => {
+      const html = render({ compact, locale, signedIn: false, seconds: 12 })
+      assert.match(html, /role="status"/)
+      assert.ok(html.includes(locale === 'ja' ? 'あと12秒' : '12 seconds'))
+      if (!compact) assert.match(html, /disabled=""/)
+      assert.doesNotMatch(html, /データベース/)
+    })
+  }
+}
+test('shared pending state disables the landing login button', () => {
+  assert.match(render({ signedIn: false, pending: true }), /disabled=""/)
 })

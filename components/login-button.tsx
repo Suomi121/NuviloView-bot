@@ -2,7 +2,8 @@
 
 import { DiscordIcon } from '@/components/discord-icon'
 import { GoogleIcon } from '@/components/google-icon'
-import { signIn, useSession } from '@/lib/auth-client'
+import { useSession } from '@/lib/auth-client'
+import { useSocialLogin } from '@/lib/use-social-login'
 import { getAuthCallbackPath } from '@/lib/auth-redirect'
 import { useLocale } from '@/components/locale-provider'
 import { ChevronDown, LoaderCircle } from 'lucide-react'
@@ -29,6 +30,7 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
   const router = useRouter()
   const [menuOpen, setMenuOpen] = useState(false)
   const [pendingProvider, setPendingProvider] = useState<AuthProvider | null>(null)
+  const login = useSocialLogin()
   const [providers, setProviders] = useState<ProviderAvailability>(defaultAvailability)
   const buttonClass = compact
     ? 'inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all hover:-translate-y-0.5 hover:opacity-90'
@@ -60,6 +62,7 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
   }
 
   const startSocialSignIn = async (provider: AuthProvider) => {
+    if (login.pending || login.seconds > 0) return
     const callbackURL = getAuthCallbackPath(
       provider,
       `${window.location.pathname}${window.location.search}${window.location.hash}`,
@@ -67,13 +70,13 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
     setPendingProvider(provider)
 
     try {
-      const result = await signIn.social({
+      const result = await login.start({
         provider,
         callbackURL,
         errorCallbackURL: `/auth-error?provider=${provider}`,
       })
 
-      if (result.error) router.push('/auth-error')
+      if (result === 'error') router.push('/auth-error')
     } catch {
       router.push('/auth-error')
     } finally {
@@ -96,7 +99,7 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
       <button
         key={provider}
         type="button"
-        disabled={!enabled || pendingProvider !== null}
+        disabled={!enabled || login.pending || login.seconds > 0}
         onClick={() => void startSocialSignIn(provider)}
         className={className}
         title={!enabled ? (locale === 'en' ? 'This sign-in method is not configured.' : 'このログイン方法は現在設定されていません。') : undefined}
@@ -113,11 +116,22 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
     )
   }
 
+  const rateLimitNotice = login.seconds > 0 ? (
+    <p role="status" className="text-sm text-amber-600 dark:text-amber-400">
+      {locale === 'en'
+        ? `Too many sign-in attempts. Try again in ${login.seconds} seconds.`
+        : `ログイン操作が続いたため、あと${login.seconds}秒待ってから再試行してください。`}
+    </p>
+  ) : null
+
   if (!compact) {
     return (
-      <div className="flex flex-col gap-3 sm:flex-row">
-        {providerButton('discord')}
-        {providers.google && providerButton('google')}
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row">
+          {providerButton('discord')}
+          {providers.google && providerButton('google')}
+        </div>
+        {rateLimitNotice}
       </div>
     )
   }
@@ -134,6 +148,7 @@ export function LoginButton({ compact = false }: LoginButtonProps) {
         <span>{locale === 'en' ? 'Sign in' : 'ログイン'}</span>
         <ChevronDown className={`h-4 w-4 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
       </button>
+      {rateLimitNotice}
       {menuOpen && (
         <div role="menu" className="absolute right-0 top-12 z-50 w-60 rounded-xl border border-border bg-card p-1.5 shadow-2xl">
           {providerButton('discord', true)}

@@ -27,7 +27,7 @@ export default async function AuthErrorPage({
               ? 'このGoogleアカウントには既存のNuviloViewアカウントがあります。Googleでログインして既存アカウントを使用してください。'
               : googleFirstBlocked
                 ? 'Googleは追加のログイン方法です。初回利用にはDiscordアカウントが必要です。'
-                : '認証用データベースへ接続できませんでした。少し時間をおいてから、もう一度お試しください。'}
+                : 'ログインを完了できませんでした。通信状態を確認し、少し時間をおいてから、もう一度お試しください。'}
         </p>
         {googleFirstBlocked ? <AuthErrorDiscordButton /> : <Link href={identityConflict ? '/account' : '/'} className="mt-6 inline-flex rounded-lg bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground">
           {identityConflict ? 'アカウントへ戻る' : 'トップへ戻る'}

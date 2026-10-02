@@ -22,7 +22,9 @@ test('Google authentication is additive and Discord authorization scopes stay un
   assert.match(auth, /disableDefaultScope:\s*true/)
   assert.match(auth, /scope:\s*\["identify", "guilds"\]/)
   assert.doesNotMatch(auth, /scope:\s*\[[^\]]*guilds[^\]]*email/)
-  assert.match(login, /signIn\.social\(\{[\s\S]*?provider,/)
+  assert.match(login, /login\.start\(\{[\s\S]*?provider,/)
+  const loginHook = await readFile(new URL('../lib/use-social-login.ts', import.meta.url), 'utf8')
+  assert.match(loginHook, /signIn\.social\(options, fetchOptions\)/)
   assert.match(login, /errorCallbackURL:\s*`\/auth-error\?provider=\$\{provider\}`/)
 
   assert.match(providerConfig, /NUVILOVIEW_GOOGLE_CLIENT_ID/)

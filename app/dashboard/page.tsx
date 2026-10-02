@@ -1,4 +1,5 @@
 "use client";
+import { SecurityNavigationLink } from '@/components/security-navigation-link';
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -1014,6 +1015,7 @@ export default function DashboardPage() {
             label={en ? "Settings" : "設定"}
             href="/settings"
           />
+          <SecurityNavigationLink en={en} />
         </nav>
       </aside>
 
@@ -1210,6 +1212,7 @@ export default function DashboardPage() {
                     <Settings className="h-4 w-4 text-muted-foreground" />
                     <span>{en ? "Settings" : "設定"}</span>
                   </a>
+                  <SecurityNavigationLink en={en} />
                   <a href="/pro" className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-secondary">
                     <Crown className="h-4 w-4 text-amber-400" />
                     <span>NuviloView Pro</span>

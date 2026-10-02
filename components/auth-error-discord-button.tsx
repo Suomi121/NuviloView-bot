@@ -1,32 +1,30 @@
 'use client'
 
-import { signIn } from '@/lib/auth-client'
+import { useSocialLogin } from '@/lib/use-social-login'
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
 
 export function AuthErrorDiscordButton() {
   const router = useRouter()
-  const [pending, setPending] = useState(false)
+  const login = useSocialLogin()
 
   const continueWithDiscord = async () => {
-    if (pending) return
-    setPending(true)
+    if (login.pending || login.seconds > 0) return
     try {
-      const result = await signIn.social({
+      const result = await login.start({
         provider: 'discord',
         callbackURL: '/dashboard',
         errorCallbackURL: '/auth-error',
       })
-      if (result.error) router.push('/auth-error')
+      if (result === 'error') router.push('/auth-error')
     } catch {
       router.push('/auth-error')
-    } finally {
-      setPending(false)
     }
   }
 
-  return <button type="button" disabled={pending} onClick={() => void continueWithDiscord()}
+  return <><button type="button" disabled={login.pending || login.seconds > 0} onClick={() => void continueWithDiscord()}
     className="mt-6 inline-flex rounded-lg bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-60">
-    {pending ? '接続中…' : 'Discordで続行'}
+    {login.pending ? '接続中…' : 'Discordで続行'}
   </button>
+    {login.seconds > 0 && <p role="status" className="mt-3 text-sm">ログイン操作が続いたため、あと{login.seconds}秒待ってから再試行してください。</p>}
+  </>
 }

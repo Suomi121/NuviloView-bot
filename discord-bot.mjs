@@ -85,6 +85,7 @@ import {
   countSpamMentions,
   parseGuildSpamPolicyRow,
   spamPolicyToDatabaseFields,
+  spamProtectionLevel,
   getChangedSpamPolicyFields,
   isSpamProtectionActive,
   SPAM_POLICY_MODULES,
@@ -433,7 +434,7 @@ const SAVE_SPAM_POLICY_COMMAND_SQL = `
       NULL::"guild_spam_policy",
       COALESCE(NULLIF(previous_snapshot.value, '{}'::jsonb), $2::jsonb)
         || $3::jsonb
-        || jsonb_build_object('guild_id', $1, 'updated_by', $4, 'updated_at', now())
+        || jsonb_build_object('guild_id', $1, 'updated_by', $4::text, 'updated_at', now())
     ) AS policy_row
     FROM previous_snapshot
   ), saved AS (

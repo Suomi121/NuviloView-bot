@@ -13,6 +13,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  spam-command-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18.4
+        env:
+          POSTGRES_USER: spam_test
+          POSTGRES_PASSWORD: isolated-ci-only
+          POSTGRES_DB: nuviloview_spam_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spam_test -d nuviloview_spam_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_SPAM_DATABASE_URL: postgresql://spam_test:isolated-ci-only@127.0.0.1:5432/nuviloview_spam_test
+      TEST_SPAM_ISOLATED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Test actual Spam command handler and PostgreSQL persistence
+        run: node --test tests/spam-command-runtime.test.mjs tests/spam-command-postgres.test.mjs
+
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 25

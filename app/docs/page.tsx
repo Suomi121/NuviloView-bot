@@ -21,7 +21,7 @@ const steps = [
 const faqs = [
   ['誰がダッシュボードを見られますか？', 'Discord上でそのサーバーの所有者、またはサーバー管理権限を持つ利用者だけが閲覧できます。ログインしただけでは、他人のサーバー情報は見られません。'],
   ['BotにAdministrator権限は必要ですか？', '必要ありません。分析用のチャンネル閲覧・履歴閲覧に加え、通知用のメッセージ送信・埋め込みリンク、削除者確認用の監査ログ閲覧、セキュリティ機能用のメッセージ管理、Kick、BAN、メンバーのタイムアウト権限だけを要求します。ロール・チャンネルの作成や全削除などの権限は要求しません。'],
-  ['何のデータを保存しますか？', 'メンバー数、参加・退出、メッセージ数、リアクション数、発言者数、サーバー単位の通話時間を分析に使用します。メッセージ検索のため、メッセージ本文・送信者・送信日時も最大90日間保存します。'],
+  ['何のデータを保存しますか？', 'メンバー数、参加・退出、メッセージ、リアクション、発言者、通話時間に関する個別イベントをBotのローカルストレージで処理し、本文を含まない集計情報をダッシュボードに使用します。メッセージ本文・送信者・送信日時は検索や再集計等のためにも保存します。現在、ローカル保存データすべてに共通する90日以内の自動削除は保証していません。'],
   ['メッセージ本文は誰でも検索できますか？', 'いいえ。検索できるのは、そのサーバーを管理できる利用者だけです。検索機能にはDiscordのMessage Content Intentを使用します。'],
   ['チャンネル権限の警告が出たら？', 'Botに「チャンネルを見る」と「メッセージ履歴を読む」の権限がないチャンネルがあります。そのチャンネルを分析対象にする場合は、Botロールまたはチャンネルごとの権限を見直してください。'],
   ['Botコマンドは何ができますか？', '/help で分析コマンドの一覧、/tactive で今日の活動、/week で直近7日間の要約、/suc で初期設定と権限、/permissions で読み取れないチャンネル、/dashboard で分析画面へのリンクを確認できます。セキュリティ機能は独立した r? コマンドとして、r?ban、r?unban、r?kick、r?timeout、r?untimeout、r?banlist、r?clear、r?ping、r?perm_check を利用できます。r?perm_checkでは、実行者とBotの権限を照合し、利用可能なセキュリティ機能を機能別に確認できます。娯楽機能のzx?help、zx?dice、zx?snipeは全メンバーが利用でき、Discordの候補欄に表示される/zxからもhelp、dice、snipeを選べます。zx?snipeは自分だけでなく、同じチャンネルで他メンバーや管理者が削除した投稿も最大90日（約3か月）・999,999件までカードと前後ボタンで表示し、削除者を確認できます。上限を超えた場合は古い履歴から切り捨てます。結果は実行者または管理者だけが削除できます。'],
@@ -69,10 +69,10 @@ export default function DocsPage() {
             <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />メンバー数・メッセージ数・リアクション数・発言者数</li>
             <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />参加・退出・メッセージ送信のアクティビティと、サーバー内通話の合計・最長時間</li>
             <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />Botの最終記録時刻と、読み取り権限が不足しているチャンネルの状態</li>
-            <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />検索機能のため、メッセージ本文・送信者・送信日時を最大90日間保存</li>
+            <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />検索・再集計等のため、メッセージ本文・送信者・送信日時をローカル保存（現在は一律90日以内の自動削除を保証していません）</li>
             <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />モデレーションの実行者・対象・理由・件数・結果を監査ログとして保存</li>
             <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />スパム判定はユーザー別の送信時刻と件数を短時間だけメモリ上で比較し、判定用に本文を追加保存しない</li>
-            <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />zx?snipe用の最大999,999件の削除本文・投稿者・削除者は最大90日間（約3か月）Botメモリに保持し、上限超過時は古い履歴から切り捨て、NeonDBへ追加保存しない</li>
+            <li className="flex gap-2"><CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />zx?snipe用の最大999,999件の削除本文・投稿者・削除者は最大90日間（約3か月）Botメモリに保持し、上限超過時は古い履歴から切り捨て、クラウドデータベースへ追加保存しない</li>
           </ul>
           <p className="mt-4 text-xs leading-relaxed text-muted-foreground">詳しい取り扱いは<a className="text-primary underline" href="/privacy">プライバシーポリシー</a>をご確認ください。</p>
         </section>

@@ -2,6 +2,10 @@
 import { SecurityNavigationLink } from '@/components/security-navigation-link';
 
 import { useEffect, useMemo, useState } from "react";
+import { DashboardNavigation } from '@/components/dashboard-navigation';
+import { MobileNavigation } from '@/components/mobile-navigation';
+import { dashboardNavigation, searchNavigation, type DashboardView, type NavigationItem } from '@/lib/dashboard-navigation';
+import { accessMessages, dashboardAccessState, canDisplayDashboardData } from '@/lib/dashboard-presentation';
 import {
   Activity,
   AlertCircle,
@@ -117,34 +121,15 @@ type DataCoverage = {
   insightRemainingDays: number;
 };
 
-const appFeatures = [
-  {
-    title: "ダッシュボード",
-    description: "サーバー全体の分析を表示",
-    href: "/dashboard",
-  },
-  {
-    title: "アナリティクス",
-    description: "メッセージ・メンバーの推移",
-    href: "/dashboard",
-  },
-  { title: "表示設定", description: "時間帯を変更", href: "/settings" },
-  { title: "セキュリティ", description: "Guild別 Spam Detection", href: "/dashboard/security/spam" },
-  { title: "アカウント接続", description: "Google・Discordの連携状態", href: "/account" },
-  { title: "NuviloView Pro", description: "Proプレビューを表示", href: "/pro" },
-  {
-    title: "ドキュメント",
-    description: "Botとダッシュボードの使い方",
-    href: "/docs",
-  },
-  { title: "サポート", description: "お問い合わせフォーム", href: "/support" },
-];
-
 export default function DashboardPage() {
   const { locale } = useLocale();
   const en = locale === "en";
   const router = useRouter();
-  const { data: session } = useSession();
+  const { data: session, isPending: sessionPending, error: sessionError } = useSession();
+  const sessionUserId = session?.user?.id;
+  const [guildListState, setGuildListState] = useState<"loading" | "ready" | "error">("loading");
+  const [guildListOwner, setGuildListOwner] = useState<string | null>(null);
+  const [guildRetry, setGuildRetry] = useState(0);
   const [period, setPeriod] = useState("過去14日間");
   const [serverOpen, setServerOpen] = useState(false);
   const [noticeOpen, setNoticeOpen] = useState(false);
@@ -237,7 +222,7 @@ export default function DashboardPage() {
   const [overviewMetric, setOverviewMetric] = useState<
     "members" | "active" | "inactive" | "activeMessages" | "messages" | "reactions" | "voice"
   >("members");
-  const [activeView, setActiveView] = useState<"overview" | "analytics" | "members" | "messages" | CommunityAnalyticsView>("overview");
+  const [activeView, setActiveView] = useState<DashboardView>("overview");
   const [guildTheme, setGuildTheme] = useState<GuildTheme>(defaultGuildTheme);
   const [channelInsights, setChannelInsights] = useState<ChannelInsight[]>([]);
   const [goals, setGoals] = useState<GrowthGoal[]>([]);
@@ -297,11 +282,18 @@ export default function DashboardPage() {
   const reactionChange = periodReactionRate - previousReactionRate;
   const voiceSessionChange = maxVoiceSessionSeconds - previousMaxVoiceSessionSeconds;
   const dashboardPending = loadState === "loading";
-  const featureResults = appFeatures.filter((feature) =>
-    `${feature.title}${feature.description}`
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase()),
-  );
+  const featureResults = searchNavigation(searchQuery);
+  const accessState = dashboardAccessState({ pending: sessionPending, authError: Boolean(sessionError), signedIn: Boolean(session?.user), guildLoading: guildListState === "loading" || guildListOwner !== session?.user?.id, guildError: guildListState === "error", guildCount: guilds.length, selected: Boolean(selectedGuild) });
+  const canShowData = canDisplayDashboardData({ access: accessState, authorized: authorizedGuildId === guildId, state: loadState, available: analyticsReadMeta?.available === true, lastKnownGood: analyticsReadMeta?.lastKnownGood === true, statsDays: coverage.statsDays });
+  const isCommunityView = ["retention", "health", "diagnostics", "channels", "roles", "insights"].includes(activeView);
+  const navigate = (item: NavigationItem) => {
+    setSearchOpen(false);
+    setServerOpen(false);
+    setUserMenuOpen(false);
+    if (item.view) setActiveView(item.view);
+    else router.push(item.href);
+  };
+  const currentTitle = dashboardNavigation.find(item => item.view === activeView)?.label[en ? 1 : 0] ?? (en ? "Dashboard" : "ダッシュボード");
 
   useEffect(() => {
     if (
@@ -335,14 +327,18 @@ export default function DashboardPage() {
   }, [guildId, searchMode, searchQuery]);
 
   useEffect(() => {
-    if (!session?.user) return;
+    if (!sessionUserId) return;
     let active = true;
     let retryTimer: number | undefined;
+    setGuildListState("loading");
+    setGuildListOwner(sessionUserId);
+    setGuildId("");
+    setAuthorizedGuildId("");
     fetch("/api/settings/timezone")
       .then((res) => res.json())
       .then((data) => {
         if (active && data.timeZone) setTimeZone(data.timeZone);
-      });
+      }).catch(() => {});
     const loadGuilds = async (attempt = 0) => {
       try {
         const response = await fetch("/api/guilds", { cache: "no-store" });
@@ -351,6 +347,7 @@ export default function DashboardPage() {
         if (!active) return;
         const nextGuilds = Array.isArray(data.guilds) ? data.guilds : [];
         setGuilds(nextGuilds);
+        setGuildListState("ready");
         // Do not silently use the first server. The selected server controls
         // the analytics and personal per-server theme, so the user chooses it.
         setGuildId((current) =>
@@ -381,6 +378,7 @@ export default function DashboardPage() {
         }
       } catch {
         if (!active) return;
+        if (attempt >= 2) setGuildListState("error");
         if (attempt < 2) {
           retryTimer = window.setTimeout(
             () => void loadGuilds(attempt + 1),
@@ -394,7 +392,7 @@ export default function DashboardPage() {
       active = false;
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-  }, [en, session?.user?.id]);
+  }, [sessionUserId, guildRetry]);
 
   useEffect(() => {
     if (!session?.user?.id) {
@@ -590,7 +588,7 @@ export default function DashboardPage() {
   }, [authorizedGuildId, guildId]);
 
   useEffect(() => {
-    if (!guildId) return;
+    if (!sessionUserId || guildListOwner !== sessionUserId || !guilds.some(guild => guild.id === guildId)) return;
     if (["retention", "health", "diagnostics", "channels", "roles", "insights"].includes(activeView)) {
       return;
     }
@@ -628,7 +626,10 @@ export default function DashboardPage() {
           `/backend/status?guildId=${encodeURIComponent(guildId)}&days=${days}&locale=${locale}&timeZone=${encodeURIComponent(timeZone)}&requestAt=${Date.now()}`,
           { cache: "no-store" },
         );
-        if (!response.ok) throw new Error("stats request failed");
+        if (!response.ok) {
+          if (active && (response.status === 401 || response.status === 403)) { setAuthorizedGuildId(""); setAnalyticsReadMeta(null); }
+          throw new Error("stats request failed");
+        }
         const data = await response.json();
         if (!active) return;
         setChartPoints(Array.isArray(data.chartPoints) ? data.chartPoints : []);
@@ -759,7 +760,7 @@ export default function DashboardPage() {
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [activeView, days, en, guildId, locale, timeZone]);
+  }, [activeView, days, en, guildId, locale, timeZone, sessionUserId, guildListOwner, guilds]);
 
   const displayedChartPoints = useMemo(() => {
     if (chartMetric === "members") return memberPoints;
@@ -933,13 +934,16 @@ export default function DashboardPage() {
         <div className="absolute right-0 top-1/3 h-80 w-80 rounded-full bg-violet-500/[0.06] blur-[120px]" />
       </div>
 
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[248px] border-r border-border/70 bg-card/45 px-4 py-5 backdrop-blur-xl lg:flex lg:flex-col">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[248px] border-r border-border/70 bg-card/45 px-4 py-5 backdrop-blur-xl lg:flex lg:flex-col overflow-y-auto">
         <a href="/?landing=1" className="mb-9 flex items-center gap-2.5 px-2" aria-label="NuviloView:OEM ランディングページへ">
           <BrandMark theme={guildTheme} />
           <BrandTitle className="text-base" />
         </a>
         <div className="relative mb-7">
           <button
+            disabled={accessState !== "ready" && accessState !== "choose_guild"}
+            aria-expanded={serverOpen}
+            aria-label={en ? "Choose a server" : "サーバーを選択"}
             onClick={() => setServerOpen(!serverOpen)}
             className="flex w-full items-center gap-3 rounded-xl border border-border bg-secondary/55 px-3 py-3 text-left transition-colors hover:bg-secondary"
           >
@@ -949,7 +953,7 @@ export default function DashboardPage() {
                 {selectedGuild?.name ?? "サーバーを選択"}
               </span>
               <span className="block text-[11px] text-muted-foreground">
-                {isGuildLoading ? "読み込み中…" : `${memberCount.toLocaleString()} メンバー`}
+                {canShowData ? `${memberCount.toLocaleString()} メンバー` : "—"}
               </span>
             </span>
             <ChevronDown
@@ -979,49 +983,13 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
-        <p className="mb-2 px-3 text-[10px] font-bold tracking-[0.14em] text-muted-foreground">
-          {en ? "OVERVIEW" : "概要"}
-        </p>
-        <nav className="space-y-1">
-          <NavItem
-            active={activeView === "overview"}
-            icon={<LayoutDashboard />}
-            label={en ? "Dashboard" : "ダッシュボード"}
-            onClick={() => setActiveView("overview")}
-          />
-        </nav>
-        <p className="mb-2 mt-7 px-3 text-[10px] font-bold tracking-[0.14em] text-muted-foreground">
-          ANALYTICS
-        </p>
-        <nav className="space-y-1">
-          <NavItem active={activeView === "retention"} icon={<Users />} label={en ? "Retention" : "定着率"} onClick={() => setActiveView("retention")} />
-          <NavItem active={activeView === "health"} icon={<Activity />} label={en ? "Health v2 Preview" : "Health v2 プレビュー"} onClick={() => setActiveView("health")} />
-          <NavItem active={activeView === "diagnostics"} icon={<LineChart />} label={en ? "Diagnostics" : "変化の要因"} onClick={() => setActiveView("diagnostics")} />
-          <NavItem active={activeView === "channels"} icon={<Hash />} label={en ? "Channels" : "チャンネル"} onClick={() => setActiveView("channels")} />
-          <NavItem active={activeView === "roles"} icon={<ShieldCheck />} label={en ? "Roles" : "ロール"} onClick={() => setActiveView("roles")} />
-        </nav>
-        <p className="mb-2 mt-7 px-3 text-[10px] font-bold tracking-[0.14em] text-muted-foreground">
-          MANAGE
-        </p>
-        <nav className="space-y-1">
-          <NavItem
-            active={activeView === "insights"}
-            icon={<Sparkles />}
-            label={en ? "Growth insights" : "成長インサイト"}
-            onClick={() => setActiveView("insights")}
-          />
-          <NavItem
-            icon={<Settings />}
-            label={en ? "Settings" : "設定"}
-            href="/settings"
-          />
-          <SecurityNavigationLink en={en} />
-        </nav>
+        <DashboardNavigation activeView={activeView} en={en} onNavigate={navigate} />
       </aside>
 
       <div className="relative lg:pl-[248px]">
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-border/70 bg-background/75 px-3 backdrop-blur-xl sm:px-8">
-          <a href="/?landing=1" className="flex items-center gap-2 lg:hidden" aria-label="NuviloView:OEM ランディングページへ">
+          <MobileNavigation activeView={activeView} en={en} onNavigate={navigate} />
+          <a href="/?landing=1" className="flex min-w-0 items-center gap-2 lg:hidden" aria-label="NuviloView:OEM ランディングページへ">
             <BrandMark theme={guildTheme} />
             <BrandTitle className="hidden min-[480px]:inline" />
           </a>
@@ -1062,16 +1030,16 @@ export default function DashboardPage() {
                   {searchMode === "features" ? (
                     featureResults.map((feature) => (
                       <button
-                        key={feature.title}
+                        key={feature.label[en ? 1 : 0]}
                         onClick={() => {
-                          router.push(feature.href);
+                          navigate(feature);
                           setSearchOpen(false);
                         }}
                         className="w-full rounded-lg px-3 py-2.5 text-left hover:bg-secondary"
                       >
-                        <p className="text-sm font-semibold">{feature.title}</p>
+                        <p className="text-sm font-semibold">{feature.label[en ? 1 : 0]}</p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
-                          {feature.description}
+                          {feature.description[en ? 1 : 0]}
                         </p>
                       </button>
                     ))
@@ -1200,7 +1168,7 @@ export default function DashboardPage() {
                 aria-expanded={userMenuOpen}
                 className="flex items-center gap-3 rounded-xl px-1.5 py-1 transition-colors hover:bg-secondary"
               >
-                <UserIdentity sessionImage={displayIdentity?.image} userName={userName} userInitials={userInitials} en={en} />
+                <UserIdentity signedIn={Boolean(session?.user) && !sessionError && !sessionPending} sessionImage={displayIdentity?.image} userName={userName} userInitials={userInitials} en={en} />
               </button>
               {userMenuOpen && (
                 <div className="absolute right-0 top-12 z-50 w-56 overflow-hidden rounded-xl border border-border bg-card p-1.5 shadow-2xl">
@@ -1275,18 +1243,18 @@ export default function DashboardPage() {
                     {searchMode === "features" ? (
                       featureResults.map((feature) => (
                         <button
-                          key={feature.title}
+                          key={feature.label[en ? 1 : 0]}
                           onClick={() => {
-                            router.push(feature.href);
+                            navigate(feature);
                             setSearchOpen(false);
                           }}
                           className="w-full rounded-lg px-3 py-2.5 text-left hover:bg-secondary"
                         >
                           <p className="text-sm font-semibold">
-                            {feature.title}
+                            {feature.label[en ? 1 : 0]}
                           </p>
                           <p className="mt-0.5 text-xs text-muted-foreground">
-                            {feature.description}
+                            {feature.description[en ? 1 : 0]}
                           </p>
                         </button>
                       ))
@@ -1334,7 +1302,10 @@ export default function DashboardPage() {
           </div>
           <div className="relative mb-6 lg:hidden">
             <button
-              onClick={() => setServerOpen(!serverOpen)}
+              disabled={accessState !== "ready" && accessState !== "choose_guild"}
+            aria-expanded={serverOpen}
+            aria-label={en ? "Choose a server" : "サーバーを選択"}
+            onClick={() => setServerOpen(!serverOpen)}
               className="flex w-full items-center gap-3 rounded-xl border border-border bg-card/70 px-3 py-3 text-left transition-colors hover:bg-secondary"
             >
               <GuildAvatar guild={selectedGuild} />
@@ -1343,7 +1314,7 @@ export default function DashboardPage() {
                   {selectedGuild?.name ?? "サーバーを選択"}
                 </span>
                 <span className="block text-[11px] text-muted-foreground">
-                  {memberCount.toLocaleString()} メンバー
+                  {canShowData ? `${memberCount.toLocaleString()} メンバー` : "—"}
                 </span>
               </span>
               <ChevronDown
@@ -1375,25 +1346,24 @@ export default function DashboardPage() {
           </div>
           <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
             <div>
-              <DashboardLoadBadge
+              {accessState === "ready" && !isCommunityView && <DashboardLoadBadge
                 state={loadState}
                 lastUpdatedAt={lastLiveRefreshAt}
                 periodLabel={periodLabel}
                 en={en}
-              />
+              />}
               <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">
-                {en
-                  ? `Welcome back, ${userName}`
-                  : `おかえりなさい、${userName}さん`}
+                {currentTitle}
               </h1>
               <p className="mt-2 text-sm text-muted-foreground">
                 {en
-                  ? "Your community is growing steadily today."
-                  : "コミュニティは今日も順調に成長しています。"}
+                  ? "Review the selected server’s recorded activity."
+                  : "選択したサーバーの記録データを確認できます。"}
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
+                disabled={!canShowData}
                 onClick={() => setReportOpen(true)}
                 className="inline-flex items-center gap-2 rounded-lg border border-border bg-card/60 px-3.5 py-2 text-sm font-medium hover:bg-secondary"
               >
@@ -1402,7 +1372,7 @@ export default function DashboardPage() {
               </button>
               <button
                 onClick={downloadActivityCard}
-                disabled={!selectedGuild}
+                disabled={!canShowData}
                 className="inline-flex items-center gap-2 rounded-lg border border-primary/35 bg-primary/10 px-3.5 py-2 text-sm font-medium text-primary hover:bg-primary/20 disabled:opacity-50"
               >
                 <Download className="h-4 w-4" />
@@ -1438,6 +1408,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
+          {accessState === "ready" && !isCommunityView && <>
           {(analyticsReadMeta || analyticsRefreshSchedule) && (
             <div className="mb-5 flex flex-wrap items-center gap-3">
               <ProjectionReadNotice meta={analyticsReadMeta} locale={locale} compact />
@@ -1447,7 +1418,7 @@ export default function DashboardPage() {
               />
             </div>
           )}
-          <section className="mb-5 grid gap-3 lg:grid-cols-3">
+          {lastLiveRefreshAt !== null && <section className="mb-5 grid gap-3 lg:grid-cols-3">
             <div className={`rounded-2xl border px-4 py-3.5 sm:px-5 ${loadState === "fetch_error" ? "border-rose-400/30 bg-rose-400/[0.08]" : loadState === "connected" ? "border-emerald-400/25 bg-emerald-400/[0.07]" : loadState === "degraded" || loadState === "stale" ? "border-amber-400/30 bg-amber-400/[0.08]" : "border-primary/20 bg-card/65"}`}>
               <div className={`flex items-center gap-2 text-xs font-bold ${loadState === "fetch_error" ? "text-rose-400" : loadState === "connected" ? "text-emerald-400" : loadState === "degraded" || loadState === "stale" ? "text-amber-400" : "text-primary"}`}>
                 <span className="relative flex h-2.5 w-2.5">
@@ -1530,7 +1501,8 @@ export default function DashboardPage() {
               )}
             </div>
             <RuntimeProviderStatus guildId={guildId} locale={locale} />
-          </section>
+          </section>}
+          </>}
           {aiGuideOpen && (
             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65 p-5">
               <section
@@ -1683,10 +1655,19 @@ export default function DashboardPage() {
               </section>
             </div>
           )}
-          {activeView !== "overview" && (["retention", "health", "diagnostics", "channels", "roles", "insights"] as string[]).includes(activeView)
-            ? <CommunityAnalyticsDashboard view={activeView as CommunityAnalyticsView} guildId={guildId} days={days} timeZone={timeZone} locale={locale} />
-            : activeView !== "overview" && <DashboardDetailView view={activeView as "analytics" | "members" | "messages"} en={en} periodLabel={periodLabel} memberCount={memberCount} activeMemberCount={activeMemberCount} messageCount={messageCount} totalMessageCount={totalMessageCount} reactionRate={reactionRate} voiceTotalSeconds={voiceTotalSeconds} locale={locale} labels={labels} chartPoints={chartPoints} memberPoints={memberPoints} activities={activities} channelInsights={channelInsights} insight={insight} insightCards={insightCards} />}
-          {activeView === "overview" && <>
+          {accessState !== "ready" && <section role={accessState.endsWith("error") ? "alert" : "status"} className="mb-5 rounded-xl border border-border bg-card/55 p-5">
+            <p>{accessMessages[accessState][en ? 1 : 0]}</p>
+            {accessState === "signed_out" && <a href="/?landing=1" className="mt-3 inline-flex min-h-11 items-center text-primary underline">{en ? "Sign in" : "ログインへ"}</a>}
+            {accessState === "no_guilds" && <a href="/account" className="mt-3 inline-flex min-h-11 items-center text-primary underline">{en ? "Account connections" : "アカウント接続を確認"}</a>}
+            {accessState === "guild_error" && <button type="button" className="mt-3 min-h-11 rounded-lg border px-3" onClick={() => setGuildRetry(value => value + 1)}>{en ? "Retry" : "再試行"}</button>}
+          </section>}
+          {accessState === "ready" && !isCommunityView && !canShowData && <section role={loadState === "fetch_error" ? "alert" : "status"} className="mb-5 rounded-xl border border-border bg-card/55 p-5">
+            {loadState === "fetch_error" ? (en ? "Could not load data. Retrying at the next refresh." : "データを取得できませんでした。次回更新時に再試行します。") : loadState === "loading" || loadState === "idle" || loadState === "refreshing" ? (en ? "Loading data…" : "データを読み込んでいます…") : (en ? "No recorded data is available yet. Values are not zero." : "表示できる記録データがまだありません。数値は未取得です。")}
+          </section>}
+          {accessState === "ready" && (activeView !== "overview" && (["retention", "health", "diagnostics", "channels", "roles", "insights"] as string[]).includes(activeView)
+            ? <CommunityAnalyticsDashboard view={activeView as CommunityAnalyticsView} key={`${session?.user?.id}:${guildId}`} guildId={guildId} days={days} timeZone={timeZone} locale={locale} />
+            : activeView !== "overview" && canShowData && <DashboardDetailView view={activeView as "analytics" | "members" | "messages"} en={en} periodLabel={periodLabel} memberCount={memberCount} activeMemberCount={activeMemberCount} messageCount={messageCount} totalMessageCount={totalMessageCount} reactionRate={reactionRate} voiceTotalSeconds={voiceTotalSeconds} locale={locale} labels={labels} chartPoints={chartPoints} memberPoints={memberPoints} activities={activities} channelInsights={channelInsights} insight={insight} insightCards={insightCards} />)}
+          {activeView === "overview" && canShowData && <>
           <div className="mb-3 flex items-end justify-between gap-4">
             <div>
               <p className="text-[10px] font-bold tracking-[0.16em] text-primary">KEY METRICS</p>
@@ -1703,7 +1684,7 @@ export default function DashboardPage() {
               tone={memberChange > 0 ? "success" : memberChange < 0 ? "danger" : "neutral"}
               periodText={en ? "Current" : "現在"}
               loading={dashboardPending}
-              requirement={memberCount === 0 ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : undefined}
+              requirement={coverage.statsDays === 0 ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : undefined}
               icon={<Users />}
               onClick={() => setOverviewMetric("members")}
               selected={overviewMetric === "members"}
@@ -1716,7 +1697,7 @@ export default function DashboardPage() {
               tone={activeMemberChange > 0 ? "success" : activeMemberChange < 0 ? "danger" : "neutral"}
               periodText={en ? "Today" : "今日"}
               loading={dashboardPending}
-              requirement={messageCount === 0 ? (en ? "1 message needed to start" : "あと1件のメッセージで集計開始") : undefined}
+              requirement={coverage.statsDays === 0 ? (en ? "1 message needed to start" : "あと1件のメッセージで集計開始") : undefined}
               icon={<Activity />}
               onClick={() => setOverviewMetric("active")}
               selected={overviewMetric === "active"}
@@ -1729,7 +1710,7 @@ export default function DashboardPage() {
               tone={activeMessageChange > 0 ? "success" : activeMessageChange < 0 ? "danger" : "neutral"}
               periodText={en ? "Today" : "今日"}
               loading={dashboardPending}
-              requirement={messageCount === 0 ? (en ? "1 message needed to display" : "あと1件のメッセージで表示") : undefined}
+              requirement={coverage.statsDays === 0 ? (en ? "1 message needed to display" : "あと1件のメッセージで表示") : undefined}
               icon={<LineChart />}
               onClick={() => {
                 setOverviewMetric("activeMessages");
@@ -1746,7 +1727,7 @@ export default function DashboardPage() {
               tone="info"
               periodText={en ? "Retention window" : "保存期間内"}
               loading={dashboardPending}
-              requirement={totalMessageCount === 0 ? (en ? "1 message needed to display" : "あと1件のメッセージで表示") : undefined}
+              requirement={coverage.statsDays === 0 ? (en ? "1 message needed to display" : "あと1件のメッセージで表示") : undefined}
               icon={<MessageSquareText />}
               onClick={() => setOverviewMetric("messages")}
               selected={overviewMetric === "messages"}
@@ -1779,7 +1760,7 @@ export default function DashboardPage() {
               tone={inactiveMemberChange < 0 ? "success" : inactiveMemberChange > 0 ? "danger" : "neutral"}
               periodText={en ? "Today" : "今日"}
               loading={dashboardPending}
-              requirement={memberCount === 0 ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : undefined}
+              requirement={coverage.statsDays === 0 ? (en ? "1 member snapshot needed" : "あと1回のメンバー記録が必要") : undefined}
               icon={<Users />}
               onClick={() => {
                 setOverviewMetric("inactive");
@@ -1809,7 +1790,7 @@ export default function DashboardPage() {
               tone="info"
               periodText={periodLabel}
               loading={dashboardPending}
-              requirement={maxVoiceSessionSeconds === 0 ? (en ? "1 voice session needed" : "あと1回の通話記録が必要") : undefined}
+              requirement={coverage.statsDays === 0 ? (en ? "1 voice session needed" : "あと1回の通話記録が必要") : undefined}
               icon={<Coffee />}
             />
             <StatCard
@@ -1820,7 +1801,7 @@ export default function DashboardPage() {
               tone={voiceSessionChange > 0 ? "success" : voiceSessionChange < 0 ? "danger" : "neutral"}
               periodText={periodLabel}
               loading={dashboardPending}
-              requirement={maxVoiceSessionSeconds === 0 ? (en ? "1 voice session needed" : "あと1回の通話記録が必要") : undefined}
+              requirement={coverage.statsDays === 0 ? (en ? "1 voice session needed" : "あと1回の通話記録が必要") : undefined}
               icon={<Activity />}
               onClick={() => setOverviewMetric("voice")}
               selected={overviewMetric === "voice"}
@@ -2298,11 +2279,11 @@ function getDaysRemainingInMonth(timeZone: string) {
   return Math.max(0, daysInMonth - day);
 }
 
-function UserIdentity({ sessionImage, userName, userInitials, en }: { sessionImage?: string | null; userName: string; userInitials: string; en: boolean }) {
+function UserIdentity({ signedIn, sessionImage, userName, userInitials, en }: { signedIn: boolean; sessionImage?: string | null; userName: string; userInitials: string; en: boolean }) {
   return <>
     <div className="hidden text-right sm:block">
       <p className="text-sm font-semibold">{userName}</p>
-      <p className="text-[11px] text-muted-foreground">{en ? "Signed in" : "ログイン中"}</p>
+      <p className="text-[11px] text-muted-foreground">{signedIn ? (en ? "Signed in" : "ログイン中") : (en ? "Not signed in" : "未ログイン")}</p>
     </div>
     {sessionImage ? (
       <ProfileAvatar image={sessionImage} name={userName} />
@@ -2320,31 +2301,6 @@ function BrandMark({ theme }: { theme: GuildTheme }) {
 
 function BrandTitle({ className = "" }: { className?: string }) {
   return <span className={`font-bold tracking-tight ${className}`}>NuviloView:<span className="text-primary">OEM</span></span>
-}
-
-function NavItem({
-  icon,
-  label,
-  active = false,
-  href = "#",
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  active?: boolean;
-  href?: string;
-  onClick?: () => void;
-}) {
-  return (
-    <a
-      href={href}
-      onClick={(event) => { if (onClick) { event.preventDefault(); onClick(); } }}
-      className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${active ? "bg-primary/15 text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}`}
-    >
-      <span className={active ? "text-primary" : ""}>{icon}</span>
-      {label}
-    </a>
-  );
 }
 
 function GuildAvatar({

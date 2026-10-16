@@ -137,28 +137,10 @@ export async function PUT(request: Request, { params }: { params: Promise<{ guil
 export async function DELETE(request: Request, { params }: { params: Promise<{ guildId: string }> }) {
   if (!isTrustedMutation(request)) return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
   const { guildId } = await params
-  const access = await authorizeGuild(request, guildId, 'guild-spam-policy-reset')
+  const access = await authorizeGuild(request, guildId, 'guild-spam-policy-reset-retired')
   if ('response' in access) return access.response
-  const client = await pool.connect()
-  try {
-    await client.query('BEGIN')
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`nuviloview:spam-policy:${guildId}`])
-    const previousResult = await client.query('SELECT * FROM "guild_spam_policy" WHERE "guild_id" = $1 FOR UPDATE', [guildId])
-    const previous = parseGuildSpamPolicyRow(previousResult.rows[0] ?? null)
-    const oldPreset = previousResult.rows[0]?.preset ?? null
-    if (previous) {
-      await client.query('DELETE FROM "guild_spam_policy" WHERE "guild_id" = $1', [guildId])
-      await client.query(`
-        INSERT INTO "guild_spam_policy_audit" ("guild_id", "changed_by", "old_preset", "new_preset", "changed_fields", "changes")
-        VALUES ($1, $2, $3, 'DEFAULT', $4::jsonb, $5::jsonb)
-      `, [guildId, access.session.user.id, oldPreset, JSON.stringify(['reset', ...getChangedSpamPolicyFields(previous, DEFAULT_GUILD_SPAM_POLICY)]), JSON.stringify(getSpamPolicyAuditChanges(previous, DEFAULT_GUILD_SPAM_POLICY))])
-    }
-    await client.query('COMMIT')
-    return NextResponse.json({ policy: publicPolicy(DEFAULT_GUILD_SPAM_POLICY), isCustom: false }, { headers: { 'Cache-Control': 'private, no-store' } })
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {})
-    return safeFailure('reset', error)
-  } finally {
-    client.release()
-  }
+  return NextResponse.json({
+    code: 'SPAM_RESET_RETIRED',
+    error: 'Resetは廃止されました。設定は削除されません。検知設定は通常の保存操作で変更してください。',
+  }, { status: 410, headers: { 'Cache-Control': 'private, no-store' } })
 }

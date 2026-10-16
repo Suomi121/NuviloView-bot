@@ -1,5 +1,26 @@
 # Guild Spam Detection Policy
 
+## Reset retirement (Security Engine v2 prerequisite)
+
+`/spamprotection reset` is no longer registered. Stale interactions return
+`SPAM_RESET_RETIRED` without deleting policy or audit data. The Dashboard no
+longer offers Reset. Its legacy DELETE endpoint retains authentication, Guild
+authorization and trusted-origin checks, then returns HTTP 410 without opening
+a policy database connection. Detection, strength, module and exclusion edits
+remain available through the existing save operations.
+
+This change does not migrate Guilds or enable any automatic punishment. A Guild
+that has never saved a policy retains existing environment-controlled legacy
+behavior. Auto Timeout v2 is a separate, not-yet-enabled implementation gate.
+Its explicit on/off state must survive detection edits and must never be
+represented by deleting a policy row. A durable migration marker independent
+of an optional policy read is required before v2 can run: failed/absent reads
+must suppress punishment, never infer legacy eligibility for an enrolled Guild.
+
+Rollout is not authorized here. At a future approved rollout, update both Bot
+and Web; synchronize the existing Guild command definitions, preserving all
+other commands. Until then Production still has its previous registrations.
+
 ## Existing behavior audited
 
 The Bot currently tracks a message when it is in a Guild, is not a webhook, and is not authored by this Bot. Other bots are included. Counts are isolated by `guildId:userId` and use the global environment configuration:

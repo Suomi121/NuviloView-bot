@@ -484,36 +484,6 @@ const SAVE_SPAM_POLICY_COMMAND_SQL = `
   SELECT to_jsonb(saved) AS policy FROM saved CROSS JOIN audited
 `;
 
-const RESET_SPAM_POLICY_COMMAND_SQL = `
-  WITH lock_row AS MATERIALIZED (
-    SELECT pg_advisory_xact_lock(hashtext($1))
-  ), deleted AS (
-    DELETE FROM "guild_spam_policy" AS policy USING lock_row
-    WHERE policy."guild_id" = $1
-    RETURNING to_jsonb(policy) AS value
-  ), diff_rows AS (
-    SELECT changes.field, changes.before_value, changes.after_value
-    FROM deleted
-    CROSS JOIN LATERAL (
-      SELECT COALESCE(old_value.key, new_value.key) AS field,
-        old_value.value AS before_value, new_value.value AS after_value
-      FROM jsonb_each(deleted.value - 'guild_id' - 'updated_by' - 'updated_at') AS old_value
-      FULL OUTER JOIN jsonb_each($2::jsonb) AS new_value USING (key)
-    ) AS changes
-    WHERE changes.before_value IS DISTINCT FROM changes.after_value
-  ), audit_values AS (
-    SELECT COALESCE(jsonb_agg(field), '[]'::jsonb) AS fields,
-      COALESCE(jsonb_object_agg(field, jsonb_build_object('before', before_value, 'after', after_value)), '{}'::jsonb) AS changes
-    FROM diff_rows
-  ), audited AS (
-    INSERT INTO "guild_spam_policy_audit" ("guild_id", "changed_by", "old_preset", "new_preset", "changed_fields", "changes")
-    SELECT $1, $3, deleted.value ->> 'preset', 'DEFAULT', audit_values.fields || '["reset"]'::jsonb,
-      audit_values.changes || jsonb_build_object('reset', jsonb_build_object('before', false, 'after', true))
-    FROM deleted CROSS JOIN audit_values
-    RETURNING "id"
-  )
-  SELECT true AS reset FROM audited
-`;
 
 async function handleSpamProtectionCommand(interaction) {
   if (!interaction.inGuild()) {
@@ -537,9 +507,7 @@ async function handleSpamProtectionCommand(interaction) {
   };
   try {
     if (operation === "reset") {
-      await sql.query(RESET_SPAM_POLICY_COMMAND_SQL, [guildId, JSON.stringify(defaultSpamPolicyDatabaseFields), interaction.user.id]);
-      guildSpamPolicyCache.invalidate(guildId);
-      await interaction.reply({ content: "このサーバーの設定を従来の既定動作へ戻しました。", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: "Resetは廃止されたよ。設定は削除していません。検知設定は /spamprotection level などで変更してね。 [SPAM_RESET_RETIRED]", flags: MessageFlags.Ephemeral });
       return;
     }
     guildSpamPolicyCache.invalidate(guildId);
@@ -679,7 +647,6 @@ const spamProtectionCommand = new SlashCommandBuilder()
   .addSubcommand((subcommand) => subcommand
     .setName("cross-channel").setDescription("複数チャンネル検知を切り替えます")
     .addBooleanOption((option) => option.setName("enabled").setDescription("有効にするか").setRequired(true)))
-  .addSubcommand((subcommand) => subcommand.setName("reset").setDescription("このサーバーを従来の既定動作へ戻します"))
   .toJSON();
 const dashboardCommand = new SlashCommandBuilder()
   .setName("dashboard")

@@ -14,7 +14,7 @@ export function loadSpamCommand({ query = async () => { throw new Error('Unexpec
     PermissionFlagsBits: { Administrator: 'admin', ManageGuild: 'manage' },
     MessageFlags: { Ephemeral: 64 }, console: { warn: text => warnings.push(text) } });
   const code = source.slice(source.indexOf('const defaultSpamPolicyDatabaseFields ='), source.indexOf('const spamActionLocks ='));
-  const result = vm.runInContext(code + '\n({run: handleSpamProtectionCommand, save: SAVE_SPAM_POLICY_COMMAND_SQL, reset: RESET_SPAM_POLICY_COMMAND_SQL, defaults: defaultSpamPolicyDatabaseFields})', context);
+  const result = vm.runInContext(code + '\n({run: handleSpamProtectionCommand, save: SAVE_SPAM_POLICY_COMMAND_SQL, defaults: defaultSpamPolicyDatabaseFields})', context);
   return { ...result, warnings, invalidated };
 }
 

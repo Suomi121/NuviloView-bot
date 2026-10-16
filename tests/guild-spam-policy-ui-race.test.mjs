@@ -33,7 +33,7 @@ test("Guild A Save response cannot replace Guild B state after a switch", () => 
   assert.deepEqual(applied, []);
 });
 
-test("Guild A Reset response cannot replace Guild B state after a switch", () => {
+test("A late legacy mutation response cannot replace Guild B state after a switch", () => {
   const guard = createGuildSpamPolicyRequestGuard();
   guard.selectGuild(guildA);
   const request = guard.begin("mutation", guildA);

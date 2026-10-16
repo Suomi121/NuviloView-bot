@@ -25,9 +25,10 @@ test('DM rejected before database access', async () => {
   const h = loadSpamCommand(); const i = interaction('reset', { inGuild: false });
   await h.run(i); assert.match(i.replies[0].content, /サーバー内/);
 });
-test('database failure returns no raw details', async () => {
+test('retired reset performs no SQL or cache access', async () => {
   const h = loadSpamCommand({ query: async () => { throw Object.assign(new Error('private database details'), { code: '42P08' }); } });
   const i = interaction('reset'); await h.run(i);
-  assert.match(i.replies[0].content, /保存できません/);
+  assert.match(i.replies[0].content, /SPAM_RESET_RETIRED/);
+  assert.equal(h.warnings.length, 0); assert.equal(h.invalidated.length, 0);
   assert.equal(JSON.stringify([...i.replies, ...h.warnings]).includes('private database details'), false);
 });

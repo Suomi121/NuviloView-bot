@@ -5,7 +5,7 @@ import pg from 'pg';
 import { parseGuildSpamPolicyRow } from '../lib/guild-spam-policy.mjs';
 import { loadSpamCommand, interaction } from './helpers/spam-command-harness.mjs';
 
-test('actual command SQL: 42P08 regression, persistence, reset, audit and Guild isolation', { skip: !process.env.TEST_SPAM_DATABASE_URL }, async () => {
+test('actual command SQL: 42P08 regression, persistence, retired reset, audit and Guild isolation', { skip: !process.env.TEST_SPAM_DATABASE_URL }, async () => {
   const url = new URL(process.env.TEST_SPAM_DATABASE_URL);
   assert.equal(process.env.TEST_SPAM_ISOLATED, '1');
   assert.ok(['127.0.0.1', 'localhost'].includes(url.hostname));
@@ -38,14 +38,14 @@ test('actual command SQL: 42P08 regression, persistence, reset, audit and Guild 
     assert.match(deny.replies[0].content, /管理者/);
     const reset = interaction('reset', { guild: guildA }); await h.run(reset);
     assert.equal(h.warnings.length, 0);
-    assert.equal((await client.query('SELECT count(*)::int AS n FROM guild_spam_policy WHERE guild_id=$1', [guildA])).rows[0].n, 0);
+    assert.match(reset.replies[0].content, /SPAM_RESET_RETIRED/);
+    assert.equal((await client.query('SELECT strength FROM guild_spam_policy WHERE guild_id=$1', [guildA])).rows[0].strength, 33);
     assert.deepEqual((await client.query('SELECT to_jsonb(p) AS value FROM guild_spam_policy p WHERE guild_id=$1', [guildB])).rows[0].value, beforeB);
     const audit = (await client.query('SELECT * FROM guild_spam_policy_audit WHERE guild_id=$1 ORDER BY id', [guildA])).rows;
-    assert.equal(audit.length, 3); assert.equal(audit[2].new_preset, 'DEFAULT');
-    assert.ok(audit[2].changed_fields.includes('reset'));
+    assert.equal(audit.length, 2);
     await h.run(interaction('reset', { guild: guildA }));
-    assert.equal((await client.query('SELECT count(*)::int AS n FROM guild_spam_policy_audit WHERE guild_id=$1', [guildA])).rows[0].n, 3);
+    assert.equal((await client.query('SELECT count(*)::int AS n FROM guild_spam_policy_audit WHERE guild_id=$1', [guildA])).rows[0].n, 2);
     const status = interaction('status', { guild: guildA }); await h.run(status);
-    assert.match(status.replies[0].content, /legacy\/default/);
+    assert.match(status.replies[0].content, /33 \/ 100/);
   } finally { await client.end(); }
 });

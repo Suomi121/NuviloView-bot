@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import * as policy from '../../lib/guild-spam-policy.mjs';
+import * as consent from '../../lib/security-v2-consent.mjs';
 
 // Execute the deployed handler and only its actual imports, without starting a Bot.
 export function loadSpamCommand({ query = async () => { throw new Error('Unexpected SQL'); }, get = async () => ({ source: 'default', policy: null }) } = {}) {
@@ -9,7 +10,7 @@ export function loadSpamCommand({ query = async () => { throw new Error('Unexpec
   const bindings = Object.fromEntries(imports.split(',').map(s => s.trim()).filter(Boolean).map(name => [name, policy[name]]));
   const warnings = [];
   const invalidated = [];
-  const context = vm.createContext({ ...bindings, sql: { query },
+  const context = vm.createContext({ ...bindings, ...consent, process: { env: {} }, sql: { query },
     guildSpamPolicyCache: { get, invalidate: id => invalidated.push(id) },
     PermissionFlagsBits: { Administrator: 'admin', ManageGuild: 'manage' },
     MessageFlags: { Ephemeral: 64 }, console: { warn: text => warnings.push(text) } });
@@ -23,5 +24,7 @@ export function interaction(operation = 'status', { guild = '100000000000000001'
   return { replies, guildId: guild, user: { id: '100000000000000003' }, inGuild: () => inGuild,
     memberPermissions: { has: p => p === permission },
     options: { getSubcommand: () => operation, getInteger: () => value, getBoolean: () => value },
+    async deferReply() { this.deferred = true; },
+    editReply: async reply => { replies.push(reply); },
     reply: async reply => { replies.push(reply); } };
 }

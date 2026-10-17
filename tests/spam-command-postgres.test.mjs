@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
+import { verifySecurityV2 } from './helpers/security-v2-postgres.mjs';
 import { parseGuildSpamPolicyRow } from '../lib/guild-spam-policy.mjs';
 import { loadSpamCommand, interaction } from './helpers/spam-command-harness.mjs';
 
@@ -47,5 +48,6 @@ test('actual command SQL: 42P08 regression, persistence, retired reset, audit an
     assert.equal((await client.query('SELECT count(*)::int AS n FROM guild_spam_policy_audit WHERE guild_id=$1', [guildA])).rows[0].n, 2);
     const status = interaction('status', { guild: guildA }); await h.run(status);
     assert.match(status.replies[0].content, /33 \/ 100/);
+    await verifySecurityV2(client, url.href);
   } finally { await client.end(); }
 });

@@ -1,3 +1,4 @@
+import { enrollSecurityV2, readSecurityV2, setSecurityV2Auto, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS } from "./lib/security-v2-consent.mjs";
 import {
   ActionRowBuilder,
   ActivityType,
@@ -258,12 +259,6 @@ const spamWindowMs =
     2,
     60,
   ) * 1_000;
-const spamTimeoutMinutes = boundedEnvironmentInteger(
-  "SPAM_TIMEOUT_MINUTES",
-  defaultSpamProtectionConfig.timeoutMinutes,
-  1,
-  1_440,
-);
 const spamDetectionCooldownMs =
   boundedEnvironmentInteger(
     "SPAM_DETECTION_COOLDOWN_MINUTES",
@@ -503,9 +498,20 @@ async function handleSpamProtectionCommand(interaction) {
       ["Message Burst", policy.messageBurstEnabled], ["Duplicate", policy.duplicateEnabled],
       ["Mentions", policy.mentionEnabled], ["Links", policy.linkEnabled], ["Cross-channel", policy.crossChannelEnabled],
     ].map(([name, enabled]) => `${name}: ${enabled ? "ON" : "OFF"}`).join("\n");
-    return `Spam Protection\n${policy.enabled ? "Enabled" : "Disabled"}\nStrength\n${policy.strength ?? "Custom"} / 100\nLevel\n${level}\n${modules}\nMode\n${policy.mode === "CUSTOM" ? "Custom" : "Strength"}${source === "default" ? "\nUsing legacy/default settings until saved" : ""}\n\nChanges apply within 30 seconds.`;
+    return `Spam Protection\n${policy.enabled ? "Enabled" : "Disabled"}\nStrength\n${policy.strength ?? "Custom"} / 100\nLevel\n${level}\n${modules}\nMode\n${policy.mode === "CUSTOM" ? "Custom" : "Strength"}${source === "default" ? "\nDefault detection; Auto Timeout requires explicit consent" : ""}\n\nDetection changes apply within 30 seconds.`;
   };
   try {
+    if (interaction.options.getSubcommandGroup?.(false) === "auto") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const query = (text, values) => sql.query(text, values);
+      if (operation !== "status") {
+        await enrollSecurityV2(query, guildId);
+        await setSecurityV2Auto(query, guildId, interaction.user.id, operation);
+      }
+      const state = await readSecurityV2(query, guildId);
+      await interaction.editReply({ content: `Auto Timeout: ${state.migrationState === "unavailable" ? "UNKNOWN (execution denied)" : state.autoTimeout ? "ON" : "OFF"}\nMigration: ${state.migrationState}\nEmergency Stop: ${state.emergencyStop || process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" ? "ON" : "OFF"}\n検知設定とは独立しています。` });
+      return;
+    }
     if (operation === "reset") {
       await interaction.reply({ content: "Resetは廃止されたよ。設定は削除していません。検知設定は /spamprotection level などで変更してね。 [SPAM_RESET_RETIRED]", flags: MessageFlags.Ephemeral });
       return;
@@ -514,7 +520,8 @@ async function handleSpamProtectionCommand(interaction) {
     const context = await guildSpamPolicyCache.get(guildId);
     const base = context.policy ?? DEFAULT_GUILD_SPAM_POLICY;
     if (operation === "status") {
-      await interaction.reply({ content: replyStatus(base, context.source), flags: MessageFlags.Ephemeral });
+      const state = await readSecurityV2((text, values) => sql.query(text, values), guildId);
+      await interaction.reply({ content: `${replyStatus(base, context.source)}\nAuto Timeout: ${state.autoTimeout ? "ON" : "OFF"}\nMigration: ${state.migrationState}\n変更: /spamprotection auto on / auto off`, flags: MessageFlags.Ephemeral });
       return;
     }
     if (context.source === "fallback") {
@@ -551,7 +558,9 @@ async function handleSpamProtectionCommand(interaction) {
   } catch (error) {
     const code = String(error?.code ?? error?.name ?? "SPAM_POLICY_COMMAND_ERROR").slice(0, 40);
     console.warn(`[spam-policy-command] setting update failed (${code}).`);
-    await interaction.reply({ content: "設定を保存できませんでした。少し待ってからもう一度お試しください。", flags: MessageFlags.Ephemeral }).catch(() => {});
+    const errorReply = { content: "設定を保存できませんでした。少し待ってからもう一度お試しください。", flags: MessageFlags.Ephemeral };
+    if (interaction.deferred) await interaction.editReply({ content: errorReply.content }).catch(() => {});
+    else await interaction.reply(errorReply).catch(() => {});
   }
 }
 
@@ -626,6 +635,10 @@ const spamProtectionCommand = new SlashCommandBuilder()
   .setDescription("このサーバーのスパム保護設定を確認・変更します")
   .setDMPermission(false)
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .addSubcommandGroup((group) => group.setName("auto").setDescription("自動タイムアウト（初期OFF）")
+    .addSubcommand((sub) => sub.setName("on").setDescription("自動タイムアウトを明示的に有効化"))
+    .addSubcommand((sub) => sub.setName("off").setDescription("検知を維持して自動タイムアウトを停止"))
+    .addSubcommand((sub) => sub.setName("status").setDescription("自動タイムアウトの状態を表示")))
   .addSubcommand((subcommand) => subcommand.setName("status").setDescription("現在のスパム保護設定を表示します"))
   .addSubcommand((subcommand) => subcommand.setName("on").setDescription("スパム保護を有効にします"))
   .addSubcommand((subcommand) => subcommand.setName("off").setDescription("スパム保護を停止します"))
@@ -2697,7 +2710,7 @@ async function handleSecurityHelpCommand(message, args) {
       new TextDisplayBuilder().setContent(
         `### 🚨 自動スパム検知 — ${spamProtectionEnabled ? "稼働中" : "停止中"}\n` +
           `個別設定がないサーバーでは、${spamWindowMs / 1_000}秒以内の${spamMessageLimit}件投稿を検知し、` +
-          `従来どおり${spamTimeoutMinutes}分のタイムアウトを試行します。\n` +
+          "自動タイムアウトは初期OFFです。管理者が /spamprotection auto on で明示的に有効化します。\n" +
           "-# 個別設定のあるサーバーはDashboardの Security → Spam Detection で条件と対応方法を確認できます。",
       ),
       new TextDisplayBuilder().setContent(
@@ -3753,12 +3766,16 @@ async function handleSpamDetection(message, detection) {
     member: botMember,
   };
   const policyContext = detection.policyContext;
-  const actionMode = resolveSpamPolicyAction({
+  const automaticAllowed = policyContext?.source !== "fallback" && await mayAutomaticallyTimeout(
+    (text, values) => sql.query(text, values), message.guild.id,
+    { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" },
+  );
+  const actionMode = automaticAllowed ? "V2_TIMEOUT" : resolveSpamPolicyAction({
     isCustom: Boolean(policyContext?.isCustom),
     policy: policyContext?.policy,
     source: policyContext?.source,
   });
-  if (actionMode !== "LEGACY_TIMEOUT") {
+  if (actionMode !== "V2_TIMEOUT") {
     const signalText = detection.signals.join(", ");
     const auditId = randomUUID();
     let storedAuditId = auditId;
@@ -3789,7 +3806,7 @@ async function handleSpamDetection(message, detection) {
         detectedCount: detection.count,
         actionResult: "自動処分なし（管理者への通知のみ）",
         protectedReason: getSpamProtectedReason(targetMember),
-        windowSeconds: detection.policyContext.policy.messageWindowSeconds,
+        windowSeconds: detection.policyContext?.policy?.messageWindowSeconds ?? spamWindowMs / 1_000,
         signals: detection.signals,
         allowActions: false,
       }).catch((error) => console.error("Failed to send spam policy alert:", error));
@@ -3874,11 +3891,17 @@ async function handleSpamDetection(message, detection) {
         affectedCount: 0,
       });
     } else {
+      // Fresh, uncached consent immediately before the Discord side effect.
+      if (!await mayAutomaticallyTimeout((text, values) => sql.query(text, values), message.guild.id,
+        { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" })) {
+        await finishModerationAudit(auditId, { status: "success", affectedCount: 0 });
+        return;
+      }
       await targetMember.timeout(
-        spamTimeoutMinutes * 60_000,
+        SECURITY_V2_TIMEOUT_MS,
         moderationAuditReason(reason, context, auditId),
       );
-      actionResult = `${spamTimeoutMinutes.toLocaleString("ja-JP")}分間のタイムアウト`;
+      actionResult = "24時間のタイムアウト";
       await finishModerationAudit(auditId, {
         status: "success",
         affectedCount: 1,
@@ -5190,6 +5213,12 @@ async function syncServerVoiceSession(guild) {
 }
 
 client.once("clientReady", async () => {
+  // Inventory includes Guilds without a detection policy. Bounded sequential
+  // enrollment; failures remain OFF and can be retried on next startup.
+  for (const guild of client.guilds.cache.values()) {
+    try { await enrollSecurityV2((text, values) => sql.query(text, values), guild.id); }
+    catch { console.warn("[security-v2] enrollment unavailable; automatic punishment remains disabled for unconfirmed Guilds."); }
+  }
   runtimeCoordinator?.setStatus("Running", "Owned");
   updateRuntimeOperationalMetrics({ discordReadyAt: new Date().toISOString() });
   updateBotPresence();
@@ -5265,6 +5294,8 @@ client.on("guildCreate", (guild) =>
     updateBotPresence();
     if (await leaveBlockedGuild(guild, "re-invite")) return;
     void onboardGuild(guild);
+    await enrollSecurityV2((text, values) => sql.query(text, values), guild.id)
+      .catch(() => console.warn("[security-v2] new Guild enrollment unavailable; default OFF."));
     await Promise.allSettled([
       syncGuildCommands(guild.id),
       loadReactionRoleRules(guild.id),
@@ -6332,7 +6363,7 @@ client.on("messageCreate", async (message) => {
         signals: spamDetection.signals,
       };
     } else {
-      // A Guild without a saved row retains the deployed behavior. If the
+      // A Guild without a saved row retains default detection ONLY. If the
       // policy store is unavailable, keep detection on the known baseline but
       // fail safe to LOG_ONLY rather than applying an unknown timeout action.
       spamDetection = spamTracker.record(

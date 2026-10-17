@@ -12,7 +12,10 @@ for (const [label, policy, source, expected] of [
   const i = interaction(); await h.run(i);
   assert.equal(h.warnings.length, 0); assert.equal(i.replies.length, 1);
   assert.match(i.replies[0].content, expected); assert.equal(i.replies[0].flags, 64);
-  if (source === 'default') assert.match(i.replies[0].content, /legacy\/default/);
+  if (source === 'default') {
+    assert.match(i.replies[0].content, /Default detection; Auto Timeout requires explicit consent/);
+    assert.doesNotMatch(i.replies[0].content, /legacy\/default/);
+  }
 });
 
 for (const operation of ['status', 'level', 'reset']) test(`${operation}: non-manager denied before reads or writes`, async () => {

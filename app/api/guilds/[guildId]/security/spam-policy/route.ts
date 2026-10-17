@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { enrollSecurityV2, readSecurityV2, setSecurityV2Auto } from '@/lib/security-v2-consent.mjs'
 import { auth } from '@/lib/auth'
 import { authStorage } from '@/lib/auth-storage'
 import { pool } from '@/lib/db'
@@ -61,10 +62,27 @@ export async function GET(request: Request, { params }: { params: Promise<{ guil
     const result = await pool.query('SELECT * FROM "guild_spam_policy" WHERE "guild_id" = $1 LIMIT 1', [guildId])
     const policy = parseGuildSpamPolicyRow(result.rows[0] ?? null)
     if (result.rows[0] && !policy) return NextResponse.json({ error: '保存済み設定を検証できません。' }, { status: 503 })
-    return NextResponse.json({ policy: publicPolicy(policy ?? DEFAULT_GUILD_SPAM_POLICY), isCustom: Boolean(policy) }, { headers: { 'Cache-Control': 'private, no-store' } })
+    const auto = await readSecurityV2((text: string, values: unknown[]) => pool.query(text, values), guildId)
+    return NextResponse.json({ policy: publicPolicy(policy ?? DEFAULT_GUILD_SPAM_POLICY), isCustom: Boolean(policy), auto }, { headers: { 'Cache-Control': 'private, no-store' } })
   } catch (error) {
     return safeFailure('read', error)
   }
+}
+
+export async function PATCH(request: Request, { params }: { params: Promise<{ guildId: string }> }) {
+  if (!isTrustedMutation(request) || !hasJsonBody(request, 1_024)) return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+  const { guildId } = await params
+  const access = await authorizeGuild(request, guildId, 'guild-spam-auto-write')
+  if ('response' in access) return access.response
+  const body = await request.json().catch(() => null)
+  if (!['on', 'off'].includes(body?.operation)) return NextResponse.json({ error: 'Explicit on/off required' }, { status: 400 })
+  try {
+    const actor = `web:${access.session.user.id}`
+    const query = (text: string, values: unknown[]) => pool.query(text, values)
+    await enrollSecurityV2(query, guildId)
+    await setSecurityV2Auto(query, guildId, actor, body.operation)
+    return NextResponse.json({ auto: await readSecurityV2(query, guildId) }, { headers: { 'Cache-Control': 'private, no-store' } })
+  } catch (error) { return safeFailure('auto', error) }
 }
 
 export async function PUT(request: Request, { params }: { params: Promise<{ guildId: string }> }) {

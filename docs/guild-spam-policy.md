@@ -9,13 +9,10 @@ authorization and trusted-origin checks, then returns HTTP 410 without opening
 a policy database connection. Detection, strength, module and exclusion edits
 remain available through the existing save operations.
 
-This change does not migrate Guilds or enable any automatic punishment. A Guild
-that has never saved a policy retains existing environment-controlled legacy
-behavior. Auto Timeout v2 is a separate, not-yet-enabled implementation gate.
-Its explicit on/off state must survive detection edits and must never be
-represented by deleting a policy row. A durable migration marker independent
-of an optional policy read is required before v2 can run: failed/absent reads
-must suppress punishment, never infer legacy eligibility for an enrolled Guild.
+Security Engine v2 removes legacy punishment for ALL Guilds. Explicit auto
+consent is independent of detection edits and is never represented by deleting
+a policy row. Missing/failed reads suppress punishment. See
+[all-Guild migration and rollback plan](security-v2-rollout.md).
 
 Rollout is not authorized here. At a future approved rollout, update both Bot
 and Web; synchronize the existing Guild command definitions, preserving all
@@ -34,7 +31,7 @@ The Bot currently tracks a message when it is in a Guild, is not a webhook, and 
 
 ## Compatibility and per-Guild policy
 
-A missing policy row means the Guild continues to use the old global message-rate rule, audit, automatic timeout, and alert flow. Saving a policy explicitly switches that Guild to its saved thresholds and selected action. Preset values are server-validated; editing a threshold/window changes the preset to `CUSTOM`.
+A missing detection policy retains the global message-rate detector, never implicit automatic timeout. Saving a policy selects thresholds and non-punitive handling independently of explicit v2 auto consent. Preset values are server-validated; editing a threshold/window changes the preset to `CUSTOM`.
 
 The `NORMAL` message-rate threshold matches the current default (3 / 5 seconds). Preset values for the newly added duplicate, mention, link, and cross-channel detectors are in `lib/guild-spam-policy.mjs`. These additional detectors are only evaluated when that Guild has explicitly saved a policy.
 
@@ -44,13 +41,13 @@ Custom actions are non-automatic:
 - `ALERT`: notify the configured moderation alert channel, no automatic punishment
 - `INCIDENT`: create a local-first security audit record and notify moderators, no automatic punishment
 
-Only Guilds with no custom row retain the legacy automatic timeout. Owners/moderators remain protected by the existing legacy timeout guard. The current Bot and webhook exclusions cannot be disabled. Optional exclusions can skip other bots, owners/moderators, selected roles, or selected channels.
+No Guild retains legacy automatic timeout. Owners/moderators remain protected by the existing member guard. Bot and webhook exclusions cannot be disabled. Optional exclusions can skip other bots, owners/moderators, selected roles, or selected channels.
 
 ## Storage, authorization, and safety
 
 The web API stores policy in the existing shared Bot/Web PostgreSQL configured by `DATABASE_URL`, not in the Better Auth provider database. Reads and writes require an authenticated session plus that session's Discord-linked Guild list containing the requested Guild (owner or Manage Guild). Writes also require a trusted same-origin JSON request and are rate-limited. Policy row changes and the field-name-only audit record commit in one transaction. The audit does not store old/new setting values or names.
 
-The Bot caches each Guild result for 30 seconds and coalesces concurrent refreshes. A missing row uses legacy behavior. A DB read error uses the legacy detection threshold but fails safe to `LOG_ONLY`; it does not apply an unknown timeout policy. Changes become visible to separate Bot/Web processes after the Bot cache expires (at most 30 seconds).
+The Bot caches detection settings for 30 seconds and coalesces concurrent refreshes. A missing row uses default detection. A DB read error fails safe to `LOG_ONLY`. Detection edits propagate within 30 seconds; v2 auto consent is read uncached immediately before punishment and requires both emergency controls to permit execution.
 
 ## Guild removal and retention
 

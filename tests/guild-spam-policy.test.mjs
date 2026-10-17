@@ -207,8 +207,8 @@ test('link and mention signals are counted without retaining raw message content
   assert.equal(countSpamMentions({ userCount: 500 }), 200);
 });
 
-test('unconfigured Guilds preserve legacy auto-timeout; custom policy separates action from detection', () => {
-  assert.equal(resolveSpamPolicyAction({ isCustom: false, policy: DEFAULT_GUILD_SPAM_POLICY }), 'LEGACY_TIMEOUT');
+test('unconfigured Guilds never authorize timeout; custom policy separates action from detection', () => {
+  assert.equal(resolveSpamPolicyAction({ isCustom: false, policy: DEFAULT_GUILD_SPAM_POLICY }), 'ALERT');
   assert.equal(resolveSpamPolicyAction({ isCustom: true, policy: { ...DEFAULT_GUILD_SPAM_POLICY, action: 'LOG_ONLY' } }), 'LOG_ONLY');
   assert.equal(resolveSpamPolicyAction({ isCustom: false, source: 'fallback', policy: DEFAULT_GUILD_SPAM_POLICY }), 'LOG_ONLY');
 });

@@ -22,7 +22,17 @@ export async function verifySecurityV2(client, connectionString) {
   // Isolated DB only: simulate an approved release removing the global stop.
   await query('UPDATE security_v2_control SET emergency_stop=false');
   assert.equal(await mayAutomaticallyTimeout(query, a, { emergencyStop: false }), true);
+  await query('BEGIN');
+  await query('DELETE FROM guild_spam_policy WHERE guild_id=$1', [a]);
+  assert.equal(await mayAutomaticallyTimeout(query, a, { emergencyStop: false }), false, 'lost detection row cannot fall back into punishment');
+  await enrollSecurityV2(query, a);
+  assert.equal(await mayAutomaticallyTimeout(query, a, { emergencyStop: false }), false, 'restart does not clear the durable detection marker');
+  await query('ROLLBACK');
   assert.equal(await mayAutomaticallyTimeout(query, b, { emergencyStop: false }), false);
+  await setSecurityV2Auto(query, c, 'test', 'on');
+  assert.equal(await mayAutomaticallyTimeout(query, c, { emergencyStop: false }), true, 'new Guild may explicitly opt into default detection');
+  await setSecurityV2Auto(query, c, 'test', 'off');
+  assert.equal(await mayAutomaticallyTimeout(query, c, { emergencyStop: false }), false);
   await setSecurityV2Auto(query, a, 'web:test-user', 'off');
   await enrollSecurityV2(query, a); // restart must preserve OFF
   assert.equal((await readSecurityV2(query, a)).autoTimeout, false);

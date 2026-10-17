@@ -509,7 +509,7 @@ async function handleSpamProtectionCommand(interaction) {
         await setSecurityV2Auto(query, guildId, interaction.user.id, operation);
       }
       const state = await readSecurityV2(query, guildId);
-      await interaction.editReply({ content: `Auto Timeout: ${state.migrationState === "unavailable" ? "UNKNOWN (execution denied)" : state.autoTimeout ? "ON" : "OFF"}\nMigration: ${state.migrationState}\nEmergency Stop: ${state.emergencyStop || process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" ? "ON" : "OFF"}\n検知設定とは独立しています。` });
+      await interaction.editReply({ content: `Auto Timeout: ${state.migrationState === "unavailable" ? "UNKNOWN (execution denied)" : state.autoTimeout ? "ON" : "OFF"}\nMigration: ${state.migrationState}\nEmergency Stop: ${state.emergencyStop || process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" ? "ON" : "OFF"}${state.policyMissing ? "\nPolicy missing: execution denied" : ""}\n検知設定とは独立しています。` });
       return;
     }
     if (operation === "reset") {

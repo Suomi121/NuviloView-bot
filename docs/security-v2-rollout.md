@@ -17,6 +17,11 @@ non-punitive handling when automatic timeout is not authorized.
 - Enrollment `complete`: Bot discovery/authorized command completed enrollment;
   the separate auto row defaults to false.
 - Auto row absent/invalid or failed DB read: OFF. Enrollment survives separately.
+- A missing previously configured detection row also denies punishment: enrollment
+  retains a sticky detection-policy marker, supplemented by the retained policy
+  audit for later official saves. Neither restart nor absence clears this marker.
+  A Guild that has never configured detection may explicitly opt in with the
+  default detector; losing an existing configuration is not treated as that case.
 - Explicit `/spamprotection auto on|off` stores a boolean and audit atomically.
   OFF never deletes settings. Startup enrollment never overwrites consent.
 - Global `security_v2_control.emergency_stop` starts TRUE; missing control is STOP.

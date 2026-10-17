@@ -10,6 +10,7 @@ INSERT INTO security_v2_control (singleton, emergency_stop) VALUES (true, true);
 CREATE TABLE guild_security_v2_enrollment (
   guild_id text PRIMARY KEY CHECK (guild_id ~ '^[0-9]{16,22}$'),
   migration_state text NOT NULL DEFAULT 'pending' CHECK (migration_state IN ('pending', 'complete')),
+  detection_policy_seen boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz
 );
@@ -32,5 +33,5 @@ CREATE TABLE guild_security_v2_audit (
 CREATE INDEX guild_security_v2_audit_guild_created_idx ON guild_security_v2_audit (guild_id, created_at);
 -- Guilds without detection rows are discovered from the Bot's Guild inventory.
 -- They are always OFF even before discovery; absence never authorizes punishment.
-INSERT INTO guild_security_v2_enrollment (guild_id)
-SELECT guild_id FROM guild_spam_policy;
+INSERT INTO guild_security_v2_enrollment (guild_id, detection_policy_seen)
+SELECT guild_id, true FROM guild_spam_policy;

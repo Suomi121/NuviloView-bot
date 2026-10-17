@@ -1,5 +1,5 @@
 type Query = (text: string, values: unknown[]) => Promise<unknown>;
-export type SecurityV2State = { migrationState: string; autoTimeout: boolean; emergencyStop: boolean; effective: boolean; revision: string };
+export type SecurityV2State = { migrationState: string; autoTimeout: boolean; emergencyStop: boolean; policyMissing: boolean; effective: boolean; revision: string };
 export function readSecurityV2(query: Query, guildId: string): Promise<SecurityV2State>;
 export function enrollSecurityV2(query: Query, guildId: string): Promise<void>;
 export function setSecurityV2Auto(query: Query, guildId: string, actorId: string, operation: string): Promise<{ autoTimeout: boolean; revision: string }>;

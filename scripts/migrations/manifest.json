@@ -173,7 +173,7 @@
     {
       "id": "20261017-security-v2-consent",
       "file": "20261017-security-v2-consent.sql",
-      "checksum": "b99b7c9763a5b81cce8d930d26e09b29df325c8a8c6b0001e77d34adc0b7413d",
+      "checksum": "43802d4b25daf50629c55e03da25678a6fc3a19d32f0833e63ac101e5fbc66db",
       "description": "Separate v2 enrollment, explicit automatic timeout consent, audit and emergency stop. Stop old punishers before rollout.",
       "risk": "high",
       "reversible": false,

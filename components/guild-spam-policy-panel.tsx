@@ -40,7 +40,7 @@ export function GuildSpamPolicyPanel() {
   const [policy, setPolicy] = useState<GuildSpamPolicy | null>(null);
   const [savedPolicy, setSavedPolicy] = useState<GuildSpamPolicy | null>(null);
   const [isCustom, setIsCustom] = useState(false);
-  const [autoState, setAutoState] = useState<{ autoTimeout: boolean; emergencyStop: boolean; migrationState: string } | null>(null);
+  const [autoState, setAutoState] = useState<{ autoTimeout: boolean; emergencyStop: boolean; policyMissing: boolean; migrationState: string } | null>(null);
   const [loadingGuilds, setLoadingGuilds] = useState(true);
   const [loadingPolicy, setLoadingPolicy] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -174,7 +174,7 @@ export function GuildSpamPolicyPanel() {
       {policy && draft && <>
         <p className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
           Auto Timeout: {autoState ? (autoState.autoTimeout ? "ON" : "OFF") : "UNKNOWN / OFF"} · {autoState?.migrationState ?? "unavailable"}
-          {autoState?.emergencyStop && " · Emergency Stop"}<br />
+          {autoState?.emergencyStop && " · Emergency Stop"}{autoState?.policyMissing && " · Policy missing: execution denied"}<br />
           {en ? "Default OFF. Use /spamprotection auto on or auto off explicitly. Detection settings below never enable automatic punishment. Bot emergency controls may also suppress execution." : "初期OFF。変更は /spamprotection auto on・auto off で明示してください。下記の検知設定の保存では自動処罰は有効になりません。Bot側の緊急停止によっても実行が抑止されます。"}
         </p>
         <label className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/50 p-4"><span className="text-sm font-bold">{labels.enabled}</span><span className="flex items-center gap-2 text-sm"><span>{policy.enabled ? labels.on : labels.off}</span><input type="checkbox" role="switch" aria-label={labels.enabled} checked={policy.enabled} onChange={(event) => setField("enabled", event.target.checked)} /></span></label>

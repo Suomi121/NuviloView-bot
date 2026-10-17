@@ -5215,10 +5215,13 @@ async function syncServerVoiceSession(guild) {
 client.once("clientReady", async () => {
   // Inventory includes Guilds without a detection policy. Bounded sequential
   // enrollment; failures remain OFF and can be retried on next startup.
-  for (const guild of client.guilds.cache.values()) {
-    try { await enrollSecurityV2((text, values) => sql.query(text, values), guild.id); }
-    catch { console.warn("[security-v2] enrollment unavailable; automatic punishment remains disabled for unconfirmed Guilds."); }
-  }
+  // Do not delay heartbeat/command startup behind an unavailable policy store.
+  void (async () => {
+    for (const guild of client.guilds.cache.values()) {
+      try { await enrollSecurityV2((text, values) => sql.query(text, values), guild.id); }
+      catch { console.warn("[security-v2] enrollment unavailable; automatic punishment remains disabled for unconfirmed Guilds."); }
+    }
+  })();
   runtimeCoordinator?.setStatus("Running", "Owned");
   updateRuntimeOperationalMetrics({ discordReadyAt: new Date().toISOString() });
   updateBotPresence();

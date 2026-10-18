@@ -7,6 +7,7 @@ import { SECURITY_V2_TIMEOUT_MS } from '../lib/security-v2-consent.mjs';
 import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
 import { securityV2State, readSecurityV2, mayAutomaticallyTimeout, setSecurityV2Auto } from '../lib/security-v2-consent.mjs';
 import { loadSpamCommand, interaction } from './helpers/spam-command-harness.mjs';
+import { incidentFixture, userId, messageId, channelId } from './helpers/timeout-incident-fixture.mjs';
 const guild = '100000000000000001';
 test('actual registered definition contains auto on/off/status and no reset', () => {
   const source = readFileSync(new URL('../discord-bot.mjs', import.meta.url), 'utf8');
@@ -61,11 +62,13 @@ test('actual detection handler: OFF, lost consent, DB failure and emergency neve
   const bot = readFileSync(new URL('../discord-bot.mjs', import.meta.url), 'utf8');
   const source = bot.slice(bot.indexOf('async function handleSpamDetection'), bot.indexOf('async function replySpamComponentError'));
   for (const scenario of ['off', 'on', 'lost', 'db-error', 'emergency', 'fallback']) {
+    const fixture = incidentFixture();
     let queries = 0, timeouts = 0, alerts = 0;
-    const member = { id: 'member', displayName: 'fixture', user: {}, moderatable: true,
+    const member = { id: userId, displayName: 'fixture', user: {}, moderatable: true,
       timeout: async duration => { assert.equal(duration, 86_400_000); timeouts++; } };
     const context = vm.createContext({
       client: { user: {} }, resolveSpamPolicyAction, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS,
+      timeoutIncidents: fixture.incidents,
       process: { env: { SECURITY_V2_AUTO_EXECUTION: scenario === 'emergency' ? '' : 'enabled' } },
       sql: { query: async () => {
         queries++;
@@ -78,9 +81,12 @@ test('actual detection handler: OFF, lost consent, DB failure and emergency neve
       spamWindowMs: 5000, console: { error() {}, warn() {} }, Date,
     });
     const run = vm.runInContext(source + '\nhandleSpamDetection', context);
-    await run({ member, guild: { id: guild, members: { me: { permissions: { has: () => true } } } }, channelId: 'fixture' },
+    await run({ id: messageId, createdTimestamp: fixture.input.occurredAt, author: { id: userId },
+      guild: { id: guild, members: { fetch: async () => member, fetchMe: async () => ({ permissions: { has: () => true } }) } }, channelId },
       { count: 3, signals: ['messages'], policyContext: { source: scenario === 'fallback' ? 'fallback' : 'default', isCustom: false } });
     assert.equal(timeouts, scenario === 'on' ? 1 : 0, scenario);
-    if (scenario === 'off') assert.equal(alerts, 1, 'detection continues while punishment OFF');
+    assert.equal(alerts, scenario === 'on' ? 1 : 0, 'timeout logs require confirmed success');
+    assert.equal(fixture.incidents.snapshot(guild, fixture.begin().incidentId).detection.status, 'detected', 'detection continues while punishment OFF');
+    fixture.storage.close();
   }
 });

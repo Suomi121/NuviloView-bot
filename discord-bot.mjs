@@ -1,5 +1,8 @@
 import { enrollSecurityV2, readSecurityV2, setSecurityV2Auto, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS } from "./lib/security-v2-consent.mjs";
 import { operatorRoleCommand, createOperatorRoleHandler } from "./lib/security-operators.mjs";
+import { timeoutLogCommand, createTimeoutLogCommandHandler } from "./lib/security-log-settings.mjs";
+import { createTimeoutIncidentService, timeoutFailureStatus, safeIncidentError } from "./lib/timeout-incidents.mjs";
+import { sendTimeoutIncidentLog } from "./lib/timeout-discord-log.mjs";
 import {
   ActionRowBuilder,
   ActivityType,
@@ -149,6 +152,7 @@ const cloudDatabase = createCloudDatabase({
 });
 const sql = cloudDatabase.sql;
 const handleOperatorRoleCommand = createOperatorRoleHandler({ query: (text, values) => sql.query(text, values) });
+const handleTimeoutLogCommand = createTimeoutLogCommandHandler({ query: (text, values) => sql.query(text, values) });
 const runtimeConfig = getRuntimeConfig(process.env);
 const runtimeIdentity = createRuntimeIdentity(process.env);
 const runtimeRepository = createRuntimeLeaseRepository((text, parameters) =>
@@ -167,6 +171,8 @@ const localFirstAllGuildsEnabled = ["1", "true", "yes", "on"].includes(
 const securityAuditService = messageStorage.enabled && messageStorage.writeEnabled
   ? createSecurityAuditService({ storage: messageStorage })
   : null;
+const timeoutIncidents = securityAuditService ? createTimeoutIncidentService({ audit: securityAuditService,
+  version: runtimeIdentity.appVersion, commit: runtimeIdentity.commitSha }) : null;
 const localRuntimeSnapshots =
   messageStorage.enabled && messageStorage.writeEnabled
     ? createSnapshotService(messageStorage)
@@ -974,6 +980,7 @@ const publicCommands = [
 // These are registered per guild so newly-added management tools can appear
 // immediately without duplicating the small global command set.
 const extendedCommands = [
+  timeoutLogCommand,
   operatorRoleCommand,
   spamProtectionCommand,
   permissionsCommand,
@@ -3613,129 +3620,9 @@ function getSpamProtectedReason(member) {
   });
 }
 
-function canBotSendToChannel(channel, botMember) {
-  if (!channel?.isTextBased?.() || typeof channel.send !== "function") return false;
-  const permissions = channel.permissionsFor?.(botMember);
-  const sendPermission = channel.isThread?.()
-    ? PermissionFlagsBits.SendMessagesInThreads
-    : PermissionFlagsBits.SendMessages;
-  return Boolean(
-    permissions?.has(PermissionFlagsBits.ViewChannel) &&
-      permissions.has(sendPermission),
-  );
-}
-
-function findSpamAlertChannel(message, botMember) {
-  const candidates = [
-    message.channel,
-    message.guild.systemChannel,
-    ...message.guild.channels.cache
-      .filter((channel) => /(?:mod|moderation|log|監査|管理)/i.test(channel.name ?? ""))
-      .values(),
-    ...message.guild.channels.cache.values(),
-  ];
-  const seen = new Set();
-  return (
-    candidates.find((channel) => {
-      if (!channel || seen.has(channel.id)) return false;
-      seen.add(channel.id);
-      return canBotSendToChannel(channel, botMember);
-    }) ?? null
-  );
-}
-
-function createSpamActionRow(detectionId) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(
-        createSpamActionCustomId({
-          stage: "execute",
-          action: "untimeout",
-          detectionId,
-        }),
-      )
-      .setLabel("TO解除")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(
-        createSpamActionCustomId({
-          stage: "confirm",
-          action: "kick",
-          detectionId,
-        }),
-      )
-      .setLabel("Kick")
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(
-        createSpamActionCustomId({
-          stage: "confirm",
-          action: "ban",
-          detectionId,
-        }),
-      )
-      .setLabel("BAN")
-      .setStyle(ButtonStyle.Danger),
-  );
-}
-
-async function sendSpamDetectionAlert(message, {
-  auditId,
-  targetMember,
-  detectedCount,
-  actionResult,
-  protectedReason = null,
-  windowSeconds = spamWindowMs / 1_000,
-  signals = ["messages"],
-  allowActions = true,
-}) {
-  const botMember =
-    message.guild.members.me ?? (await message.guild.members.fetchMe());
-  const alertChannel = findSpamAlertChannel(message, botMember);
-  if (!alertChannel) {
-    console.warn(
-      `[spam-protection] No sendable alert channel in Guild ${message.guild.id}; audit ${auditId}`,
-    );
-    return;
-  }
-
-  const targetName = formatGuildName(
-    targetMember.displayName ??
-      targetMember.user.globalName ??
-      targetMember.user.username,
-  );
-  const signalLabels = {
-    messages: "短時間の連続投稿",
-    duplicates: "同一内容の繰り返し",
-    mentions: "メンション数",
-    links: "リンク数",
-    cross_channel: "複数チャンネルへの投稿",
-  };
-  const reasonText = signals.map((signal) => signalLabels[signal] ?? "投稿パターン").join("・");
-  const content =
-    `🚨 **スパムを検知しました**\n` +
-    `対象: **${targetName}**（\`${targetMember.id}\`）\n` +
-    `検知条件: ${reasonText}（${windowSeconds.toLocaleString("ja-JP")}秒以内） · ` +
-    `${detectedCount.toLocaleString("ja-JP")}件\n` +
-    `自動対応: ${actionResult}` +
-    (protectedReason ? `\n保護理由: ${protectedReason}` : "") +
-    `\n-# 検知ID: ${auditId}`;
-  const alertMessage = await alertChannel.send({
-    content,
-    components: allowActions && !protectedReason ? [createSpamActionRow(auditId)] : [],
-    allowedMentions: { parse: [] },
-  });
-  if (allowActions && !protectedReason) {
-    spamAlertMessages.set(auditId, {
-      channelId: alertMessage.channelId,
-      messageId: alertMessage.id,
-    });
-    const cleanupTimer = setTimeout(
-      () => spamAlertMessages.delete(auditId),
-      24 * 60 * 60 * 1_000,
-    );
-    cleanupTimer.unref();
-  }
+async function sendSpamDetectionAlert(message, { auditId, targetMember }) {
+  return sendTimeoutIncidentLog({ incidents: timeoutIncidents, query: (text, values) => sql.query(text, values),
+    guild: message.guild, incidentId: auditId, targetMember });
 }
 
 function hasSpamAdminOrModeratorPermissions(member) {
@@ -3751,17 +3638,23 @@ function hasSpamAdminOrModeratorPermissions(member) {
 }
 
 async function handleSpamDetection(message, detection) {
+  // A durable local claim is mandatory before any automatic external effect.
+  if (!timeoutIncidents) return;
+  const guildId = message.guild.id;
+  const incident = timeoutIncidents.begin({ guildId, userId: message.author.id, messageId: message.id,
+    channelId: message.channelId, occurredAt: message.createdTimestamp, signals: detection.signals,
+    count: detection.count, windowSeconds: detection.policyContext?.policy?.messageWindowSeconds ?? spamWindowMs / 1000 });
+  if (!incident.inserted) return; // Redelivery/restart: never repeat a timeout or log.
+  const auditId = incident.incidentId;
   let targetMember;
   try {
-    targetMember =
-      message.member ?? (await message.guild.members.fetch(message.author.id));
-  } catch (error) {
-    console.warn("Spam target could not be fetched:", safeErrorText(error));
+    targetMember = await message.guild.members.fetch({ user: message.author.id, force: true });
+  } catch {
+    timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'TARGET_UNAVAILABLE' });
     return;
   }
 
-  const botMember =
-    message.guild.members.me ?? (await message.guild.members.fetchMe());
+  const botMember = await message.guild.members.fetchMe({ force: true });
   const context = {
     guild: message.guild,
     guildId: message.guild.id,
@@ -3779,82 +3672,17 @@ async function handleSpamDetection(message, detection) {
     source: policyContext?.source,
   });
   if (actionMode !== "V2_TIMEOUT") {
-    const signalText = detection.signals.join(", ");
-    const auditId = randomUUID();
-    let storedAuditId = auditId;
-    if (actionMode === "LOG_ONLY" || actionMode === "INCIDENT") {
-      try {
-        storedAuditId = await startModerationAudit(context, {
-          action: actionMode === "INCIDENT" ? "spam_policy_incident" : "spam_policy_log",
-          targetId: targetMember.id,
-          targetName: (
-            targetMember.displayName ??
-            targetMember.user.globalName ??
-            targetMember.user.username
-          ).slice(0, 100),
-          channelId: message.channelId,
-          reason: `Guild Spam Policy detection: ${signalText}`.slice(0, 500),
-          requestedCount: detection.count,
-        });
-        await finishModerationAudit(storedAuditId, { status: "success", affectedCount: 0 });
-      } catch (error) {
-        console.error("Failed to record Guild Spam Policy detection:", error);
-        if (actionMode === "LOG_ONLY" || actionMode === "INCIDENT") return;
-      }
-    }
-    if (actionMode !== "LOG_ONLY") {
-      await sendSpamDetectionAlert(message, {
-        auditId: storedAuditId,
-        targetMember,
-        detectedCount: detection.count,
-        actionResult: "自動処分なし（管理者への通知のみ）",
-        protectedReason: getSpamProtectedReason(targetMember),
-        windowSeconds: detection.policyContext?.policy?.messageWindowSeconds ?? spamWindowMs / 1_000,
-        signals: detection.signals,
-        allowActions: false,
-      }).catch((error) => console.error("Failed to send spam policy alert:", error));
-    }
+    timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'TIMEOUT_DENIED' });
     return;
   }
   const reason =
-    `自動スパム検知: ${spamWindowMs / 1_000}秒以内に` +
-    `${detection.count}件のメッセージ`;
-  let auditId;
-  try {
-    auditId = await startModerationAudit(context, {
-      action: "spam_timeout",
-      targetId: targetMember.id,
-      targetName: (
-        targetMember.displayName ??
-        targetMember.user.globalName ??
-        targetMember.user.username
-      ).slice(0, 100),
-      channelId: message.channelId,
-      reason,
-      requestedCount: detection.count,
-    });
-  } catch (error) {
-    console.error("Failed to start spam detection audit:", error);
-    return;
-  }
+    `自動スパム検知: ${incident.payload.windowSeconds}秒以内に` +
+    `${incident.payload.count}件のメッセージ`;
+  if (!timeoutIncidents.claimTimeout(guildId, auditId)) return;
 
   const protectedReason = getSpamProtectedReason(targetMember);
   if (protectedReason) {
-    await finishModerationAudit(auditId, {
-      status: "success",
-      affectedCount: 0,
-    });
-    await sendSpamDetectionAlert(message, {
-      auditId,
-      targetMember,
-      detectedCount: detection.count,
-      actionResult: "保護対象のため自動タイムアウトなし",
-      protectedReason,
-      windowSeconds: spamWindowMs / 1_000,
-      signals: detection.signals ?? ["messages"],
-    }).catch((error) =>
-      console.error("Failed to send protected spam alert:", error),
-    );
+    timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'TARGET_PROTECTED' });
     return;
   }
 
@@ -3862,74 +3690,35 @@ async function handleSpamDetection(message, detection) {
     botMember.permissions.has(PermissionFlagsBits.ModerateMembers) &&
     targetMember.moderatable;
   if (!canTimeout) {
-    const permissionError = Object.assign(
-      new Error("Bot lacks permission or role hierarchy for automatic timeout."),
-      { code: "AUTO_TIMEOUT_UNAVAILABLE" },
-    );
-    await finishModerationAudit(auditId, {
-      status: "failed",
-      affectedCount: 0,
-      error: permissionError,
-    });
-    await sendSpamDetectionAlert(message, {
-      auditId,
-      targetMember,
-      detectedCount: detection.count,
-      actionResult: "Bot権限またはロール階層不足のためタイムアウト失敗",
-      windowSeconds: spamWindowMs / 1_000,
-      signals: detection.signals ?? ["messages"],
-    }).catch((error) => console.error("Failed to send spam alert:", error));
+    timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'TARGET_UNAVAILABLE' });
     return;
   }
 
-  let actionResult;
-  try {
-    if (
-      targetMember.communicationDisabledUntilTimestamp &&
-      targetMember.communicationDisabledUntilTimestamp > Date.now()
-    ) {
-      actionResult = "すでにタイムアウト中";
-      await finishModerationAudit(auditId, {
-        status: "success",
-        affectedCount: 0,
-      });
-    } else {
-      // Fresh, uncached consent immediately before the Discord side effect.
-      if (!await mayAutomaticallyTimeout((text, values) => sql.query(text, values), message.guild.id,
-        { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" })) {
-        await finishModerationAudit(auditId, { status: "success", affectedCount: 0 });
-        return;
-      }
-      await targetMember.timeout(
-        SECURITY_V2_TIMEOUT_MS,
-        moderationAuditReason(reason, context, auditId),
-      );
-      actionResult = "24時間のタイムアウト";
-      await finishModerationAudit(auditId, {
-        status: "success",
-        affectedCount: 1,
-      });
-    }
-  } catch (error) {
-    console.error("Automatic spam timeout failed:", error);
-    actionResult = "Discord APIエラーのためタイムアウト失敗";
-    await finishModerationAudit(auditId, {
-      status: "failed",
-      affectedCount: 0,
-      error,
-    }).catch((auditError) =>
-      console.error("Failed to finish spam audit:", auditError),
-    );
+  if (targetMember.communicationDisabledUntilTimestamp > Date.now()) {
+    timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'ALREADY_TIMEOUT' });
+    return;
   }
-
-  await sendSpamDetectionAlert(message, {
-    auditId,
-    targetMember,
-    detectedCount: detection.count,
-    actionResult,
-    windowSeconds: spamWindowMs / 1_000,
-    signals: detection.signals ?? ["messages"],
-  }).catch((error) => console.error("Failed to send spam alert:", error));
+  // Fresh, uncached consent immediately before the existing Discord side effect.
+  if (!await mayAutomaticallyTimeout((text, values) => sql.query(text, values), guildId,
+    { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" })) {
+    timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'TIMEOUT_DENIED' });
+    return;
+  }
+  if (!timeoutIncidents.timeoutApi(guildId, auditId, SECURITY_V2_TIMEOUT_MS).inserted) return;
+  let timedOut;
+  try {
+    timedOut = await targetMember.timeout(
+      SECURITY_V2_TIMEOUT_MS,
+      moderationAuditReason(reason, context, auditId),
+    );
+  } catch (error) {
+    timeoutIncidents.timeoutResult(guildId, auditId, timeoutFailureStatus(error), error);
+    return;
+  }
+  // Audit persistence failure after a successful API call must not be recorded
+  // as a failed timeout or cause another punishment on restart.
+  timeoutIncidents.timeoutResult(guildId, auditId, 'success', null, timedOut?.communicationDisabledUntilTimestamp);
+  await sendSpamDetectionAlert(message, { auditId, targetMember });
 }
 
 async function replySpamComponentError(interaction, message) {
@@ -5530,6 +5319,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === "tosetlog") {
+    await handleTimeoutLogCommand(interaction);
+    return;
+  }
   if (interaction.commandName === "adsetroll") {
     await handleOperatorRoleCommand(interaction);
     return;
@@ -6396,7 +6189,7 @@ client.on("messageCreate", async (message) => {
     }
     if (spamDetection.detected) {
       void handleSpamDetection(message, spamDetection).catch((error) =>
-        console.error("Spam detection handling failed:", error),
+        console.error("Spam detection handling failed:", safeIncidentError(error)),
       );
     }
   };

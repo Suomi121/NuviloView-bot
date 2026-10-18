@@ -169,6 +169,23 @@
         { "kind": "column", "table": "guild_spam_policy", "name": "cross_channel_enabled" },
         { "kind": "column", "table": "guild_spam_policy_audit", "name": "changes" }
       ]
+    },
+    {
+      "id": "20261017-security-v2-consent",
+      "file": "20261017-security-v2-consent.sql",
+      "checksum": "43802d4b25daf50629c55e03da25678a6fc3a19d32f0833e63ac101e5fbc66db",
+      "description": "Separate v2 enrollment, explicit automatic timeout consent, audit and emergency stop. Stop old punishers before rollout.",
+      "risk": "high",
+      "reversible": false,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "security_v2_control" },
+        { "kind": "table", "name": "guild_security_v2_enrollment" },
+        { "kind": "table", "name": "guild_security_v2_auto" },
+        { "kind": "table", "name": "guild_security_v2_audit" },
+        { "kind": "index", "name": "guild_security_v2_audit_guild_created_idx" }
+      ]
     }
   ]
 }

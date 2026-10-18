@@ -40,6 +40,7 @@ export function GuildSpamPolicyPanel() {
   const [policy, setPolicy] = useState<GuildSpamPolicy | null>(null);
   const [savedPolicy, setSavedPolicy] = useState<GuildSpamPolicy | null>(null);
   const [isCustom, setIsCustom] = useState(false);
+  const [autoState, setAutoState] = useState<{ autoTimeout: boolean; emergencyStop: boolean; policyMissing: boolean; migrationState: string } | null>(null);
   const [loadingGuilds, setLoadingGuilds] = useState(true);
   const [loadingPolicy, setLoadingPolicy] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -80,12 +81,13 @@ export function GuildSpamPolicyPanel() {
     const controller = new AbortController();
     policyLoadAbortRef.current?.abort();
     policyLoadAbortRef.current = controller;
-    setPolicy(null); setSavedPolicy(null); setLoadingPolicy(true); setStatus("");
+    setPolicy(null); setSavedPolicy(null); setAutoState(null); setLoadingPolicy(true); setStatus("");
     fetch(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, { cache: "no-store", signal: controller.signal })
       .then((response) => response.ok ? response.json() : Promise.reject())
       .then((data) => {
         if (!request.isCurrent() || !data.policy) return;
         const next = clonePolicy(data.policy);
+        setAutoState(data.auto ?? null);
         setPolicy(next); setSavedPolicy(clonePolicy(next)); setIsCustom(Boolean(data.isCustom));
         setRoleIdsText(next.ignoredRoleIds.join(", ")); setChannelIdsText(next.ignoredChannelIds.join(", "));
       })
@@ -170,7 +172,11 @@ export function GuildSpamPolicyPanel() {
     {guildId && <>
       {loadingPolicy && <p className="mt-5 text-sm text-muted-foreground">{labels.loading}</p>}
       {policy && draft && <>
-        {!isCustom && <p className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">{en ? "No custom policy is saved. The Bot's existing environment-based behavior remains active (code defaults: 3 messages / 5 seconds and a 5-minute timeout; environment overrides may apply). Saving below switches this server to the selected non-automatic action." : "個別設定は未保存です。従来のBot環境設定を維持します（コード既定は5秒以内に3件・5分タイムアウト。環境変数で上書きされる場合があります）。下記を保存すると、このサーバーでは選択した自動処分なしの動作に切り替わります。"}</p>}
+        <p className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
+          Auto Timeout: {autoState ? (autoState.autoTimeout ? "ON" : "OFF") : "UNKNOWN / OFF"} · {autoState?.migrationState ?? "unavailable"}
+          {autoState?.emergencyStop && " · Emergency Stop"}{autoState?.policyMissing && " · Policy missing: execution denied"}<br />
+          {en ? "Default OFF. Use /spamprotection auto on or auto off explicitly. Detection settings below never enable automatic punishment. Bot emergency controls may also suppress execution." : "初期OFF。変更は /spamprotection auto on・auto off で明示してください。下記の検知設定の保存では自動処罰は有効になりません。Bot側の緊急停止によっても実行が抑止されます。"}
+        </p>
         <label className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/50 p-4"><span className="text-sm font-bold">{labels.enabled}</span><span className="flex items-center gap-2 text-sm"><span>{policy.enabled ? labels.on : labels.off}</span><input type="checkbox" role="switch" aria-label={labels.enabled} checked={policy.enabled} onChange={(event) => setField("enabled", event.target.checked)} /></span></label>
         <div className="mt-5 rounded-xl border border-border bg-background/40 p-4">
           <label htmlFor="spam-strength" className="flex items-center justify-between gap-3 text-sm font-bold"><span>{labels.strength}</span><span>{draft.strength ?? "—"} / 100</span></label>

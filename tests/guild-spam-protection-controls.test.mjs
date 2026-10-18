@@ -201,11 +201,11 @@ test('API updates are serialized per Guild and persist module/strength fields wi
   assert.match(route, /canAccessGuildSpamPolicy/);
 });
 
-test('Discord reset keeps an audit and restores the shared default without accepting target Guilds', () => {
-  assert.match(bot, /RESET_SPAM_POLICY_COMMAND_SQL/);
-  assert.match(bot, /new_preset.*DEFAULT/s);
+test('Discord reset is retired without deleting policy or audit', () => {
+  assert.doesNotMatch(bot, /RESET_SPAM_POLICY_COMMAND_SQL/);
+  assert.match(bot, /SPAM_RESET_RETIRED/);
   assert.match(bot, /guildSpamPolicyCache\.invalidate\(guildId\)/);
-  assert.match(bot, /setName\("reset"\)/);
+  assert.doesNotMatch(bot.slice(bot.indexOf("const spamProtectionCommand"), bot.indexOf("const dashboardCommand")), /setName\("reset"\)/);
   assert.match(migration, /ADD COLUMN "changes" jsonb NOT NULL DEFAULT '\{\}'::jsonb/);
   assert.doesNotMatch(migration, /DROP TABLE|TRUNCATE|DELETE FROM|UPDATE "guild_spam_policy"/);
 });

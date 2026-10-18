@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, LoaderCircle, RotateCcw, ShieldAlert } from "lucide-react";
+import { Check, LoaderCircle, ShieldAlert } from "lucide-react";
 import { useLocale } from "@/components/locale-provider";
 import {
   applySpamProtectionStrength,
@@ -148,36 +148,10 @@ export function GuildSpamPolicyPanel() {
     }
   };
 
-  const reset = async () => {
-    const targetGuildId = selectedGuildIdRef.current;
-    if (!targetGuildId) return;
-    const request = requestGuardRef.current.begin("mutation", targetGuildId);
-    const controller = new AbortController();
-    mutationAbortRef.current?.abort();
-    mutationAbortRef.current = controller;
-    setSaving(true); setStatus("");
-    try {
-      const response = await fetch(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, { method: "DELETE", signal: controller.signal });
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.policy) throw new Error();
-      if (!request.isCurrent() || selectedGuildIdRef.current !== targetGuildId) return;
-      const next = clonePolicy(data.policy);
-      setPolicy(next); setSavedPolicy(clonePolicy(next)); setIsCustom(false);
-      setRoleIdsText(""); setChannelIdsText("");
-      setStatus(en ? "Reset. This server uses the existing NuviloView default behavior." : "初期設定に戻しました。このサーバーでは従来のNuviloView既定動作を使用します。");
-    } catch {
-      if (request.isCurrent() && selectedGuildIdRef.current === targetGuildId && !controller.signal.aborted) {
-        setStatus(en ? "Could not reset the spam settings. Please try again." : "初期設定に戻せませんでした。時間をおいて再試行してください。");
-      }
-    } finally {
-      if (request.isCurrent() && selectedGuildIdRef.current === targetGuildId) setSaving(false);
-      if (mutationAbortRef.current === controller) mutationAbortRef.current = null;
-    }
-  };
 
   const labels = en
-    ? { relaxed: "Relaxed", normal: "Normal", strict: "Strict", custom: "Custom", messages: "Message Burst", duplicates: "Duplicate Spam", mentions: "Mention Spam", links: "Link Spam", crossChannel: "Cross-channel Spam", threshold: "Count", window: "Window", enabled: "Spam Protection", strength: "Spam Protection Strength", currentLevel: "Current level", action: "After detection", log: "Log only", alert: "Alert moderators", incident: "Create incident + alert", ignoreBots: "Ignore other bots", ignoreAdmins: "Ignore owners and moderators", roles: "Ignored role IDs", channels: "Ignored channel IDs", advanced: "Advanced Settings", choose: "Choose a server", loading: "Loading…", current: "Current", next: "Preview", reset: "Reset to default", save: "Save", on: "ON", off: "OFF", customSliderWarning: "Moving the slider replaces the custom thresholds with strength-based values.", noGuilds: "No manageable servers are available." }
-    : { relaxed: "ゆるめ", normal: "標準", strict: "厳しめ", custom: "カスタム", messages: "連続投稿", duplicates: "同一内容", mentions: "メンション", links: "リンク", crossChannel: "複数チャンネル", threshold: "件数", window: "時間", enabled: "Spam Protection", strength: "Spam Protection の強度", currentLevel: "現在のレベル", action: "検知後の動作", log: "記録のみ", alert: "管理者へ通知", incident: "インシデント記録＋通知", ignoreBots: "他のBotを除外", ignoreAdmins: "所有者・モデレーターを除外", roles: "除外するロールID", channels: "除外するチャンネルID", advanced: "詳細設定", choose: "サーバーを選択", loading: "読み込み中…", current: "現在", next: "プレビュー", reset: "従来の既定動作へ戻す", save: "保存", on: "ON", off: "OFF", customSliderWarning: "スライダーを動かすと、カスタムの閾値は強度に応じた値へ置き換わります。", noGuilds: "管理できるサーバーがありません。" };
+    ? { relaxed: "Relaxed", normal: "Normal", strict: "Strict", custom: "Custom", messages: "Message Burst", duplicates: "Duplicate Spam", mentions: "Mention Spam", links: "Link Spam", crossChannel: "Cross-channel Spam", threshold: "Count", window: "Window", enabled: "Spam Protection", strength: "Spam Protection Strength", currentLevel: "Current level", action: "After detection", log: "Log only", alert: "Alert moderators", incident: "Create incident + alert", ignoreBots: "Ignore other bots", ignoreAdmins: "Ignore owners and moderators", roles: "Ignored role IDs", channels: "Ignored channel IDs", advanced: "Advanced Settings", choose: "Choose a server", loading: "Loading…", current: "Current", next: "Preview", save: "Save", on: "ON", off: "OFF", customSliderWarning: "Moving the slider replaces the custom thresholds with strength-based values.", noGuilds: "No manageable servers are available." }
+    : { relaxed: "ゆるめ", normal: "標準", strict: "厳しめ", custom: "カスタム", messages: "連続投稿", duplicates: "同一内容", mentions: "メンション", links: "リンク", crossChannel: "複数チャンネル", threshold: "件数", window: "時間", enabled: "Spam Protection", strength: "Spam Protection の強度", currentLevel: "現在のレベル", action: "検知後の動作", log: "記録のみ", alert: "管理者へ通知", incident: "インシデント記録＋通知", ignoreBots: "他のBotを除外", ignoreAdmins: "所有者・モデレーターを除外", roles: "除外するロールID", channels: "除外するチャンネルID", advanced: "詳細設定", choose: "サーバーを選択", loading: "読み込み中…", current: "現在", next: "プレビュー", save: "保存", on: "ON", off: "OFF", customSliderWarning: "スライダーを動かすと、カスタムの閾値は強度に応じた値へ置き換わります。", noGuilds: "管理できるサーバーがありません。" };
 
   const describe = (value: GuildSpamPolicy | null) => value ? [
     `${en ? "Messages" : "連続投稿"} ${value.messageCountThreshold}/${value.messageWindowSeconds}s`,
@@ -216,7 +190,7 @@ export function GuildSpamPolicyPanel() {
           <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm font-semibold">{labels.roles}<textarea rows={2} value={roleIdsText} onChange={(event) => { setRoleIdsText(event.target.value); setField("ignoredRoleIds", event.target.value.split(/[\s,]+/).filter(Boolean)); }} placeholder="123456789012345678, …" className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs" /></label><label className="text-sm font-semibold">{labels.channels}<textarea rows={2} value={channelIdsText} onChange={(event) => { setChannelIdsText(event.target.value); setField("ignoredChannelIds", event.target.value.split(/[\s,]+/).filter(Boolean)); }} placeholder="123456789012345678, …" className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs" /></label></div>
         </details>
         <div className="mt-4 grid gap-3 rounded-xl border border-border bg-background/40 p-3 text-xs sm:grid-cols-2"><p><span className="font-bold">{labels.current}:</span> {isCustom ? describe(savedPolicy) : en ? "Legacy default · environment may override code defaults (3 messages / 5 sec)" : "従来の既定 · Bot環境変数で上書きされる場合があります（コード既定 3件 / 5秒）"}</p><p><span className="font-bold">{labels.next}:</span> {describe(draft)}</p></div>
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p role="status" className={`text-sm ${status.includes("ません") || status.includes("Unable") || status.includes("Could not") ? "text-destructive" : "text-emerald-500"}`}>{status}</p><button type="button" disabled={saving || loadingPolicy} onClick={() => void reset()} className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-semibold disabled:opacity-50"><RotateCcw className="h-4 w-4" />{labels.reset}</button></div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p role="status" className={`text-sm ${status.includes("ません") || status.includes("Unable") || status.includes("Could not") ? "text-destructive" : "text-emerald-500"}`}>{status}</p></div>
         {isDirty && <div className="mt-3 flex justify-end"><button type="button" disabled={saving || loadingPolicy} onClick={() => void save()} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-50">{saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{labels.save}</button></div>}
       </>}
     </>}

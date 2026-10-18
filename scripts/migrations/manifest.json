@@ -198,6 +198,18 @@
         { "kind": "table", "name": "guild_security_operator_audit" },
         { "kind": "index", "name": "guild_security_operator_audit_guild_created_idx" }
       ]
+    },
+    {
+      "id": "20261019-security-timeout-log",
+      "file": "20261019-security-timeout-log.sql",
+      "checksum": "b62540f22a5c08008a47170bca7744bae7baca02cea39c6cbdb85d2472863987",
+      "description": "Guild timeout log destination and atomic audit; off preserves detection-channel logging.",
+      "risk": "high", "reversible": false, "manualApprovalRequired": true, "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "guild_security_log" },
+        { "kind": "table", "name": "guild_security_log_audit" },
+        { "kind": "index", "name": "guild_security_log_audit_guild_created_idx" }
+      ]
     }
   ]
 }

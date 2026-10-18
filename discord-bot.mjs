@@ -1,4 +1,5 @@
 import { enrollSecurityV2, readSecurityV2, setSecurityV2Auto, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS } from "./lib/security-v2-consent.mjs";
+import { operatorRoleCommand, createOperatorRoleHandler } from "./lib/security-operators.mjs";
 import {
   ActionRowBuilder,
   ActivityType,
@@ -147,6 +148,7 @@ const cloudDatabase = createCloudDatabase({
   env: process.env,
 });
 const sql = cloudDatabase.sql;
+const handleOperatorRoleCommand = createOperatorRoleHandler({ query: (text, values) => sql.query(text, values) });
 const runtimeConfig = getRuntimeConfig(process.env);
 const runtimeIdentity = createRuntimeIdentity(process.env);
 const runtimeRepository = createRuntimeLeaseRepository((text, parameters) =>
@@ -972,6 +974,7 @@ const publicCommands = [
 // These are registered per guild so newly-added management tools can appear
 // immediately without duplicating the small global command set.
 const extendedCommands = [
+  operatorRoleCommand,
   spamProtectionCommand,
   permissionsCommand,
   sucCommand,
@@ -5527,6 +5530,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === "adsetroll") {
+    await handleOperatorRoleCommand(interaction);
+    return;
+  }
   if (interaction.commandName === "spamprotection") {
     await handleSpamProtectionCommand(interaction);
     return;

@@ -186,6 +186,18 @@
         { "kind": "table", "name": "guild_security_v2_audit" },
         { "kind": "index", "name": "guild_security_v2_audit_guild_created_idx" }
       ]
+    },
+    {
+      "id": "20261017-security-operator-roles",
+      "file": "20261017-security-operator-roles.sql",
+      "checksum": "65508ef1e495b582279b3e46e9fee448b635e25e80a5685562017ee285bad896",
+      "description": "Guild-scoped informational operator roles and atomic configuration audit; no moderation privileges.",
+      "risk": "high", "reversible": false, "manualApprovalRequired": true, "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "guild_security_operator" },
+        { "kind": "table", "name": "guild_security_operator_audit" },
+        { "kind": "index", "name": "guild_security_operator_audit_guild_created_idx" }
+      ]
     }
   ]
 }

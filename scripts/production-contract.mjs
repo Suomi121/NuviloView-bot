@@ -15,6 +15,9 @@ export const requirements = [
   ['Spam page', 'app/dashboard/security/spam/page.tsx', []],
   ['Spam API', 'app/api/guilds/[guildId]/security/spam-policy/route.ts', []],
   ['Security navigation', 'components/security-navigation-link.tsx', ['/dashboard/security/spam', 'bg-gradient-to-r']],
+  ['Shared navigation', 'components/dashboard-navigation.tsx', ['dashboardNavigation', 'SecurityNavigationLink']],
+  ['Mobile navigation', 'components/mobile-navigation.tsx', ['DashboardNavigation', 'showModal', 'aria-expanded']],
+  ['Navigation destinations', 'lib/dashboard-navigation.ts', ['/dashboard/security/spam', '/account']],
   ['Rate limit UX', 'lib/social-login-state.mjs', ['429', 'retry: 0']],
   ['Rate limit hook', 'lib/use-social-login.ts', []],
   ['Bot commands/onboarding', 'discord-bot.mjs', ['.setName("spamprotection")', 'createGuildOnboarding', 'guildCreate']],
@@ -33,7 +36,7 @@ export function checkSource(read) {
     if (!source.trim() || tokens.some(token => !source.includes(token))) failures.push(`${feature}: incomplete ${file}`)
   }
   const dashboard = read('app/dashboard/page.tsx')
-  if ((dashboard.match(/<SecurityNavigationLink\b/g) ?? []).length !== 2) failures.push('Security navigation: desktop and mobile required')
+  if (!dashboard.includes('<DashboardNavigation') || !dashboard.includes('<MobileNavigation') || !dashboard.includes('<SecurityNavigationLink')) failures.push('Security navigation: desktop, mobile and account menu required')
   const pkg = JSON.parse(read('package.json'))
   const parts = pkg.dependencies.next.split('.').map(Number)
   if (parts.length !== 3 || parts.some(Number.isNaN) || parts[0] < 16 || (parts[0] === 16 && (parts[1] < 3 || (parts[1] === 3 && parts[2] < 8)))) failures.push('Next.js security floor: 16.3.8')

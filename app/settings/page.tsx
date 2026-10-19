@@ -1,14 +1,13 @@
 "use client";
 
 import {
-  Check,
   ChevronLeft,
   Clock3,
   Globe2,
   LoaderCircle,
   Save,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocale, type Locale } from "@/components/locale-provider";
 import { useSession } from "@/lib/auth-client";
 import { AccountLogout } from "@/components/account-logout";
@@ -38,6 +37,7 @@ type Guild = { id: string; name: string };
 export default function SettingsPage() {
   const { locale, setLocale } = useLocale();
   const { data: session } = useSession();
+  const sessionUserId = session?.user?.id;
   const [timeZone, setTimeZone] = useState("Asia/Tokyo");
   const [language, setLanguage] = useState<Locale>("ja");
   const [savedTimeZone, setSavedTimeZone] = useState("Asia/Tokyo");
@@ -45,11 +45,14 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const saveInFlight = useRef(false);
+  const [saveError, setSaveError] = useState("");
+  const [loadError, setLoadError] = useState(false);
   const [guilds, setGuilds] = useState<Guild[]>([]);
 
   useEffect(() => {
     fetch("/api/settings/timezone")
-      .then((res) => res.json())
+      .then((res) => { if (!res.ok) throw new Error("preferences unavailable"); return res.json(); })
       .then((data) => {
         if (data.timeZone) {
           setTimeZone(data.timeZone);
@@ -60,11 +63,12 @@ export default function SettingsPage() {
           setSavedLanguage(data.language);
         }
       })
+      .catch(() => setLoadError(true))
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    if (!session?.user) return;
+    if (!sessionUserId) return;
     let active = true;
     let retryTimer: number | undefined;
     const loadGuilds = async (attempt = 0) => {
@@ -98,23 +102,34 @@ export default function SettingsPage() {
       active = false;
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-  }, [session?.user?.id]);
+  }, [sessionUserId]);
 
   const save = async () => {
+    if (saveInFlight.current || loading || loadError) return;
+    saveInFlight.current = true;
     setSaving(true);
     setSaved("");
-    const response = await fetch("/api/settings/timezone", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ timeZone, language }),
-    });
-    if (response.ok) {
-      setLocale(language);
-      setSavedTimeZone(timeZone);
-      setSavedLanguage(language);
-      setSaved(language === "en" ? "Saved" : "保存しました");
+    setSaveError("");
+    // Capture only the preferences submitted by this request. Inputs may change
+    // while it is pending; those later edits must remain unsaved.
+    const submitted = { timeZone, language };
+    try {
+      const response = await fetch("/api/settings/timezone", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(submitted),
+      });
+      if (!response.ok) throw new Error("preferences save failed");
+      setLocale(submitted.language);
+      setSavedTimeZone(submitted.timeZone);
+      setSavedLanguage(submitted.language);
+      setSaved(submitted.language === "en" ? "Display settings saved" : "表示設定を保存しました");
+    } catch {
+      setSaveError(locale === "en" ? "Could not save display settings. Your changes are kept. Please retry." : "表示設定を保存できませんでした。変更内容は保持しています。再試行してください。");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const en = locale === "en";
@@ -146,6 +161,7 @@ export default function SettingsPage() {
               : "時間帯と言語はあなたのアカウントだけに保存されます。他のメンバーの表示には影響しません。"}
           </p>
           <div className="mt-8 rounded-xl border border-border bg-background/40 p-4">
+            {loadError && <p role="alert" className="mb-3 text-sm text-destructive">{en ? "Could not load display settings. Reload before editing." : "表示設定を読み込めませんでした。再読み込みしてから編集してください。"}</p>}
             <div className="flex gap-3">
               <Globe2 className="mt-0.5 h-5 w-5 text-primary" />
               <div className="flex-1">
@@ -159,7 +175,7 @@ export default function SettingsPage() {
                 </p>
                 <select
                   id="language"
-                  disabled={loading}
+                  disabled={loading || loadError}
                   value={language}
                   onChange={(event) =>
                     setLanguage(event.target.value as Locale)
@@ -186,7 +202,7 @@ export default function SettingsPage() {
                 </p>
                 <select
                   id="timezone"
-                  disabled={loading}
+                  disabled={loading || loadError}
                   value={timeZone}
                   onChange={(event) => setTimeZone(event.target.value)}
                   className="mt-4 h-11 w-full rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-primary"
@@ -200,15 +216,15 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+          {(preferencesChanged || saved || saveError) && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-background/40 p-4" aria-busy={saving}>
+            <p role={saveError ? "alert" : "status"} className={`text-sm ${saveError ? "text-destructive" : "text-muted-foreground"}`}>{saveError || (preferencesChanged ? (en ? "You have unsaved display changes" : "表示設定に未保存の変更があります") : saved)}</p>
+            {preferencesChanged && <button type="button" disabled={loading || loadError || saving} onClick={() => void save()} className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-60">{saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}{saving ? (en ? "Saving…" : "保存中…") : (en ? "Save display settings" : "表示設定を保存")}</button>}
+          </div>}
           <MessageHistoryImportPanel guilds={guilds} locale={locale} />
           <ThemeCustomizer guilds={guilds} />
           {session?.user && <AccountLogout />}
         </div>
       </section>
-      {(preferencesChanged || saved) && <div className="fixed inset-x-4 bottom-5 z-40 mx-auto flex max-w-xl translate-y-0 items-center justify-between gap-4 rounded-2xl border border-border bg-card/95 px-4 py-3 shadow-2xl shadow-black/40 backdrop-blur-xl transition-all duration-300 sm:inset-x-auto sm:w-[min(36rem,calc(100%-2rem))]">
-        <p className="min-w-0 text-sm font-medium text-muted-foreground">{preferencesChanged ? (en ? "You have unsaved display changes" : "表示設定に未保存の変更があります") : <span className="inline-flex items-center gap-1 text-emerald-400"><Check className="h-4 w-4" />{saved}</span>}</p>
-        {preferencesChanged && <button disabled={loading || saving} onClick={save} className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-60">{saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}{en ? "Save" : "保存"}</button>}
-      </div>}
     </main>
   );
 }

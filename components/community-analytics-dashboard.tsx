@@ -83,15 +83,19 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
         `/api/analytics/community?${params}`,
         { cache: "no-store", signal: controller.signal },
       );
-      if (!response.ok) throw new Error("analytics request failed");
+      if (!response.ok) {
+        if (requestRef.current === controller && (response.status === 401 || response.status === 403)) setData(null);
+        throw new Error("analytics request failed");
+      }
       const next = await response.json() as AnalyticsData;
+      if (controller.signal.aborted || requestRef.current !== controller) return false;
       setData(next);
       if (!roleId && !channelId) {
         setOptions({ roles: next.roles, channels: next.channels });
       }
       return true;
     } catch (requestError) {
-      if ((requestError as { name?: string })?.name !== "AbortError") setError(true);
+      if (!controller.signal.aborted && requestRef.current === controller && (requestError as { name?: string })?.name !== "AbortError") setError(true);
       return false;
     } finally {
       if (requestRef.current === controller) {
@@ -140,15 +144,18 @@ export function CommunityAnalyticsDashboard({ view, guildId, days: initialDays, 
           />
         </div>
       </section>
+      {error && data && <p role="alert" className="text-sm text-destructive">{en ? "Refresh failed. Showing previously retrieved data." : "更新に失敗しました。前回取得したデータを表示しています。"}</p>}
       {loading && !data ? <LoadingState en={en} /> : error && !data ? <ErrorState en={en} /> : data ? <>
         <ProjectionReadNotice meta={data.readMeta} locale={locale} />
         <CoverageNotice data={data} en={en} />
+        {!data.readMeta?.available && !data.readMeta?.lastKnownGood ? <p role="status" className="text-sm text-muted-foreground">{en ? "No recorded data is available yet." : "表示できる記録データがまだありません。"}</p> : <>
         {view === "retention" && <RetentionView data={data} en={en} />}
         {view === "health" && <HealthView data={data} en={en} />}
         {view === "diagnostics" && <DiagnosticsView data={data} en={en} />}
         {view === "channels" && <ChannelsView data={data} en={en} onSelectChannel={setChannelId} />}
         {view === "roles" && <RolesView data={data} en={en} />}
         {view === "insights" && <InsightsView data={data} en={en} />}
+        </>}
       </> : null}
       {loading && data && <p className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="h-3.5 w-3.5 animate-spin" />{en ? "Refreshing…" : "更新中…"}</p>}
     </div>

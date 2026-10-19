@@ -24,9 +24,12 @@ for (const en of [false, true]) {
   })
 }
 
-test('both desktop and mobile-accessible menus place Security immediately after Settings', async () => {
+test('shared navigation and account menu retain the Security destination', async () => {
   const dashboard = await readFile(new URL('../app/dashboard/page.tsx', import.meta.url), 'utf8')
-  assert.match(dashboard, /href="\/settings"\s*\/>\s*<SecurityNavigationLink en=\{en\} \/>/)
+  const shared = await readFile(new URL('../components/dashboard-navigation.tsx', import.meta.url), 'utf8')
+  const mobile = await readFile(new URL('../components/mobile-navigation.tsx', import.meta.url), 'utf8')
+  assert.match(dashboard, /<DashboardNavigation/)
+  assert.match(mobile, /<DashboardNavigation/)
+  assert.match(shared, /<SecurityNavigationLink/)
   assert.match(dashboard, /<span>\{en \? "Settings" : "設定"\}<\/span>\s*<\/a>\s*<SecurityNavigationLink en=\{en\} \/>/)
-  assert.equal(dashboard.match(/<SecurityNavigationLink en=\{en\} \/>/g)?.length, 2)
 })

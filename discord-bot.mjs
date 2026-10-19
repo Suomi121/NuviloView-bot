@@ -508,6 +508,7 @@ async function handleSpamProtectionCommand(interaction) {
     ].map(([name, enabled]) => `${name}: ${enabled ? "ON" : "OFF"}`).join("\n");
     return `Spam Protection\n${policy.enabled ? "Enabled" : "Disabled"}\nStrength\n${policy.strength ?? "Custom"} / 100\nLevel\n${level}\n${modules}\nMode\n${policy.mode === "CUSTOM" ? "Custom" : "Strength"}${source === "default" ? "\nDefault detection; Auto Timeout requires explicit consent" : ""}\n\nDetection changes apply within 30 seconds.`;
   };
+  let statusAcknowledgementAttempted = false;
   try {
     if (interaction.options.getSubcommandGroup?.(false) === "auto") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -524,12 +525,17 @@ async function handleSpamProtectionCommand(interaction) {
       await interaction.reply({ content: "Resetは廃止されたよ。設定は削除していません。検知設定は /spamprotection level などで変更してね。 [SPAM_RESET_RETIRED]", flags: MessageFlags.Ephemeral });
       return;
     }
+    // Acknowledge status before either database read can exceed Discord's deadline.
+    if (operation === "status" && !interaction.deferred && !interaction.replied) {
+      statusAcknowledgementAttempted = true;
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
     guildSpamPolicyCache.invalidate(guildId);
     const context = await guildSpamPolicyCache.get(guildId);
     const base = context.policy ?? DEFAULT_GUILD_SPAM_POLICY;
     if (operation === "status") {
       const state = await readSecurityV2((text, values) => sql.query(text, values), guildId);
-      await interaction.reply({ content: `${replyStatus(base, context.source)}\nAuto Timeout: ${state.autoTimeout ? "ON" : "OFF"}\nMigration: ${state.migrationState}\n変更: /spamprotection auto on / auto off`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: `${replyStatus(base, context.source)}\nAuto Timeout: ${state.autoTimeout ? "ON" : "OFF"}\nMigration: ${state.migrationState}\n変更: /spamprotection auto on / auto off` });
       return;
     }
     if (context.source === "fallback") {
@@ -566,9 +572,11 @@ async function handleSpamProtectionCommand(interaction) {
   } catch (error) {
     const code = String(error?.code ?? error?.name ?? "SPAM_POLICY_COMMAND_ERROR").slice(0, 40);
     console.warn(`[spam-policy-command] setting update failed (${code}).`);
+    // Expired/already acknowledged interactions cannot accept another initial reply.
+    if (code === "10062" || code === "40060") return;
     const errorReply = { content: "設定を保存できませんでした。少し待ってからもう一度お試しください。", flags: MessageFlags.Ephemeral };
-    if (interaction.deferred) await interaction.editReply({ content: errorReply.content }).catch(() => {});
-    else await interaction.reply(errorReply).catch(() => {});
+    if (interaction.deferred || interaction.replied) await interaction.editReply({ content: errorReply.content }).catch(() => {});
+    else if (!statusAcknowledgementAttempted) await interaction.reply(errorReply).catch(() => {});
   }
 }
 

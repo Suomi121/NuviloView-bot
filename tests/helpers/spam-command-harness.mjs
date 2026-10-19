@@ -21,10 +21,20 @@ export function loadSpamCommand({ query = async () => { throw new Error('Unexpec
 
 export function interaction(operation = 'status', { guild = '100000000000000001', permission = 'manage', value = 75, inGuild = true } = {}) {
   const replies = [];
-  return { replies, guildId: guild, user: { id: '100000000000000003' }, inGuild: () => inGuild,
+  const acknowledgements = [], responseMethods = [];
+  return { replies, acknowledgements, responseMethods, guildId: guild, user: { id: '100000000000000003' }, inGuild: () => inGuild,
     memberPermissions: { has: p => p === permission },
     options: { getSubcommand: () => operation, getInteger: () => value, getBoolean: () => value },
-    async deferReply() { this.deferred = true; },
-    editReply: async reply => { replies.push(reply); },
-    reply: async reply => { replies.push(reply); } };
+    async deferReply(payload) {
+      if (this.deferred || this.replied) throw Object.assign(new Error('Already acknowledged'), { code: 40060 });
+      acknowledgements.push(payload); responseMethods.push('defer'); this.deferred = true;
+    },
+    async editReply(payload) {
+      if (!this.deferred && !this.replied) throw new Error('INTERACTION_NOT_REPLIED');
+      responseMethods.push('edit'); this.replied = true; replies.push(payload);
+    },
+    async reply(payload) {
+      if (this.deferred || this.replied) throw Object.assign(new Error('Already acknowledged'), { code: 40060 });
+      responseMethods.push('reply'); this.replied = true; replies.push(payload);
+    } };
 }

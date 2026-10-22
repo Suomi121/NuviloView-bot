@@ -123,6 +123,7 @@ concurrent revisions and audit rollback. No Production resource is used.
 Live Discord rendering, real sends, real Timeout, registration and rollout
 remain unverified and require a separately approved release.
 
-For PR-C, reuse `authorizeSecurityOperator` from PR #35 for every operation,
-the Guild-scoped incident snapshot and its allow-listed evidence. This PR
-implements no report button, TXT delivery, developer receiver or `/reportbug`.
+PR-B originally shipped without report buttons. The subsequent Phase C extension
+reuses `authorizeSecurityOperator`, Guild-scoped snapshots and allow-listed
+evidence; see [evidence / reports](security-evidence-reports.md). `/reportbug`
+remains absent. Phase C does not add a Timeout execution path.

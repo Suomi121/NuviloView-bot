@@ -3,6 +3,7 @@ import { operatorRoleCommand, createOperatorRoleHandler } from "./lib/security-o
 import { timeoutLogCommand, createTimeoutLogCommandHandler } from "./lib/security-log-settings.mjs";
 import { createTimeoutIncidentService, timeoutFailureStatus, safeIncidentError } from "./lib/timeout-incidents.mjs";
 import { sendTimeoutIncidentLog } from "./lib/timeout-discord-log.mjs";
+import { createSecurityEvidenceHandler, reportReceiverConfig } from "./lib/security-evidence-interactions.mjs";
 import {
   ActionRowBuilder,
   ActivityType,
@@ -293,6 +294,10 @@ const dashboardUrl = "https://nuviloview-oem.vercel.app/";
 const onboardGuild = createGuildOnboarding({ dashboardUrl });
 const applicationId = process.env.NUVILOVIEW_CLIENT_ID;
 const developerGuildId = process.env.DISCORD_DEV_GUILD_ID;
+const handleSecurityEvidence = createSecurityEvidenceHandler({
+  incidents: timeoutIncidents, audit: securityAuditService, query: (text, values) => sql.query(text, values), client,
+  receiver: reportReceiverConfig(process.env),
+});
 const developerOwnerUserId = process.env.DISCORD_OWNER_USER_ID?.trim() || null;
 const auditSigningKey = process.env.AUDIT_LOG_SIGNING_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim() || null;
 const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL?.trim() || null;
@@ -5142,6 +5147,10 @@ client.on("guildDelete", (guild) => {
 });
 
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isButton() && interaction.customId.startsWith("nvsec:")) {
+    await handleSecurityEvidence(interaction);
+    return;
+  }
   if (interaction.isAutocomplete()) {
     if (interaction.commandName === "translate") {
       await interaction

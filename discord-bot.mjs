@@ -131,6 +131,7 @@ import {
   createMessageHistoryImportWorker,
 } from "./lib/message-history-import-worker.mjs";
 import { createStorage } from "./lib/storage/index.mjs";
+import { createSpamPolicyAuthority } from "./lib/spam-policy-authority.mjs";
 import { createSnapshotService } from "./lib/sync/snapshots.mjs";
 import { createMessageDomainRouter } from "./lib/message-local-first.mjs";
 import { createEventDomainRouter } from "./lib/event-local-first.mjs";
@@ -165,6 +166,8 @@ const messageRetentionDays = Number.isInteger(
   : 90;
 const messageImportConfig = getMessageImportConfig(process.env);
 const messageStorage = createStorage({ env: process.env });
+const spamPolicyAuthority = createSpamPolicyAuthority({ storage: messageStorage,
+  enabled: process.env.SPAM_POLICY_AUTHORITY === 'sqlite', writerId: process.env.SPAM_POLICY_WRITER_ID });
 const localFirstAllGuildsEnabled = ["1", "true", "yes", "on"].includes(
   String(process.env.LOCAL_FIRST_ALL_GUILDS_ENABLED ?? "").trim().toLowerCase(),
 );
@@ -395,6 +398,7 @@ let spamPolicyTableExists = false;
 const guildSpamPolicyCache = createGuildSpamPolicyCache({
   ttlMs: 30_000,
   loadPolicy: async (guildId) => {
+    if (spamPolicyAuthority.enabled) return spamPolicyAuthority.read(guildId).policy;
     if (Date.now() - spamPolicyTableCheckedAt >= 30_000) {
       const tableResult = await sql.query(
         `SELECT to_regclass('public.guild_spam_policy') AS table_name`,
@@ -511,7 +515,12 @@ async function handleSpamProtectionCommand(interaction) {
   let statusAcknowledgementAttempted = false;
   try {
     if (interaction.options.getSubcommandGroup?.(false) === "auto") {
+      statusAcknowledgementAttempted = true;
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (spamPolicyAuthority.enabled) {
+        await interaction.editReply({ content: 'Auto Timeout: OFF\nSQLite権威モードでは自動処罰を停止しています。同意は複製から復元・有効化しません。' });
+        return;
+      }
       const query = (text, values) => sql.query(text, values);
       if (operation !== "status") {
         await enrollSecurityV2(query, guildId);
@@ -525,10 +534,32 @@ async function handleSpamProtectionCommand(interaction) {
       await interaction.reply({ content: "Resetは廃止されたよ。設定は削除していません。検知設定は /spamprotection level などで変更してね。 [SPAM_RESET_RETIRED]", flags: MessageFlags.Ephemeral });
       return;
     }
-    // Acknowledge status before either database read can exceed Discord's deadline.
-    if (operation === "status" && !interaction.deferred && !interaction.replied) {
+    // ACK every active operation before storage or fresh member permission reads.
+    if (!interaction.deferred && !interaction.replied) {
       statusAcknowledgementAttempted = true;
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+    if (spamPolicyAuthority.enabled) {
+      const state = spamPolicyAuthority.read(guildId);
+      if (operation === 'status') {
+        await interaction.editReply({ content: `${replyStatus(state.policy)}\nAuthority: SQLite\nRevision: ${state.revision}\nAuto Timeout: OFF` });
+        return;
+      }
+      // Re-fetch permissions; a cached role or a replica is never authorization.
+      await interaction.guild.roles.fetch();
+      const member = await interaction.guild.members.fetch({ user: interaction.user.id, force: true });
+      if (!member.permissions.has(PermissionFlagsBits.Administrator) && !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        await interaction.editReply({ content: 'このコマンドを変更できるのはサーバー管理者のみです。' });
+        return;
+      }
+      const value = operation === 'level' ? interaction.options.getInteger('strength', true)
+        : ['messages', 'duplicate', 'mentions', 'links', 'cross-channel'].includes(operation)
+          ? interaction.options.getBoolean('enabled', true) : undefined;
+      const saved = spamPolicyAuthority.update({ guildId, actorId: interaction.user.id, operation, value,
+        requestId: interaction.id, expectedRevision: state.revision });
+      guildSpamPolicyCache.invalidate(guildId);
+      await interaction.editReply({ content: `${replyStatus(saved.policy)}\nAuthority: SQLite\nRevision: ${saved.revision}\nクラウド複製は非同期です。Auto Timeout: OFF` });
+      return;
     }
     guildSpamPolicyCache.invalidate(guildId);
     const context = await guildSpamPolicyCache.get(guildId);
@@ -539,7 +570,7 @@ async function handleSpamProtectionCommand(interaction) {
       return;
     }
     if (context.source === "fallback") {
-      await interaction.reply({ content: "現在設定を保存できません。少し待ってからもう一度お試しください。", flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: "現在設定を保存できません。少し待ってからもう一度お試しください。" });
       return;
     }
     const value = operation === "level"
@@ -549,12 +580,12 @@ async function handleSpamProtectionCommand(interaction) {
         : undefined;
     const next = normalizeSpamCommandPolicy(applySpamProtectionCommand(base, operation, value));
     if (!next) {
-      await interaction.reply({ content: "指定された設定値を確認してください。", flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: "指定された設定値を確認してください。" });
       return;
     }
     const changed = getChangedSpamPolicyFields(base, next);
     if (!changed.length) {
-      await interaction.reply({ content: replyStatus(base, context.source), flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: replyStatus(base, context.source) });
       return;
     }
     const fieldsToPersist = operation === "level"
@@ -568,7 +599,7 @@ async function handleSpamProtectionCommand(interaction) {
     const saved = parseGuildSpamPolicyRow(rows?.[0]?.policy ?? null);
     if (!saved) throw new Error("SPAM_POLICY_SAVE_INVALID_RESULT");
     guildSpamPolicyCache.invalidate(guildId);
-    await interaction.reply({ content: replyStatus(saved), flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: replyStatus(saved) });
   } catch (error) {
     const code = String(error?.code ?? error?.name ?? "SPAM_POLICY_COMMAND_ERROR").slice(0, 40);
     console.warn(`[spam-policy-command] setting update failed (${code}).`);
@@ -3670,7 +3701,7 @@ async function handleSpamDetection(message, detection) {
     member: botMember,
   };
   const policyContext = detection.policyContext;
-  const automaticAllowed = policyContext?.source !== "fallback" && await mayAutomaticallyTimeout(
+  const automaticAllowed = !spamPolicyAuthority.enabled && policyContext?.source !== "fallback" && await mayAutomaticallyTimeout(
     (text, values) => sql.query(text, values), message.guild.id,
     { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" },
   );
@@ -3707,7 +3738,7 @@ async function handleSpamDetection(message, detection) {
     return;
   }
   // Fresh, uncached consent immediately before the existing Discord side effect.
-  if (!await mayAutomaticallyTimeout((text, values) => sql.query(text, values), guildId,
+  if (spamPolicyAuthority.enabled || !await mayAutomaticallyTimeout((text, values) => sql.query(text, values), guildId,
     { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" })) {
     timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'TIMEOUT_DENIED' });
     return;

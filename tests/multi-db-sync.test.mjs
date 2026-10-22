@@ -23,6 +23,39 @@ import {
   replicaSchemaIndexes,
 } from "../lib/sync/providers/shared.mjs";
 import { classifySyncError } from "../lib/sync/retry.mjs";
+import { createSpamPolicyAuthority } from '../lib/spam-policy-authority.mjs';
+import { DEFAULT_GUILD_SPAM_POLICY } from '../lib/guild-spam-policy.mjs';
+
+test('SQLite policy commits replicate through the existing Worker while Neon is down, then replay on recovery', async t => {
+  let clock = 10000;
+  const env = { ...baseEnv, SYNC_NEON_ENABLED: 'true', DATABASE_URL: 'offline' };
+  const storage = createStorage(env, { now: () => clock });
+  t.after(() => storage.close());
+  const authority = createSpamPolicyAuthority({ storage, writerId: 'fixture', enabled: true, now: () => clock });
+  const guildId = '100000000000000001';
+  authority.importFencedSnapshot({ guildId, writerId: 'fixture', epoch: 'fixture', fenced: true, autoTimeout: false, policy: DEFAULT_GUILD_SPAM_POLICY });
+  authority.update({ guildId, actorId: '100000000000000002', requestId: '100000000000000003', operation: 'level', value: 81, expectedRevision: 1 });
+  const supabase = fakeProvider('supabase', { required: true });
+  const neon = fakeProvider('neon', { required: false, failures: 1 });
+  const tursoClient = createLibsqlTestClient();
+  const turso = createTursoProviderAdapter({ enabled: true, client: tursoClient });
+  t.after(() => tursoClient.close());
+  const worker = new MultiProviderSyncWorker({ storage, registry: registry([supabase, turso, neon]),
+    config: getMultiDbSyncConfig(env), now: () => clock, random: () => 0.5, snapshotWriter: async () => {} });
+  await worker.processOnce();
+  const eventId = `spam-policy-command:${guildId}:100000000000000003`;
+  assert.equal(storage.providerDeliveries.get(eventId, 'neon').status, 'retry');
+  assert.equal(storage.providerDeliveries.get(eventId, 'turso').status, 'synced');
+  assert.equal(storage.providerDeliveries.get(eventId, 'supabase').status, 'synced');
+  assert.equal(storage.outbox.purgeSynced({ olderThan: 999999999 }), 0,
+    'authority history must survive retention while optional Neon is offline');
+  assert.equal(authority.read(guildId).policy.strength, 81);
+  clock += 100000;
+  await worker.processOnce();
+  assert.equal(storage.providerDeliveries.get(eventId, 'neon').status, 'synced');
+  assert.equal(neon.state.events.get(eventId), supabase.state.events.get(eventId));
+  assert.equal(authority.read(guildId).revision, 2, 'replication never writes back into authority');
+});
 
 const baseEnv = Object.freeze({
   MULTI_DB_SYNC_ENABLED: "true",

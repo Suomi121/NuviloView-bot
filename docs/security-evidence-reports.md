@@ -78,12 +78,18 @@ No real IDs or credentials are configured here.
 
 An explicitly approved developer-private GuildText channel must deny
 ViewChannel to @everyone. All explicit ViewChannel grants must be configured
-developer roles, Administrator roles, Bot or Guild owner; unapproved member
-grants, managed roles, public access, wrong Guild and missing permissions deny
-delivery. Overwrites are bounded at 50. Bot requires ViewChannel, SendMessages,
+developer roles, this Bot's own managed role/member or Guild owner. Unapproved
+Administrator roles are rejected even without channel overwrites, since they
+bypass channel denies. Other managed roles, unapproved member grants, public
+access, wrong Guild and missing permissions deny delivery.
+Overwrites are bounded at 50. Bot requires ViewChannel, SendMessages,
 AttachFiles. Global Discord Administrator/owner access is inherent to Discord;
 the receiver Guild's staff and configured roles must be reviewed before release.
-No permissions are automatically granted or channel created.
+No permissions are automatically granted or channel created. Guild metadata is
+force-fetched, and each authorization uses the returned REST role collection,
+not potentially stale manager-cache entries. Guild Owner access is inherent;
+the human operator must confirm the Owner and all approved role holders are
+developers. The code does not infer a person's developer identity from a name.
 
 ## Durability and failure boundaries
 
@@ -168,6 +174,30 @@ clicks remain unverified. No real Timeout is used for testing. Before separately
 approved rollout: review receiver/retention, re-run CI, preserve v2 consent and
 emergency guards, stage Bot-only cutover, do not reapply existing migrations.
 Do not merge, deploy, restart or register commands as part of Phase C development.
+
+## 2026-10-22 final re-audit
+
+The old implementation accepted unlisted Administrator roles and ignored the
+fresh role collection returned by Discord. Both gaps are fixed and covered by
+revocation/stale-cache/implicit-admin tests. Evidence now also shows a Discord
+Timestamp and states that recorded outcomes are historical, not current remaining
+Timeout time. TXT identifies isolated synthetic data separately from recorded
+events; input to the Production Incident builder still cannot set a smoke flag.
+
+A development-only Gateway runner now supports actual rendering, both button
+actions, ephemeral UTF-8 TXT, private report delivery and restart/deduplication
+checks without calling Discord moderation APIs. It uses only a separate marked
+SQLite and no real Postgres/Worker. There is no new Production command or test
+mode in `discord-bot.mjs`. See the complete Japanese
+[manual verification runbook](security-evidence-smoke.md).
+
+The user will perform real Discord checks later. No test Bot/Guild/credential is
+currently provided, so **live Discord verification is NOT RUN**, not PASS.
+The runner and its complete startup/send/edit/shutdown path are Mock-verified.
+Local full suite: **745 PASS / 10 SKIP / 0 FAIL**; isolated PostgreSQL + actual
+command runtime: **24 PASS**; security/receiver/smoke focused suite: **107 PASS**.
+Build, TypeScript, 213-module syntax, migration checksums, token scan and diff
+check PASS; lint 0 errors / 8 existing warnings. No Production changes.
 
 Official constraints checked against Discord's docs:
 [Interaction ACK](https://github.com/discord/discord-api-docs/blob/main/developers/interactions/receiving-and-responding.mdx),

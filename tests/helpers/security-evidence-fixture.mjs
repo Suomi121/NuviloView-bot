@@ -30,7 +30,7 @@ export function evidenceFixture({ kind = 'owner', databasePath, auditWrapper, ex
       { id: receiver.guildId, type: 0, deny: { has: p => p === PermissionFlagsBits.ViewChannel }, allow: { has: () => false } }]]) },
     send: async payload => { sends.push(payload); return { id: '500000000000000009', channelId: receiver.channelId, guildId: receiver.guildId }; } };
   const receiverGuild = { id: receiver.guildId, ownerId: '300000000000000009',
-    roles: { cache: new Map(), fetch: async () => {} },
+    roles: { cache: new Map(), fetch: async () => receiverGuild.roles.cache },
     members: { fetchMe: async () => ({ id: botId }) }, channels: { fetch: async () => privateChannel } };
   const client = { user: { id: botId }, guilds: { fetch: async () => receiverGuild } };
   const defaultQuery = async () => { calls.push('query'); return { rows: [{ role_ids: [roleId] }] }; };

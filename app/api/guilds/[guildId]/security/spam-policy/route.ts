@@ -46,8 +46,15 @@ async function authorizeGuild(request: Request, guildId: string, scope: string) 
 
 function safeFailure(operation: string, error: unknown) {
   const code = String((error as { code?: unknown; name?: unknown })?.code ?? (error as { name?: unknown })?.name ?? 'DATABASE_ERROR').slice(0, 40)
+  if (code === '55000') return localAuthorityResponse()
   console.error(`Guild spam policy ${operation} failed: code=${code}`)
   return NextResponse.json({ error: 'スパム設定を処理できませんでした。' }, { status: 503 })
+}
+
+function localAuthorityResponse() {
+  return NextResponse.json({ code: 'SPAM_POLICY_SQLITE_AUTHORITY', authority: 'sqlite',
+    error: 'この設定はDiscordの /spamprotection から変更してください。Webでの変更は停止しています。' },
+  { status: 409, headers: { 'Cache-Control': 'private, no-store' } })
 }
 
 function publicPolicy(policy: Readonly<GuildSpamPolicy>) {
@@ -59,6 +66,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ guil
   const access = await authorizeGuild(request, guildId, 'guild-spam-policy-read')
   if ('response' in access) return access.response
   try {
+    const authorityTable = await pool.query("SELECT to_regclass('public.guild_spam_policy_authority') AS name")
+    if (authorityTable.rows[0]?.name) {
+      const authority = await pool.query('SELECT 1 FROM guild_spam_policy_authority WHERE guild_id=$1', [guildId])
+      if (authority.rowCount) return localAuthorityResponse()
+    }
     const result = await pool.query('SELECT * FROM "guild_spam_policy" WHERE "guild_id" = $1 LIMIT 1', [guildId])
     const policy = parseGuildSpamPolicyRow(result.rows[0] ?? null)
     if (result.rows[0] && !policy) return NextResponse.json({ error: '保存済み設定を検証できません。' }, { status: 503 })

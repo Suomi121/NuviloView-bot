@@ -32,6 +32,8 @@ test("legacy bootstrap cannot run without an explicit execute flag", () => {
 test("managed migrations contain no table-destructive DROP or TRUNCATE", async () => {
   for (const migration of manifest.migrations) {
     const sql = await readFile(new URL(`../scripts/migrations/${migration.file}`, import.meta.url), "utf8");
-    assert.doesNotMatch(sql, /\b(?:DROP\s+(?:TABLE|SCHEMA)|TRUNCATE)\b/i, migration.id);
+    // A BEFORE TRUNCATE trigger prevents destruction; it does not execute it.
+    const executable = sql.replace(/\bBEFORE\s+TRUNCATE\s+ON\b/gi, 'BEFORE guarded_event ON');
+    assert.doesNotMatch(executable, /\b(?:DROP\s+(?:TABLE|SCHEMA)|TRUNCATE)\b/i, migration.id);
   }
 });

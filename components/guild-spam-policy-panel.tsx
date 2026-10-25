@@ -40,6 +40,7 @@ export function GuildSpamPolicyPanel() {
   const [policy, setPolicy] = useState<GuildSpamPolicy | null>(null);
   const [savedPolicy, setSavedPolicy] = useState<GuildSpamPolicy | null>(null);
   const [isCustom, setIsCustom] = useState(false);
+  const [concurrency, setConcurrency] = useState<{ revision: number; checksum: string; epoch: string } | null>(null);
   const [autoState, setAutoState] = useState<{ autoTimeout: boolean; emergencyStop: boolean; policyMissing: boolean; migrationState: string } | null>(null);
   const [loadingGuilds, setLoadingGuilds] = useState(true);
   const [loadingPolicy, setLoadingPolicy] = useState(false);
@@ -81,13 +82,14 @@ export function GuildSpamPolicyPanel() {
     const controller = new AbortController();
     policyLoadAbortRef.current?.abort();
     policyLoadAbortRef.current = controller;
-    setPolicy(null); setSavedPolicy(null); setAutoState(null); setLoadingPolicy(true); setStatus("");
+    setPolicy(null); setSavedPolicy(null); setAutoState(null); setConcurrency(null); setLoadingPolicy(true); setStatus("");
     fetch(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, { cache: "no-store", signal: controller.signal })
       .then((response) => response.ok ? response.json() : Promise.reject())
       .then((data) => {
         if (!request.isCurrent() || !data.policy) return;
         const next = clonePolicy(data.policy);
         setAutoState(data.auto ?? null);
+        setConcurrency(data.concurrency ?? null);
         setPolicy(next); setSavedPolicy(clonePolicy(next)); setIsCustom(Boolean(data.isCustom));
         setRoleIdsText(next.ignoredRoleIds.join(", ")); setChannelIdsText(next.ignoredChannelIds.join(", "));
       })
@@ -116,6 +118,7 @@ export function GuildSpamPolicyPanel() {
     mutationAbortRef.current?.abort();
     mutationAbortRef.current = null;
     setGuildId(nextGuildId);
+    setConcurrency(null);
     setPolicy(null); setSavedPolicy(null); setIsCustom(false); setLoadingPolicy(Boolean(nextGuildId));
     setSaving(false); setStatus(""); setRoleIdsText(""); setChannelIdsText("");
   };
@@ -131,18 +134,22 @@ export function GuildSpamPolicyPanel() {
     setSaving(true); setStatus("");
     try {
       const response = await fetch(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy: submittedPolicy }), signal: controller.signal,
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy: submittedPolicy, concurrency, requestId: crypto.randomUUID() }), signal: controller.signal,
       });
       const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.policy) throw new Error();
+      if (!response.ok || !data?.policy) throw new Error(response.status === 409 ? 'REVISION_CONFLICT' : 'SAVE_FAILED');
       if (!request.isCurrent() || selectedGuildIdRef.current !== targetGuildId) return;
       const next = clonePolicy(data.policy);
+      setConcurrency(data.concurrency ?? null);
+      setAutoState(data.auto ?? autoState);
       setPolicy(next); setSavedPolicy(clonePolicy(next)); setIsCustom(true);
       setRoleIdsText(next.ignoredRoleIds.join(", ")); setChannelIdsText(next.ignoredChannelIds.join(", "));
       setStatus(en ? "Saved. The Bot refreshes this policy within 30 seconds." : "保存しました。Botには最大30秒以内に反映されます。");
-    } catch {
+    } catch (error) {
       if (request.isCurrent() && selectedGuildIdRef.current === targetGuildId && !controller.signal.aborted) {
-        setStatus(en ? "Could not save the spam settings. Please try again." : "スパム設定を保存できませんでした。時間をおいて再試行してください。");
+        setStatus(error instanceof Error && error.message === 'REVISION_CONFLICT'
+          ? (en ? 'Settings changed elsewhere. Reload before saving.' : 'ほかの操作で設定が更新されました。再読込してから保存してください。')
+          : (en ? 'Database agreement is unavailable. Reload to verify the outcome.' : 'DBの合意を確認できません。再読込して保存結果を確認してください。'));
       }
     } finally {
       if (request.isCurrent() && selectedGuildIdRef.current === targetGuildId) setSaving(false);

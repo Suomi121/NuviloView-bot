@@ -226,6 +226,17 @@
           "kind": "table"
         }
       ]
+    },
+    {
+      "id": "20261025-security-quorum", "file": "20261025-security-quorum.sql",
+      "checksum": "41c5ad050cff435a7814c0a323290d91ed4bf9f6878fd859b40e94dcec4a96e7",
+      "description": "Fixed-membership consensus acceptors and legacy security writer fences; no data transfer or consent change.",
+      "risk": "high", "reversible": false, "manualApprovalRequired": true, "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "mdb_membership" },
+        { "kind": "table", "name": "mdb_acceptor" },
+        { "kind": "table", "name": "guild_security_quorum_fence" }
+      ]
     }
   ]
 }

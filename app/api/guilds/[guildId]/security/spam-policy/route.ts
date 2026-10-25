@@ -3,6 +3,7 @@ import { enrollSecurityV2, readSecurityV2, setSecurityV2Auto } from '@/lib/secur
 import { auth } from '@/lib/auth'
 import { authStorage } from '@/lib/auth-storage'
 import { pool } from '@/lib/db'
+import { getSecurityCoordinator } from '@/lib/multi-db/web-runtime'
 import { getManagedGuilds } from '@/lib/discord'
 import { hasJsonBody, isTrustedMutation } from '@/lib/request-security'
 import {
@@ -46,6 +47,9 @@ async function authorizeGuild(request: Request, guildId: string, scope: string) 
 
 function safeFailure(operation: string, error: unknown) {
   const code = String((error as { code?: unknown; name?: unknown })?.code ?? (error as { name?: unknown })?.name ?? 'DATABASE_ERROR').slice(0, 40)
+  if (code === '55000' && (error as { message?: string })?.message?.includes('SECURITY_QUORUM_AUTHORITY')) return quorumRequiredResponse()
+  if (code === 'MDB_REVISION_CONFLICT' || code === 'MDB_IDEMPOTENCY_CONFLICT') return NextResponse.json({ code, error: 'ほかの操作で設定が更新されました。再読込してください。' }, { status: 409 })
+  if (code.startsWith('MDB_')) return NextResponse.json({ code: 'MDB_UNAVAILABLE', readOnly: true, error: 'DBの合意を確認できません。保存結果は再読込で確認してください。' }, { status: 503 })
   if (code === '55000') return localAuthorityResponse()
   console.error(`Guild spam policy ${operation} failed: code=${code}`)
   return NextResponse.json({ error: 'スパム設定を処理できませんでした。' }, { status: 503 })
@@ -57,8 +61,22 @@ function localAuthorityResponse() {
   { status: 409, headers: { 'Cache-Control': 'private, no-store' } })
 }
 
+function quorumRequiredResponse() {
+  return NextResponse.json({ code: 'MDB_COORDINATOR_REQUIRED', readOnly: true,
+    error: 'このGuildは共通DB調整方式へ移管済みです。WebとBotのリリース設定を確認してください。' },
+  { status: 409, headers: { 'Cache-Control': 'private, no-store' } })
+}
+
 function publicPolicy(policy: Readonly<GuildSpamPolicy>) {
   return { ...policy, updatedBy: null }
+}
+
+function coordinatedResponse(state: { value: { revision: number; epoch: string; data: { policy: GuildSpamPolicy; autoTimeout: boolean; emergencyStop: boolean; migrationState: string } }; checksum: string }) {
+  const data = state.value.data
+  return NextResponse.json({ policy: publicPolicy(data.policy), isCustom: true,
+    concurrency: { revision: state.value.revision, checksum: state.checksum, epoch: state.value.epoch }, authority: 'cloud-quorum',
+    auto: { autoTimeout: data.autoTimeout, emergencyStop: data.emergencyStop || process.env.SECURITY_V2_AUTO_EXECUTION !== 'enabled', migrationState: data.migrationState, policyMissing: false } },
+  { headers: { 'Cache-Control': 'private, no-store' } })
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ guildId: string }> }) {
@@ -66,6 +84,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ guil
   const access = await authorizeGuild(request, guildId, 'guild-spam-policy-read')
   if ('response' in access) return access.response
   try {
+    const runtime = await getSecurityCoordinator()
+    if (runtime) return coordinatedResponse(await runtime.security.read(guildId))
+    const quorumTable = await pool.query("SELECT to_regclass('public.guild_security_quorum_fence') AS name")
+    if (quorumTable.rows[0]?.name) {
+      const fenced = await pool.query('SELECT 1 FROM guild_security_quorum_fence WHERE guild_id=$1', [guildId])
+      if (fenced.rowCount) return quorumRequiredResponse()
+    }
     const authorityTable = await pool.query("SELECT to_regclass('public.guild_spam_policy_authority') AS name")
     if (authorityTable.rows[0]?.name) {
       const authority = await pool.query('SELECT 1 FROM guild_spam_policy_authority WHERE guild_id=$1', [guildId])
@@ -89,6 +114,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ gu
   const body = await request.json().catch(() => null)
   if (!['on', 'off'].includes(body?.operation)) return NextResponse.json({ error: 'Explicit on/off required' }, { status: 400 })
   try {
+    const runtime = await getSecurityCoordinator()
+    if (runtime) return coordinatedResponse(await runtime.security.change({ guildId,
+      actorId: `web:${access.session.user.id}`, requestId: body.requestId,
+      expectedRevision: body.concurrency?.revision, expectedChecksum: body.concurrency?.checksum,
+      operation: `auto:${body.operation}`, value: null,
+      authorize: async () => !('response' in await authorizeGuild(request, guildId, 'guild-spam-auto-confirm')) }))
     const actor = `web:${access.session.user.id}`
     const query = (text: string, values: unknown[]) => pool.query(text, values)
     await enrollSecurityV2(query, guildId)
@@ -107,6 +138,15 @@ export async function PUT(request: Request, { params }: { params: Promise<{ guil
   const body = await request.json().catch(() => null)
   const policy = normalizeGuildSpamPolicy(body?.policy)
   if (!policy) return NextResponse.json({ error: '設定値の形式が正しくありません。' }, { status: 400 })
+
+  try {
+    const runtime = await getSecurityCoordinator()
+    if (runtime) return coordinatedResponse(await runtime.security.change({ guildId,
+      actorId: `web:${access.session.user.id}`, requestId: body.requestId,
+      expectedRevision: body.concurrency?.revision, expectedChecksum: body.concurrency?.checksum,
+      operation: 'policy', value: policy,
+      authorize: async () => !('response' in await authorizeGuild(request, guildId, 'guild-spam-policy-confirm')) }))
+  } catch (error) { return safeFailure('coordinated-write', error) }
 
   const client = await pool.connect()
   try {

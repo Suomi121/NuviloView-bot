@@ -1,5 +1,7 @@
 import { enrollSecurityV2, readSecurityV2, setSecurityV2Auto, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS } from "./lib/security-v2-consent.mjs";
 import { operatorRoleCommand, createOperatorRoleHandler } from "./lib/security-operators.mjs";
+import { createSecurityCoordinatorRuntime } from './lib/multi-db/runtime.mjs';
+import { handleQuorumSpamCommand } from './lib/multi-db/discord-spam.mjs';
 import { timeoutLogCommand, createTimeoutLogCommandHandler } from "./lib/security-log-settings.mjs";
 import { createTimeoutIncidentService, timeoutFailureStatus, safeIncidentError } from "./lib/timeout-incidents.mjs";
 import { sendTimeoutIncidentLog } from "./lib/timeout-discord-log.mjs";
@@ -152,8 +154,11 @@ const cloudDatabase = createCloudDatabase({
   env: process.env,
 });
 const sql = cloudDatabase.sql;
-const handleOperatorRoleCommand = createOperatorRoleHandler({ query: (text, values) => sql.query(text, values) });
-const handleTimeoutLogCommand = createTimeoutLogCommandHandler({ query: (text, values) => sql.query(text, values) });
+const messageStorage = createStorage({ env: process.env });
+const securityCoordinatorRuntime = await createSecurityCoordinatorRuntime(process.env, { storage: messageStorage });
+const coordinatedSecurity = securityCoordinatorRuntime?.security;
+const handleOperatorRoleCommand = createOperatorRoleHandler({ query: (text, values) => sql.query(text, values), security: coordinatedSecurity });
+const handleTimeoutLogCommand = createTimeoutLogCommandHandler({ query: (text, values) => sql.query(text, values), security: coordinatedSecurity });
 const runtimeConfig = getRuntimeConfig(process.env);
 const runtimeIdentity = createRuntimeIdentity(process.env);
 const runtimeRepository = createRuntimeLeaseRepository((text, parameters) =>
@@ -165,7 +170,6 @@ const messageRetentionDays = Number.isInteger(
   ? Math.min(Math.max(Number(process.env.MESSAGE_RETENTION_DAYS), 7), 365)
   : 90;
 const messageImportConfig = getMessageImportConfig(process.env);
-const messageStorage = createStorage({ env: process.env });
 const spamPolicyAuthority = createSpamPolicyAuthority({ storage: messageStorage,
   enabled: process.env.SPAM_POLICY_AUTHORITY === 'sqlite', writerId: process.env.SPAM_POLICY_WRITER_ID });
 const localFirstAllGuildsEnabled = ["1", "true", "yes", "on"].includes(
@@ -398,6 +402,7 @@ let spamPolicyTableExists = false;
 const guildSpamPolicyCache = createGuildSpamPolicyCache({
   ttlMs: 30_000,
   loadPolicy: async (guildId) => {
+    if (coordinatedSecurity) return (await coordinatedSecurity.read(guildId)).value.data.policy;
     if (spamPolicyAuthority.enabled) return spamPolicyAuthority.read(guildId).policy;
     if (Date.now() - spamPolicyTableCheckedAt >= 30_000) {
       const tableResult = await sql.query(
@@ -493,6 +498,7 @@ const SAVE_SPAM_POLICY_COMMAND_SQL = `
 
 
 async function handleSpamProtectionCommand(interaction) {
+  if (coordinatedSecurity) return handleQuorumSpamCommand(interaction, coordinatedSecurity);
   if (!interaction.inGuild()) {
     await interaction.reply({ content: "このコマンドはサーバー内でのみ使用できます。", flags: MessageFlags.Ephemeral });
     return;
@@ -3660,7 +3666,7 @@ function getSpamProtectedReason(member) {
 }
 
 async function sendSpamDetectionAlert(message, { auditId, targetMember }) {
-  return sendTimeoutIncidentLog({ incidents: timeoutIncidents, query: (text, values) => sql.query(text, values),
+  return sendTimeoutIncidentLog({ incidents: timeoutIncidents, query: (text, values) => sql.query(text, values), security: coordinatedSecurity,
     guild: message.guild, incidentId: auditId, targetMember });
 }
 
@@ -3701,7 +3707,9 @@ async function handleSpamDetection(message, detection) {
     member: botMember,
   };
   const policyContext = detection.policyContext;
-  const automaticAllowed = !spamPolicyAuthority.enabled && policyContext?.source !== "fallback" && await mayAutomaticallyTimeout(
+  const automaticAllowed = coordinatedSecurity
+    ? policyContext?.source !== 'fallback' && await coordinatedSecurity.automaticAllowed(guildId, { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== 'enabled', expectedPolicy: policyContext?.policy })
+    : !spamPolicyAuthority.enabled && policyContext?.source !== "fallback" && await mayAutomaticallyTimeout(
     (text, values) => sql.query(text, values), message.guild.id,
     { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" },
   );
@@ -3738,8 +3746,11 @@ async function handleSpamDetection(message, detection) {
     return;
   }
   // Fresh, uncached consent immediately before the existing Discord side effect.
-  if (spamPolicyAuthority.enabled || !await mayAutomaticallyTimeout((text, values) => sql.query(text, values), guildId,
-    { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" })) {
+  const freshAutomaticPermission = coordinatedSecurity
+    ? policyContext?.source !== 'fallback' && await coordinatedSecurity.automaticAllowed(guildId, { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== 'enabled', expectedPolicy: policyContext?.policy })
+    : !spamPolicyAuthority.enabled && await mayAutomaticallyTimeout((text, values) => sql.query(text, values), guildId,
+      { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" });
+  if (!freshAutomaticPermission) {
     timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'TIMEOUT_DENIED' });
     return;
   }

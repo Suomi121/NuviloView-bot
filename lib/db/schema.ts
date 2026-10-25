@@ -15,6 +15,18 @@ import {
   primaryKey,
 } from "drizzle-orm/pg-core";
 
+export const multiDbMembership = pgTable("mdb_membership", {
+  singleton: integer("singleton").primaryKey(), membership: text("membership").notNull(), providerId: text("provider_id").notNull(),
+});
+export const multiDbAcceptor = pgTable("mdb_acceptor", {
+  guildId: text("guild_id").notNull(), slot: integer("slot").notNull(), promised: text("promised").notNull(),
+  acceptedBallot: text("accepted_ballot"), value: text("value"), checksum: text("checksum"),
+}, table => [primaryKey({ columns: [table.guildId, table.slot] })]);
+export const guildSecurityQuorumFence = pgTable("guild_security_quorum_fence", {
+  guildId: text("guild_id").primaryKey(), epoch: text("epoch").notNull(), snapshotChecksum: text("snapshot_checksum").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const guildSpamPolicyAuthority = pgTable("guild_spam_policy_authority", {
   guildId: text("guild_id").primaryKey(),
   writerId: text("writer_id").notNull(),

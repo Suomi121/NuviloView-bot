@@ -1,5 +1,9 @@
 # 開発者専用ニュース配信（Draft / 本番未反映）
 
+> 以下はPR #41時点の実装記録を含む。現在の統合基準はPR #43であり、
+> 配信先選択・必要権限・確認画面については[自動配信先仕様](news-auto-destinations.md)が優先する。
+> 未設定Guildを即時スキップする旧仕様は廃止した。過去の検証数は当時の記録である。
+
 ## 基準と依存
 
 main `7088dd4`、PR #38 `42ac4e6`を確認し、#38の上に独立ブランチを作成した。
@@ -39,7 +43,8 @@ main `7088dd4`、PR #38 `42ac4e6`を確認し、#38の上に独立ブランチ�
 draft本文はローカルのprivate状態。配信確定した本文は`news_audit_v1` publicationイベントでクラウド複製される。
 ニュースなので本文は公開予定データである。Secret・OAuth・他人の非公開情報を本文に入力しない。
 
-送信先未設定はunconfiguredとして数え、検知チャンネル・system channel・一般チャンネルへのfallbackは一切ない。
+現在は明示設定→直近7日間の活動量→送信可能候補からの安定選択の順で、確認前に配信先を決定する。
+名前・用途・system channelによる優遇はしない。確認後の別チャンネルへの転送は一切ない。
 設定・準備・確認・claim・配送結果・再送・復旧をAuditに記録する。
 処理件数上限はニュース履歴1000件・1配信10000 Guild。上限超過では拒否し、証跡を勝手に削除しない。
 長期アーカイブには重複防止tombstoneを残す別の運用レビューが必要。
@@ -86,8 +91,9 @@ claim/result/news Auditは通常のOutbox期限削除から除外する。Provid
 - `NEWS_BROADCAST_ENABLED=true`（新規、default false）。既存Developer ID設定が必要。新しいTokenは不要。
 - 既存Local-First SQLite・Multi-DB Sync・Workerと、必要なreplica_event schema/資格情報を確認する。
 - BotにMessage ContentとDirect Messages intent。Direct Messagesは今回コードに追加済み。
-- 配信先は全Guild未設定が初期値。開発者が明示設定するまで配信しない。既存Guildの設定は変更していない。
-- DM可否とChannelの4権限を、専用テストBot/Guildで確認してからリリース承認を得る。
+- 配信先の明示設定がなくても自動候補を最終確認に表示する。既存Guildの設定は変更していない。
+- DM可否とChannelの閲覧・送信・Embed権限を、専用テストBot/Guildで確認してからリリース承認を得る。
+  Read Message Historyは送信の必須条件ではなく、取得可能な履歴の重複検出補助だけに使用する。
 - Web/APIのDeploy・DB Migration・Slash再登録はこの機能に不要。
   Bot更新/必要なrestartは別途承認が必要。Workerが実際に参照する配置にも新しいOutbox保持条件があるか確認する。
   旧Workerが別配置の場合、保持条件の反映方法・更新/再起動の要否を別途レビューして承認を得る。今回はWorker/Supervisorを変更・再起動していない。

@@ -1,4 +1,5 @@
 import { enrollSecurityV2, readSecurityV2, setSecurityV2Auto, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS } from "./lib/security-v2-consent.mjs";
+import { createNewsRuntime } from './lib/news-runtime.mjs';
 import { operatorRoleCommand, createOperatorRoleHandler } from "./lib/security-operators.mjs";
 import { timeoutLogCommand, createTimeoutLogCommandHandler } from "./lib/security-log-settings.mjs";
 import { createTimeoutIncidentService, timeoutFailureStatus, safeIncidentError } from "./lib/timeout-incidents.mjs";
@@ -282,6 +283,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildVoiceStates,
@@ -291,6 +293,7 @@ const client = new Client({
 });
 
 const dashboardUrl = "https://nuviloview-oem.vercel.app/";
+const newsRuntime = await createNewsRuntime({ storage: messageStorage, client, env: process.env });
 const onboardGuild = createGuildOnboarding({ dashboardUrl });
 const applicationId = process.env.NUVILOVIEW_CLIENT_ID;
 const developerGuildId = process.env.DISCORD_DEV_GUILD_ID;
@@ -5147,6 +5150,7 @@ client.on("guildDelete", (guild) => {
 });
 
 client.on("interactionCreate", async (interaction) => {
+  if (await newsRuntime.interaction(interaction)) return;
   if (interaction.isButton() && interaction.customId.startsWith("nvsec:")) {
     await handleSecurityEvidence(interaction);
     return;
@@ -6130,6 +6134,7 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.on("messageCreate", async (message) => {
+  if (await newsRuntime.message(message)) return;
   if (!message.guild || isGuildBlocked(message.guild.id)) return;
 
   const trackSpam = async () => {
@@ -6661,6 +6666,7 @@ async function shutdown(
   if (shuttingDown) return;
   shuttingDown = true;
   if (localStopWatcher) clearInterval(localStopWatcher);
+  await newsRuntime.stop();
   console.log(`${signal} received. Disconnecting NuviloChan Bot...`);
   try {
     localRuntimeSnapshots?.writeRuntimeSnapshot({

@@ -103,8 +103,8 @@ metadata namespaceは各PRと分離している。Outbox retention条件を併�
 
 ## 検証と未検証
 
-- 専用ニュース試験: 29 PASS（実SQLite、Discord Mock、cloud claim Mock）。
-- 全体: 774 PASS / 10 SKIP / 0 FAIL。空・0byte・gitignoredの一時`.env.local`以外のSecretは使わない。
+- 専用ニュース試験: 30 PASS（実SQLite、Discord Mock、cloud claim Mock）。
+- 全体: 775 PASS / 10 SKIP / 0 FAIL。空・0byte・gitignoredの一時`.env.local`以外のSecretは使わない。
 - 隔離PostgreSQL回帰: 44 PASS。既存PG/Turso Provider Adapterによる競合claim、Neon読取専用時の2票、結果の冪等保存も含む。
 - Build/TypeScript PASS。Lint 0 errors / 既存8 warnings。Syntax 222 modules PASS。Migration 14 + Auth 1のchecksum PASS。
   Token Scan PASS。依存ファイルは変更しない。

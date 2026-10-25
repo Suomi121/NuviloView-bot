@@ -147,3 +147,16 @@ test('Rate Limit has a minimum cooldown; durable delivery proofs are not purged 
   assert.ok(claimed.length>0);f.db.outbox.markSynced(claimed.map(e=>e.id),{workerId:'isolated',at});
   assert.equal(f.db.outbox.purgeSynced({olderThan:at+100}),0);
 });
+test('losing/restored writer cannot manufacture retryable failure while winning writer is sending',async t=>{
+  const a=newsFixture(t),b=newsFixture(t),n=await a.queued();
+  for(const key of ['news-index:v1',`news:v1:${n.id}`,`news-destination:v1:${guilds(1)[0]}`])b.db.syncMetadata.set(a.db.syncMetadata.get(key));
+  const restored=createNewsService({...b.options,cloud:a.cloud});
+  let release,started;const sending=new Promise(r=>{started=r;}),done=new Promise(r=>{release=r;});let sends=0;
+  const first=a.service.deliverOne(n.id,{validate:async()=>{},send:async row=>{
+    sends++;started();await done;return{id:'600000000000000001',guildId:row.guildId,channelId:row.channelId};
+  }});
+  await sending;
+  await restored.deliverOne(n.id,{validate:async()=>{throw{status:403};},send:async()=>assert.fail('No second external send')});
+  assert.equal(restored.get(n.id).targets[0].status,'unknown');
+  release();await first;assert.equal(sends,1);
+});

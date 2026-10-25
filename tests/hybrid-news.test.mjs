@@ -48,3 +48,13 @@ test('old queued publications are not implicitly adopted into a different dispat
  await service.deliverOne(old.id,{validate:async()=>assert.fail('no new claim'),send:async()=>assert.fail('no resend')});
  assert.equal(service.get(old.id).state,'paused');assert.equal(service.get(old.id).suspensionReason,'NEWS_AUTHORITY_TRANSFER_REQUIRED');
 });
+test('destination changed during cloud arbitration is rechecked before the Discord side effect',async t=>{
+ const f=fixture(t),local=newsFixture(t),cloud=createQuorumNewsControl(f.c);
+ const service=createNewsService({...local.options,cloud,destinationControl:cloud});
+ await service.setDestination(owner,guild,'200000000000000001');
+ const input=n=>({id:n.id,ownerId:owner,nonce:n.nonce,version:n.version,channelId:channel,messageId:message});
+ let n=await service.create(owner);n=service.bind(n.id,owner,channel,message);n=service.edit(input(n),{title:'Synthetic',body:'Synthetic only'});
+ n=await service.prepare(input(n),[guild]);n=await service.confirm(input(n));
+ await drain(service,n.id,{validate:async()=>{await cloud.setDestination(owner,guild,'200000000000000002');},send:async()=>assert.fail('stale destination never sent')});
+ assert.equal(service.stats(n.id).skipped,1);assert.equal(service.get(n.id).targets[0].code,'NEWS_DESTINATION_CHANGED');
+});

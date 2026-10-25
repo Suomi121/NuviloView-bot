@@ -128,7 +128,7 @@ Ownerを時刻で失効させない。クラッシュ後・release結果不明�
 
 ## 試験と残るGate
 
-ローカル全体: 842 PASS / 12 SKIP / 0 FAIL。共通fixtureをhelperへ分離し、同じテストの重複登録を除いた件数。
+ローカル全体: 844 PASS / 12 SKIP / 0 FAIL。共通fixtureをhelperへ分離し、同じテストの重複登録を除いた件数。
 隔離PostgreSQL/Auth/実Turso SDK: 46 PASS、実DB再起動後の確認: 1 PASS。
 Build / TypeScript / Syntax（266 modules）/ Migration（17 + Auth 1）/ Schema drift / Token Scan / diff check PASS。
 Lint 0 errors / 既存8 warnings。依存Critical 0（High 6 / Moderate 2 / Low 1は残る）。

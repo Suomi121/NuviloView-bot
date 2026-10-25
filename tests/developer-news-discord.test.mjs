@@ -11,7 +11,7 @@ function discordFixture(t) {
   const ch={id:target(g),guildId:g,type:ChannelType.GuildText,permissionsFor:()=>({has:()=>permission}),messages:{fetch:async()=>({some:fn=>history.some(fn)})},send:async p=>{
     sent.push(p);return{id:'600000000000000001',channelId:target(g),guildId:g};
   }};
-  const guild={id:g,channels:{fetch:async()=>wrongChannel?{...ch,guildId:guilds(2)[1]}:ch},members:{fetchMe:async()=>({})}};
+  const guild={id:g,roles:{fetch:async()=>new Map()},channels:{fetch:async()=>wrongChannel?{...ch,guildId:guilds(2)[1]}:ch},members:{fetchMe:async()=>({id:'700000000000000001',guild})}};
   const dm={id:channel,send:async p=>({id:message,edit:async p=>edited.push(p)}),messages:{edit:async(id,p)=>edited.push(p)}};
   const author={id:owner,bot:false,createDM:async()=>dm,send:async()=>{}};
   const client={user:{id:'700000000000000001'},users:{fetch:async()=>author},guilds:{fetch:async id=>typeof id==='string'?guild:new Map(joined?[[g,guild]]:[])}};

@@ -19,6 +19,16 @@ import { getSyncWorkerConfig, SyncWorker } from "../lib/sync/worker.mjs";
 
 const TEST_GUILD_ID = "1216303889599565875";
 
+test('pre-webhook-metadata Create replay preserves immutable payload; new events retain webhook discrimination',async t=>{
+ const f=harness(t),old=message('100000000000000001');
+ const legacy=normalizeDiscordMessageEvent(old,'create',{now:f.now});delete legacy.payload.isWebhook;
+ f.storage.messageDomain.recordEvent(legacy);
+ await f.router.create(old);
+ assert.equal(f.storage.messageDomain.getCurrent(TEST_GUILD_ID,old.id).payload.isWebhook,undefined);
+ const current=message('100000000000000002');current.webhookId='200000000000000001';await f.router.create(current);
+ assert.equal(f.storage.messageDomain.getCurrent(TEST_GUILD_ID,current.id).payload.isWebhook,true);
+});
+
 function message(id, overrides = {}) {
   const createdTimestamp = overrides.createdTimestamp ?? 1_700_000_000_000;
   return {

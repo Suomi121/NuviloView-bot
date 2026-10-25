@@ -41,7 +41,8 @@ Evidenceボタンも同じserviceでRoleを毎回再確認。Owner/Adminでも�
 Timeoutは24時間のまま。処罰直前に設定を読み直し、明示ON・Emergency OFF・検知設定一致とDiscord権限を要求。
 同一Incidentはクラウドで1回だけClaimし、既存SQLiteのclaim/timeout_apiも必要。API応答とDB保存は原子化できないため、UNKNOWNを保持する。
 
-ニュースはDM編集・プレビュー・最終確認・開発者ID Gateを保持。配信先未設定のfallbackなし。
+ニュースはDM編集・プレビュー・最終確認・開発者ID Gateを保持。
+配信先は[自動配信先仕様](news-auto-destinations.md)の明示設定→活動量→安定Fallbackを使用し、確認後は固定する。
 Quorum modeではニュース配信先とClaim/結果も合意ログ。Workerは配送権を持たない。
 旧ニュースmodeをQuorumへ切り替える際は、配信を止め、既存News ID/claim/outcomeを照合する。自動import・未配送の推測再送はしない。
 本文/session/配送一覧は引き続きSQLiteなので、SQLite喪失時にはニュースの新規配信を停止する。クラウドからDM sessionを推測再作成しない。

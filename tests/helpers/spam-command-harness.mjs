@@ -10,7 +10,7 @@ export function loadSpamCommand({ authority = { enabled: false }, query = async 
   const bindings = Object.fromEntries(imports.split(',').map(s => s.trim()).filter(Boolean).map(name => [name, policy[name]]));
   const warnings = [];
   const invalidated = [];
-  const context = vm.createContext({ ...bindings, ...consent, spamPolicyAuthority: authority, process: { env: {} }, sql: { query },
+  const context = vm.createContext({ ...bindings, ...consent, coordinatedSecurity: null, spamPolicyAuthority: authority, process: { env: {} }, sql: { query },
     guildSpamPolicyCache: { get, invalidate: id => invalidated.push(id) },
     PermissionFlagsBits: { Administrator: 'admin', ManageGuild: 'manage' },
     MessageFlags: { Ephemeral: 64 }, console: { warn: text => warnings.push(text) } });

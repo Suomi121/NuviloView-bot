@@ -23,6 +23,7 @@ test('Web uses the same explicit consent writer as Discord; detects failure and 
   const context = vm.createContext({ isTrustedMutation: () => true, hasJsonBody: () => true,
     authorizeGuild: async () => ({ session: { user: { id: 'auth-fixture' } } }),
     NextResponse: { json: (body, options) => ({ body, ...options }) },
+    getSecurityCoordinator: async () => null,
     safeFailure: () => ({ status: 503 }), enrollSecurityV2, readSecurityV2, setSecurityV2Auto,
     pool: { query: async (q, p) => {
       calls.push(p); if (fail) throw new Error('isolated failure');

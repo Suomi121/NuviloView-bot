@@ -67,7 +67,7 @@ test('actual detection handler: OFF, lost consent, DB failure and emergency neve
     const member = { id: userId, displayName: 'fixture', user: {}, moderatable: true,
       timeout: async duration => { assert.equal(duration, 86_400_000); timeouts++; } };
     const context = vm.createContext({
-      spamPolicyAuthority: { enabled: scenario === 'sqlite' },
+      coordinatedSecurity: null, spamPolicyAuthority: { enabled: scenario === 'sqlite' },
       client: { user: {} }, resolveSpamPolicyAction, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS,
       timeoutIncidents: fixture.incidents,
       process: { env: { SECURITY_V2_AUTO_EXECUTION: scenario === 'emergency' ? '' : 'enabled' } },

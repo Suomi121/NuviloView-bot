@@ -1,4 +1,6 @@
 import { pathToFileURL } from "node:url";
+import { createSecurityCoordinatorRuntime } from '../lib/multi-db/runtime.mjs';
+import { createQuorumReconciler } from '../lib/multi-db/reconciler.mjs';
 import { installWorkerCrashDiagnostics } from "../lib/sync/worker-diagnostics.mjs";
 import { Pool } from "pg";
 import { createStorage } from "../lib/storage/index.mjs";
@@ -31,11 +33,13 @@ export async function runSyncWorker({ env = process.env, logger = console } = {}
       );
     }
     const registry = await createProviderRegistry({ config: multiConfig, logger });
+    const quorumRuntime = await createSecurityCoordinatorRuntime(env, { storage });
     const worker = new MultiProviderSyncWorker({
       storage,
       registry,
       config: multiConfig,
       logger,
+      quorumReconciler: quorumRuntime ? createQuorumReconciler({ coordinator: quorumRuntime.coordinator }) : null,
     });
     const onSignal = (signal) => {
       logger.info(`Multi-DB Sync Worker received ${signal}; finishing active batches.`);
@@ -50,6 +54,7 @@ export async function runSyncWorker({ env = process.env, logger = console } = {}
       process.removeListener("SIGINT", onSignal);
       process.removeListener("SIGTERM", onSignal);
       await registry.close();
+      await quorumRuntime?.close();
       storage.close();
     }
   }

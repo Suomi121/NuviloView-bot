@@ -13,6 +13,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  security-quorum-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18.4
+        env:
+          POSTGRES_USER: quorum_test
+          POSTGRES_PASSWORD: isolated-ci-only
+          POSTGRES_DB: nuviloview_quorum_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U quorum_test -d nuviloview_quorum_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_COORDINATOR_DATABASE_URL: postgresql://quorum_test:isolated-ci-only@127.0.0.1:5432/nuviloview_quorum_test
+      TEST_COORDINATOR_ISOLATED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/multi-db-coordinator.test.mjs tests/multi-db-security.test.mjs tests/multi-db-postgres.test.mjs
+
   spam-command-postgres:
     runs-on: ubuntu-latest
     timeout-minutes: 10

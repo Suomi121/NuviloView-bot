@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { fixture } from './multi-db-coordinator.test.mjs';
+import { createQuorumNewsControl } from '../lib/multi-db/news-control.mjs';
+import { newsFixture, owner, channel, message, drain } from './helpers/news-fixture.mjs';
+import { createNewsService } from '../lib/news-service.mjs';
+import { normalizeSyncEnvelope } from '../lib/sync/conflict-policy.mjs';
+const guild='100000000000000001',id='a'.repeat(32);
+const envelope=(type,payload)=>normalizeSyncEnvelope({eventId:`news:${id}:${guild}:1:${type}`,domain:'security',eventType:`news_delivery_${type}_v1`,aggregateId:'synthetic-news',createdAt:1,payload});
+test('Neon down: news claim and result chosen by Supabase/Turso, no replica-health prerequisite',async t=>{
+ const f=fixture(t);f.faults.neon='offline';const cloud=createQuorumNewsControl(f.c);
+ const first=envelope('claim',{claimNonce:'a',newsId:id,guildId:guild,attempt:1});
+ const second=envelope('claim',{claimNonce:'b',newsId:id,guildId:guild,attempt:1});
+ const res=await Promise.allSettled([cloud.claim(first),cloud.claim(second)]);
+ assert.ok(res.filter(r=>r.status==='fulfilled').length<=1);
+ const winner=res[0].status==='fulfilled'?first:second;
+ assert.equal(await cloud.verify(winner.eventId,winner.checksum),true);
+ await assert.rejects(cloud.claim(winner===first?second:first));
+ const outcome=envelope('result',{claimHash:winner.checksum,status:'sent'});
+ await cloud.record(outcome);assert.equal(await cloud.verify(outcome.eventId,outcome.checksum),true);
+ f.faults.neon=null;await f.c.scoped(`news-${id}-1`).read(guild);
+ const checks=f.dbs.map(db=>db.prepare("SELECT checksum FROM mdb_acceptor WHERE guild_id=? AND slot=2").get(`@news-${id}-1:${guild}`).checksum);
+ assert.equal(new Set(checks).size,1);
+});
+test('Neon down: destinations are quorum CAS, SQLite rollback cannot change authoritative destination',async t=>{
+ const f=fixture(t);f.faults.neon='offline';const control=createQuorumNewsControl(f.c);
+ assert.equal((await control.destination(guild)).channelId,null);
+ const one=await control.setDestination('developer',guild,'200000000000000001');assert.equal(one.revision,1);
+ const restored=createQuorumNewsControl(f.c);assert.deepEqual(await restored.destination(guild),one);
+ f.faults.turso='offline';await assert.rejects(control.setDestination('developer',guild,null));
+});
+test('quorum adapter passes existing service path with synthetic destination, claim, result and no duplicate',async t=>{
+ const f=fixture(t),local=newsFixture(t);f.faults.neon='offline';const cloud=createQuorumNewsControl(f.c);
+ const service=createNewsService({...local.options,cloud,destinationControl:cloud});
+ await service.setDestination(owner,guild,'200000000000000001');
+ const input=n=>({id:n.id,ownerId:owner,nonce:n.nonce,version:n.version,channelId:channel,messageId:message});
+ let n=await service.create(owner);n=service.bind(n.id,owner,channel,message);
+ n=service.edit(input(n),{title:'Synthetic',body:'Synthetic only'});
+ n=await service.prepare(input(n),[guild]);n=await service.confirm(input(n));let sends=0;
+ const transport={validate:async()=>{},send:async row=>{sends++;return{id:'900000000000000001',guildId:row.guildId,channelId:row.channelId};}};
+ await drain(service,n.id,transport);await drain(service,n.id,transport);
+ assert.equal(sends,1);assert.equal(service.stats(n.id).sent,1);
+ assert.equal((await service.destination(guild)).revision,1);
+});
+test('old queued publications are not implicitly adopted into a different dispatch authority',async t=>{
+ const f=fixture(t),local=newsFixture(t),old=await local.queued(),cloud=createQuorumNewsControl(f.c);
+ const service=createNewsService({...local.options,cloud,destinationControl:cloud});
+ await service.deliverOne(old.id,{validate:async()=>assert.fail('no new claim'),send:async()=>assert.fail('no resend')});
+ assert.equal(service.get(old.id).state,'paused');assert.equal(service.get(old.id).suspensionReason,'NEWS_AUTHORITY_TRANSFER_REQUIRED');
+});

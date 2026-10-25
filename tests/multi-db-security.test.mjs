@@ -67,7 +67,7 @@ test('quorum Discord path ACKs before unresolved DB/fresh permission work; no du
 
 test('quorum Discord path denies Manage Guild lost at write, and never reads other Guild', async t => {
   const f = await securityFixture(t); let reads = 0, grants = 0;
-  const g = { id: guild, ownerId: '100000000000000099', roles: { fetch: async () => {} },
+  const g = { id: guild, ownerId: '100000000000000099', roles: { fetch: async () => new Map() },
     members: { fetch: async () => ({ id: actor, guild: g, permissions: { has: p => p === PermissionFlagsBits.ManageGuild && ++grants === 1 } }) } };
   g.fetch = async () => g;
   const replies = [];

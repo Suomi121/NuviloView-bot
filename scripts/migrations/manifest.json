@@ -237,6 +237,13 @@
         { "kind": "table", "name": "mdb_acceptor" },
         { "kind": "table", "name": "guild_security_quorum_fence" }
       ]
+    },
+    {
+      "id":"20261025-hybrid-data-plane","file":"20261025-hybrid-data-plane.sql",
+      "checksum":"7f052f60e729bff899481f4ede2c8564f8ec22b3f9c5fe09c2ee43d4335d64c3",
+      "description":"Immutable coded archive shards and crash-resumable fenced transfer journal; no existing data mutation.",
+      "risk":"high","reversible":false,"manualApprovalRequired":true,"transactional":true,
+      "checks":[{"kind":"table","name":"mdb_blob_shard"},{"kind":"table","name":"guild_quorum_transfer"}]
     }
   ]
 }

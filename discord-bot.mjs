@@ -1,5 +1,6 @@
 import { enrollSecurityV2, readSecurityV2, setSecurityV2Auto, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS } from "./lib/security-v2-consent.mjs";
 import { createNewsRuntime } from './lib/news-runtime.mjs';
+import { QuorumRuntimeOwner } from './lib/multi-db/runtime-owner.mjs';
 import { operatorRoleCommand, createOperatorRoleHandler } from "./lib/security-operators.mjs";
 import { createSecurityCoordinatorRuntime } from './lib/multi-db/runtime.mjs';
 import { handleQuorumSpamCommand } from './lib/multi-db/discord-spam.mjs';
@@ -300,13 +301,13 @@ const client = new Client({
 });
 
 const dashboardUrl = "https://nuviloview-oem.vercel.app/";
-const newsRuntime = await createNewsRuntime({ storage: messageStorage, client, env: process.env });
+const newsRuntime = await createNewsRuntime({ storage: messageStorage, client, env: process.env, coordinator: securityCoordinatorRuntime?.coordinator });
 const onboardGuild = createGuildOnboarding({ dashboardUrl });
 const applicationId = process.env.NUVILOVIEW_CLIENT_ID;
 const developerGuildId = process.env.DISCORD_DEV_GUILD_ID;
 const handleSecurityEvidence = createSecurityEvidenceHandler({
   incidents: timeoutIncidents, audit: securityAuditService, query: (text, values) => sql.query(text, values), client,
-  receiver: reportReceiverConfig(process.env),
+  receiver: reportReceiverConfig(process.env), security: coordinatedSecurity,
 });
 const developerOwnerUserId = process.env.DISCORD_OWNER_USER_ID?.trim() || null;
 const auditSigningKey = process.env.AUDIT_LOG_SIGNING_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim() || null;
@@ -3762,6 +3763,12 @@ async function handleSpamDetection(message, detection) {
     timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'TIMEOUT_DENIED' });
     return;
   }
+  if (coordinatedSecurity && !await coordinatedSecurity.claimAutomaticIncident(guildId,auditId, {
+    emergencyStop:process.env.SECURITY_V2_AUTO_EXECUTION !== 'enabled',expectedPolicy:policyContext?.policy,
+  })) {
+    timeoutIncidents.timeoutResult(guildId,auditId,'skipped',{code:'TIMEOUT_DENIED'});
+    return;
+  }
   if (!timeoutIncidents.timeoutApi(guildId, auditId, SECURITY_V2_TIMEOUT_MS).inserted) return;
   let timedOut;
   try {
@@ -6733,7 +6740,7 @@ async function shutdown(
       logCloudAwareError("cloud_heartbeat", "Failed to mark Bot as stopped", error);
     }
   }
-  if (runtimeCoordinator && cloudDatabase.isAvailable()) {
+  if (runtimeCoordinator && (cloudDatabase.isAvailable() || runtimeCoordinator instanceof QuorumRuntimeOwner)) {
     await runtimeCoordinator.stop({
       release: releaseLease,
       finalStatus: releaseLease ? "Stopped" : "LeaseLost",
@@ -6764,7 +6771,7 @@ async function startBot() {
     startupCloudProbe: cloudAvailable ? "PASS" : "DEGRADED",
   });
 
-  if (runtimeConfig.enabled) {
+  if (runtimeConfig.enabled || process.env.NUVILOVIEW_SINGLETON_AUTHORITY === 'quorum') {
     const configurationErrors = validateRuntimeConfig(runtimeConfig, runtimeIdentity);
     if (configurationErrors.length) {
       for (const error of configurationErrors) {
@@ -6772,7 +6779,8 @@ async function startBot() {
       }
       return RUNTIME_EXIT_CODES.CONFIGURATION_INVALID;
     }
-    if (!cloudAvailable) {
+    if (process.env.NUVILOVIEW_SINGLETON_AUTHORITY === 'quorum' && !securityCoordinatorRuntime) return RUNTIME_EXIT_CODES.CONFIGURATION_INVALID;
+    if (!cloudAvailable && process.env.NUVILOVIEW_SINGLETON_AUTHORITY !== 'quorum') {
       refreshCloudRuntimeStatus({ crossHostLeadership: "UNKNOWN_FAIL_CLOSED" });
       console.error(
         "[Singleton] Neon is unavailable and cross-host ownership cannot be proven; Discord login remains fail-closed.",
@@ -6780,7 +6788,9 @@ async function startBot() {
       return RUNTIME_EXIT_CODES.DATABASE_UNAVAILABLE;
     }
 
-    runtimeCoordinator = new RuntimeCoordinator({
+    const RuntimeOwner = process.env.NUVILOVIEW_SINGLETON_AUTHORITY === 'quorum' ? QuorumRuntimeOwner : RuntimeCoordinator;
+    runtimeCoordinator = new RuntimeOwner({
+      coordinator:securityCoordinatorRuntime?.coordinator,applicationId,
       repository: runtimeRepository,
       config: runtimeConfig,
       identity: runtimeIdentity,

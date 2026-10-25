@@ -38,7 +38,37 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: node --test tests/multi-db-coordinator.test.mjs tests/multi-db-security.test.mjs tests/multi-db-postgres.test.mjs
+      - run: node --test tests/multi-db-coordinator.test.mjs tests/multi-db-security.test.mjs tests/multi-db-postgres.test.mjs tests/hybrid-*.test.mjs
+      - name: Restart isolated PostgreSQL service (never Production)
+        run: |
+          docker restart "${{ job.services.postgres.id }}"
+          for attempt in $(seq 1 30); do
+            if docker exec "${{ job.services.postgres.id }}" pg_isready -U quorum_test -d nuviloview_quorum_test; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Verify persisted consensus after actual database restart
+        run: node --test tests/hybrid-restart-postgres.test.mjs
+        env:
+          TEST_HYBRID_RESTART: "1"
+      - name: Custom-format backup and isolated fresh database restore
+        run: |
+          container="${{ job.services.postgres.id }}"
+          docker exec "$container" pg_dump -U quorum_test -d nuviloview_quorum_test -Fc -f /tmp/hybrid-isolated.dump
+          docker exec "$container" createdb -U quorum_test nuviloview_hybrid_restore_test
+          docker exec "$container" pg_restore -U quorum_test --exit-on-error --no-owner --no-privileges -d nuviloview_hybrid_restore_test /tmp/hybrid-isolated.dump
+          source_hash=$(docker exec "$container" psql -U quorum_test -d nuviloview_quorum_test -Atc "SELECT md5(string_agg(checksum, ',' ORDER BY guild_id,slot)) FROM neon.mdb_acceptor")
+          restored_hash=$(docker exec "$container" psql -U quorum_test -d nuviloview_hybrid_restore_test -Atc "SELECT md5(string_agg(checksum, ',' ORDER BY guild_id,slot)) FROM neon.mdb_acceptor")
+          test -n "$source_hash"
+          test "$source_hash" = "$restored_hash"
+          source_count=$(docker exec "$container" psql -U quorum_test -d nuviloview_quorum_test -Atc "SELECT count(*) FROM legacy.guild_quorum_transfer WHERE state='complete'")
+          restored_count=$(docker exec "$container" psql -U quorum_test -d nuviloview_hybrid_restore_test -Atc "SELECT count(*) FROM legacy.guild_quorum_transfer WHERE state='complete'")
+          test "$source_count" = "1"
+          test "$source_count" = "$restored_count"
+      - name: Bounded 100 Guild and 16000 revision failure load
+        run: node --test tests/hybrid-load.test.mjs
+        env:
+          HYBRID_STRESS: "1"
 
   spam-command-postgres:
     runs-on: ubuntu-latest

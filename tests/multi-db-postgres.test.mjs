@@ -6,6 +6,10 @@ import { createSqlAcceptor, ACCEPTOR_SCHEMA } from '../lib/multi-db/acceptor.mjs
 import { createCoordinator } from '../lib/multi-db/coordinator.mjs';
 import { createSecurityService, initialSecuritySnapshot } from '../lib/multi-db/security-service.mjs';
 import { isolatedTursoHttp } from './helpers/isolated-turso-http.mjs';
+import { createDataPlane,createShardStore,SHARD_SCHEMA } from '../lib/multi-db/data-plane.mjs';
+import { createQuorumNewsControl } from '../lib/multi-db/news-control.mjs';
+import { normalizeSyncEnvelope } from '../lib/sync/conflict-policy.mjs';
+import { stageTransfer,resumeTransfer,snapshotLegacy } from '../lib/multi-db/transfer.mjs';
 
 test('real PostgreSQL + Turso HTTP SDK: CAS, write failure, recovery and old SQL writer fences', { skip: !process.env.TEST_COORDINATOR_DATABASE_URL }, async t => {
   const url = new URL(process.env.TEST_COORDINATOR_DATABASE_URL);
@@ -26,13 +30,25 @@ test('real PostgreSQL + Turso HTTP SDK: CAS, write failure, recovery and old SQL
   await b.query("INSERT INTO mdb_membership VALUES(1,$1,'supabase')", [coordinator.membership]);
   turso.db.prepare("INSERT INTO mdb_membership VALUES(1,?,'turso')").run(coordinator.membership);
   const security = createSecurityService(coordinator), guildId = '100000000000000001';
+  await a.query(SHARD_SCHEMA);await b.query(SHARD_SCHEMA);turso.db.exec(SHARD_SCHEMA);
+  const stores=[createShardStore({id:'neon',dialect:'postgres',execute:(q,p)=>a.query(q,p)}),
+   createShardStore({id:'supabase',dialect:'postgres',execute:(q,p)=>b.query(q,p)}),
+   createShardStore({id:'turso',dialect:'sqlite',execute:(sql,args)=>turso.client.execute({sql,args})})];
+  const plane=createDataPlane({coordinator,stores}),news=createQuorumNewsControl(coordinator);
   let state = await security.importFenced({ guildId, actorId: 'fixture', requestId: 'import', snapshot: initialSecuritySnapshot(), verifyFence: async () => true });
   await a.query('SET default_transaction_read_only=on');
   state = await security.change({ guildId, actorId: 'fixture', requestId: 'strength', expectedRevision: state.value.revision,
     expectedChecksum: state.checksum, operation: 'level', value: 79, authorize: async () => true });
   assert.equal(state.value.data.policy.strength, 79);
+  const bytes=Buffer.from('SYNTHETIC isolated PostgreSQL and real Turso SDK archive');
+  await plane.save({guildId,artifactId:'c'.repeat(32),bytes,actorId:'isolated',requestId:'archive'});
+  assert.deepEqual((await plane.read({guildId,artifactId:'c'.repeat(32)})).bytes,bytes);
+  await news.setDestination('isolated',guildId,'200000000000000001');
+  const e=normalizeSyncEnvelope({eventId:`news:${'b'.repeat(32)}:${guildId}:1:claim`,domain:'security',eventType:'news_delivery_claim_v1',aggregateId:'isolated',createdAt:1,payload:{claimNonce:'isolated'}});
+  await news.claim(e);assert.equal(await news.verify(e.eventId,e.checksum),true);
   await a.query('SET default_transaction_read_only=off');
   await security.read(guildId);
+  assert.equal((await plane.repair({guildId,artifactId:'c'.repeat(32)})).complete,true);
   const repaired = await a.query('SELECT checksum FROM mdb_acceptor WHERE guild_id=$1 AND slot=2', [guildId]);
   assert.equal(repaired.rows[0].checksum, state.checksum);
   turso.setOffline(true);
@@ -44,7 +60,7 @@ test('real PostgreSQL + Turso HTTP SDK: CAS, write failure, recovery and old SQL
 
   // Full legacy fence migration, real triggers. No existing production schemas.
   await a.query('CREATE SCHEMA legacy; SET search_path=legacy');
-  for (const name of ['20260930-guild-spam-policy','20261001-guild-spam-protection-controls','20261017-security-v2-consent','20261017-security-operator-roles','20261019-security-timeout-log','20261025-security-quorum']) {
+  for (const name of ['20260930-guild-spam-policy','20261001-guild-spam-protection-controls','20261017-security-v2-consent','20261017-security-operator-roles','20261019-security-timeout-log','20261022-spam-policy-authority','20261025-security-quorum']) {
     await a.query(fs.readFileSync(new URL(`../scripts/migrations/${name}.sql`, import.meta.url), 'utf8'));
   }
   await a.query('INSERT INTO guild_security_quorum_fence(guild_id,epoch,snapshot_checksum) VALUES($1,$2,$3)', [guildId, 'isolated-v1', state.checksum]);
@@ -57,6 +73,23 @@ test('real PostgreSQL + Turso HTTP SDK: CAS, write failure, recovery and old SQL
   for (const table of ['guild_spam_policy','guild_security_v2_auto','guild_security_v2_enrollment','guild_security_operator','guild_security_log','security_v2_control']) {
     await assert.rejects(a.query(`TRUNCATE ${table} CASCADE`), e => e.code === '55000');
   }
+  await a.query(fs.readFileSync(new URL('../scripts/migrations/20261025-hybrid-data-plane.sql',import.meta.url),'utf8'));
+  const migrating='100000000000000009';
+  await a.query("INSERT INTO guild_security_v2_enrollment(guild_id,migration_state) VALUES($1,'complete')",[migrating]);
+  await a.query('INSERT INTO guild_security_v2_auto(guild_id,enabled) VALUES($1,true)',[migrating]);
+  const plan={version:1,epoch:'isolated-v1',guilds:await snapshotLegacy(a,[migrating])};
+  assert.equal(plan.guilds[0].snapshot.autoTimeout,true,'never silently change saved explicit consent');
+  await a.query('BEGIN');await stageTransfer(a,plan);await a.query('COMMIT');
+  await assert.rejects(a.query('UPDATE guild_security_v2_auto SET enabled=false WHERE guild_id=$1',[migrating]),e=>e.code==='55000');
+  // Crash point: durable SQL fence committed, no cloud import yet.
+  await a.query('BEGIN');await stageTransfer(a,plan);await a.query('COMMIT');
+  // Move the independent acceptor connections back to their own namespaces.
+  const source=new Client({connectionString:url.href});await source.connect();
+  try{await source.query('SET search_path=legacy');await a.query('SET search_path=neon');
+   const result=await resumeTransfer(source,{coordinator,security},plan);assert.equal(result.complete,1);
+   assert.equal((await security.read(migrating)).value.data.autoTimeout,true);
+   assert.equal((await resumeTransfer(source,{coordinator,security},plan)).complete,1);
+  }finally{await source.end();}
 });
 
 test('real Turso HTTP SDK adapter: promise fencing and SQL parameter preservation', async t => {

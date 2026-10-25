@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture } from './multi-db-coordinator.test.mjs';
+import { fixture } from './helpers/coordinator-fixture.mjs';
 import { checksum } from '../lib/multi-db/coordinator.mjs';
 test('membership initializer is explicit, all-three verified, resumable but never changes old epoch',async t=>{
  const f=fixture(t);for(const db of f.dbs)db.prepare('DELETE FROM mdb_membership').run();

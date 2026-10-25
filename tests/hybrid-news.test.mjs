@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture } from './multi-db-coordinator.test.mjs';
+import { fixture } from './helpers/coordinator-fixture.mjs';
 import { createQuorumNewsControl } from '../lib/multi-db/news-control.mjs';
 import { newsFixture, owner, channel, message, drain } from './helpers/news-fixture.mjs';
 import { createNewsService } from '../lib/news-service.mjs';

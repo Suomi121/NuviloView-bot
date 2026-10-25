@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { fixture } from './multi-db-coordinator.test.mjs';
+import { fixture } from './helpers/coordinator-fixture.mjs';
 import { createCoordinator } from '../lib/multi-db/coordinator.mjs';
 import { createDataPlane,createShardStore,SHARD_SCHEMA } from '../lib/multi-db/data-plane.mjs';
 test('bounded multi-Guild/revision load, checkpoint restart and Neon outage',async t=>{

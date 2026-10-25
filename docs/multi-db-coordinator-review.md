@@ -1,5 +1,8 @@
 # Multi-DB Coordinator: 実装・保証境界・移管レビュー
 
+統合更新: [Hybrid Multi-DB統合レビュー](hybrid-multi-db-release.md)を参照。
+以下はPR #40単体時点の記録であり、#38/#41統合後の完成範囲を示さない。
+
 2026-10-25。**Draft / Production未適用。本番導入GOではありません。**
 
 ## 監査基準・依存関係

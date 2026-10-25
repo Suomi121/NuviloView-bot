@@ -1,5 +1,9 @@
 # NuviloView Multi-DB Sync v1
 
+This is the historical message/analytics replication plane. For the opt-in
+cloud-quorum control plane and archive plane, see [Hybrid Multi-DB](hybrid-multi-db-release.md).
+The SQLite source-of-truth statements below are not a global authority claim for that control plane.
+
 ## Status and safety boundary
 
 Multi-DB Sync v1 is implemented behind `MULTI_DB_SYNC_ENABLED=false`. The

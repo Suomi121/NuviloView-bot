@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture } from './multi-db-coordinator.test.mjs';
+import { fixture } from './helpers/coordinator-fixture.mjs';
 import { rejoinVoter,quarantineVoter } from '../lib/multi-db/rejoin.mjs';
 import { createCoordinator } from '../lib/multi-db/coordinator.mjs';
 const guild='100000000000000001';

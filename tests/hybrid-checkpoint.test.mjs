@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { fixture } from './multi-db-coordinator.test.mjs';
+import { fixture } from './helpers/coordinator-fixture.mjs';
 import { createCoordinator } from '../lib/multi-db/coordinator.mjs';
 import { createShardStore,createDataPlane,SHARD_SCHEMA } from '../lib/multi-db/data-plane.mjs';
 const guild='100000000000000001';

@@ -1,28 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DatabaseSync } from 'node:sqlite';
 import { createCoordinator } from '../lib/multi-db/coordinator.mjs';
-import { ACCEPTOR_SCHEMA, createSqlAcceptor } from '../lib/multi-db/acceptor.mjs';
+import { fixture } from './helpers/coordinator-fixture.mjs';
 
 const guild = '100000000000000001';
 const other = '100000000000000002';
 const epoch = 'isolated-test-v1';
-export function fixture(t) {
-  const dbs = [], faults = {}, counters = {};
-  const providers = ['neon', 'supabase', 'turso'].map(id => {
-    const db = new DatabaseSync(':memory:'); db.exec(ACCEPTOR_SCHEMA); dbs.push(db);
-    const adapter = createSqlAcceptor({ id, dialect: 'sqlite', execute: async (sql, args) => {
-      if (faults[id] === 'offline' || (faults[id] === 'readOnly' && !sql.startsWith('SELECT'))) throw new Error('PRIVATE_URL_TOKEN');
-      counters[id] = (counters[id] ?? 0) + 1;
-      return db.prepare(sql).all(...args);
-    } });
-    return adapter;
-  });
-  const c = createCoordinator({ providers, epoch });
-  for (const [i, db] of dbs.entries()) db.prepare('INSERT INTO mdb_membership VALUES(1,?,?)').run(c.membership, providers[i].id);
-  t.after(() => dbs.forEach(d => d.close()));
-  return { c, providers, dbs, faults, counters };
-}
 const write = (c, revision, hash, requestId, data = { autoTimeout: false, strength: 50 }, g = guild) => c.update({
   guildId: g, expectedRevision: revision, expectedChecksum: hash, actorId: 'fixture', action: 'test', requestId, data });
 

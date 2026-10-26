@@ -19,6 +19,7 @@ export async function GET(request: Request) {
 
   const guilds = await getManagedGuilds(session.user.id)
   if (!guilds.some((guild) => guild.id === guildId)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') return NextResponse.json({error:'検索用の暗号化Indexは未移管です。',code:'APP_SEARCH_UNMIGRATED',state:'unconfirmed'},{status:503})
 
   const escapedQuery = query.replace(/[!%_]/g, '!$&')
   const result = await pool.query<{ id: string; channelName: string; authorName: string; content: string; createdAt: Date }>(`

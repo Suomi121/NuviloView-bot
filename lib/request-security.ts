@@ -2,6 +2,8 @@ import 'server-only'
 
 import { createHash } from 'node:crypto'
 import { pool } from '@/lib/db'
+import { getSecurityCoordinator } from '@/lib/multi-db/web-runtime'
+import { quorumRateLimited } from '@/lib/multi-db/quorum-rate-limit.mjs'
 
 function normalizeOrigin(value: string | undefined) {
   if (!value) return null
@@ -55,6 +57,13 @@ export async function isRateLimited(request: Request, options: {
   const key = `${options.scope}:${identityHash}`
 
   try {
+    if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+      const runtime = await getSecurityCoordinator()
+      if (!runtime) return true
+      return await quorumRateLimited({ coordinator: runtime.coordinator,
+        controlId: process.env.SECURITY_COORDINATOR_RECOVERY_CONTROL_ID, key,
+        limit: options.limit, windowMs: bucketMilliseconds })
+    }
     const result = await pool.query<{ count: number }>(`
       INSERT INTO "api_rate_limit" ("key", "bucketStart", "count")
       VALUES ($1, $2, 1)

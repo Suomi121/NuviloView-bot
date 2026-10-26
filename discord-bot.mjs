@@ -3,6 +3,9 @@ import { createNewsRuntime } from './lib/news-runtime.mjs';
 import { QuorumRuntimeOwner } from './lib/multi-db/runtime-owner.mjs';
 import { operatorRoleCommand, createOperatorRoleHandler } from "./lib/security-operators.mjs";
 import { createSecurityCoordinatorRuntime } from './lib/multi-db/runtime.mjs';
+import { createApplicationStore } from './lib/multi-db/application-store.mjs';
+import { appendApplicationAlert } from './lib/multi-db/application-alerts.mjs';
+import { validateApplicationConfiguration } from './lib/multi-db/application-config.mjs';
 import { handleQuorumSpamCommand } from './lib/multi-db/discord-spam.mjs';
 import { timeoutLogCommand, createTimeoutLogCommandHandler } from "./lib/security-log-settings.mjs";
 import { createTimeoutIncidentService, timeoutFailureStatus, safeIncidentError } from "./lib/timeout-incidents.mjs";
@@ -158,8 +161,11 @@ const cloudDatabase = createCloudDatabase({
 });
 const sql = cloudDatabase.sql;
 const messageStorage = createStorage({ env: process.env });
+validateApplicationConfiguration(process.env,{role:'bot'});
 const securityCoordinatorRuntime = await createSecurityCoordinatorRuntime(process.env, { storage: messageStorage });
 const coordinatedSecurity = securityCoordinatorRuntime?.security;
+const applicationStore = process.env.APPLICATION_DATA_MODE === 'quorum' && securityCoordinatorRuntime ? createApplicationStore({ ...securityCoordinatorRuntime,
+  authorize: async ({ operation, domain }) => operation === 'read' || ['alerts','channel-metadata'].includes(domain) }) : null;
 const handleOperatorRoleCommand = createOperatorRoleHandler({ query: (text, values) => sql.query(text, values), security: coordinatedSecurity });
 const handleTimeoutLogCommand = createTimeoutLogCommandHandler({ query: (text, values) => sql.query(text, values), security: coordinatedSecurity });
 const runtimeConfig = getRuntimeConfig(process.env);
@@ -4616,6 +4622,18 @@ async function syncChannelAccess(guild) {
     .sort((left, right) => left.channelId.localeCompare(right.channelId));
   const snapshot = JSON.stringify(channelAccess);
 
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    if (!applicationStore || !(runtimeCoordinator instanceof QuorumRuntimeOwner)) throw Object.assign(new Error('Application unavailable'),{code:'APP_CONFIGURATION'});
+    await runtimeCoordinator.prove();
+    const current=await applicationStore.read({domain:'channel-metadata',guildId:guild.id,actorId:runtimeIdentity.instanceId});
+    const channels=Object.fromEntries(channelAccess.map(c=>[c.channelId,{name:c.channelName,deleted:false,canRead:c.canRead}]));
+    await runtimeCoordinator.prove();
+    await applicationStore.write({domain:'channel-metadata',guildId:guild.id,actorId:runtimeIdentity.instanceId,expectedEpoch:current.epoch,expectedRevision:current.revision,expectedChecksum:current.checksum,
+      acknowledgeUnconfirmed:true,requestId:`channels:${Date.now()}`,data:{channels,observedAt:Date.now()}});
+    channelAccessSnapshots.set(guild.id,snapshot);
+    return;
+  }
+
   if (channelAccessSnapshots.get(guild.id) === snapshot) {
     // checkedAt is a guild-level freshness indicator in every current reader.
     // Refresh one row instead of rewriting all channels when nothing changed.
@@ -4816,6 +4834,11 @@ async function syncCurrentVoiceSessions(guild) {
 // dashboard manager can then see the same operational warning without the Bot
 // needing to know anyone's account or contact details.
 async function emitGuildAlert({ guildId, type, severity = "warning", title, body, cooldownMinutes }) {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    if (!applicationStore || !(runtimeCoordinator instanceof QuorumRuntimeOwner)) throw Object.assign(new Error('Application authority unavailable'), { code: 'APP_CONFIGURATION' });
+    return appendApplicationAlert({ store: applicationStore, guildId, actorId: runtimeIdentity.instanceId, type, title, body, cooldownMinutes,
+      proveOwner: async () => { await runtimeCoordinator.prove(); return true; } });
+  }
   const recent = await sql`
     SELECT "id" FROM "guild_alert_event"
     WHERE "guildId" = ${guildId} AND "type" = ${type}
@@ -4831,6 +4854,17 @@ async function emitGuildAlert({ guildId, type, severity = "warning", title, body
 
 async function checkGuildAlerts(guild) {
   if (isGuildBlocked(guild.id)) return;
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    // New observations only. Missing old history cannot prove inactivity or
+    // disconnection; never synthesize those warnings from missing rows.
+    const lastMessageAt = messageStorage.messageDomain.getLastActivityAt(guild.id);
+    const departures = messageStorage.analytics.countRecentMemberDepartures(guild.id);
+    if (lastMessageAt && Date.now()-lastMessageAt>=inactivityAlertHours*3600000)
+      await emitGuildAlert({guildId:guild.id,type:'message_inactive',title:'メッセージの記録がありません',body:`最後のローカル記録から${inactivityAlertHours}時間以上経過しています。移管前の履歴は未確認です。`,cooldownMinutes:1440});
+    if (departures>=departureAlertThreshold)
+      await emitGuildAlert({guildId:guild.id,type:'member_departures_spike',title:'メンバー退出が増えています',body:`直近1時間にローカルで${departures}件の退出を記録しました。`,cooldownMinutes:60});
+    return;
+  }
   const localLastMessageAt = messageRouter.isLocalFirstGuild(guild.id)
     ? messageRouter.getLastActivityAt(guild.id)
     : null;

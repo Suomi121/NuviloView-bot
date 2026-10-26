@@ -3,6 +3,8 @@ import { auth } from '@/lib/auth'
 import { pool } from '@/lib/db'
 import { getManagedGuilds } from '@/lib/discord'
 import { isRateLimited } from '@/lib/request-security'
+import { applicationHaEnabled, getApplicationStore, applicationError } from '@/lib/multi-db/application-web'
+import { readApplicationNotifications } from '@/lib/multi-db/notifications.mjs'
 
 export async function GET(request: Request) {
   const session = await auth.api.getSession({ headers: request.headers })
@@ -14,6 +16,11 @@ export async function GET(request: Request) {
   try {
     const guilds = await getManagedGuilds(session.user.id)
     const guildIds = guilds.map((guild) => guild.id)
+
+    if (applicationHaEnabled()) {
+      const store = await getApplicationStore(session.user.id, guildIds)
+      return NextResponse.json(await readApplicationNotifications({ store: store!, userId: session.user.id, guildIds }))
+    }
 
     if (guildIds.length) {
       const heartbeat = await pool.query<{ guildId: string }>(`
@@ -72,6 +79,7 @@ export async function GET(request: Request) {
     `, [session.user.id])
     return NextResponse.json({ notifications: result.rows })
   } catch (error) {
+    if (applicationHaEnabled()) { const failure = applicationError(error); return NextResponse.json(failure.body, { status: failure.status }) }
     console.error('Failed to load notifications:', error)
     return NextResponse.json({ error: 'Unable to load notifications' }, { status: 500 })
   }

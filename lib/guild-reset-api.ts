@@ -87,6 +87,7 @@ export async function getResetApiContext(
   }
   const access = await getDeveloperAccess(request)
   if (!access) throw new GuildResetError('DEVELOPER_FORBIDDEN', '開発者権限がありません。')
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') throw new GuildResetError('FEATURE_DISABLED', '全DBを対象とする削除・復元プロトコルの移管が必要です。旧Neonだけの初期化は実行しません。')
   if (
     await isRateLimited(request, {
       scope: rateScope,

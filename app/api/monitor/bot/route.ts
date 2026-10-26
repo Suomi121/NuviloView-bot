@@ -36,7 +36,7 @@ export async function GET(request: Request) {
 
   try {
     const multiDbConfig = getMultiDbSyncConfig(process.env)
-    if (multiDbConfig.webReadEnabled && multiDbConfig.snapshotEnabled) {
+    if (process.env.APPLICATION_DATA_MODE === 'quorum' || (multiDbConfig.webReadEnabled && multiDbConfig.snapshotEnabled)) {
       const assessment = await withWebReadRouter(async (router) => {
         const [runtimeRead, syncRead] = await Promise.all([
           router.readRuntimeSnapshot(),

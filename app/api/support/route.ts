@@ -2,6 +2,11 @@ import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
 import { pool } from '@/lib/db'
 import { hasJsonBody, isRateLimited, isTrustedMutation } from '@/lib/request-security'
+import { createApplicationStore } from '@/lib/multi-db/application-store.mjs'
+import { getSecurityCoordinator } from '@/lib/multi-db/web-runtime'
+import { applicationHaEnabled, applicationError } from '@/lib/multi-db/application-web'
+import { submitApplicationSupport } from '@/lib/multi-db/application-support.mjs'
+import { randomUUID } from 'node:crypto'
 
 const SUPPORT_RECIPIENT = 'nuviloview00a@gmail.com'
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -32,6 +37,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: '入力内容を確認してください。' }, { status: 400 })
   }
   const session = await auth.api.getSession({ headers: request.headers })
+  if (applicationHaEnabled()) {
+    try {
+      const runtime = await getSecurityCoordinator()
+      const controlId = process.env.SECURITY_COORDINATOR_RECOVERY_CONTROL_ID
+      if (!runtime || !controlId) throw Object.assign(new Error('Application unavailable'), { code:'APP_CONFIGURATION' })
+      const encoded = process.env.APPLICATION_DATA_ENCRYPTION_KEY
+      const store = createApplicationStore({ ...runtime, key: encoded && /^[a-f0-9]{64}$/.test(encoded) ? Buffer.from(encoded,'hex') : null,
+        keyId: process.env.APPLICATION_DATA_ENCRYPTION_KEY_ID,
+        authorize: async ({domain,guildId}: {domain:string;guildId:string}) => domain === 'support' && guildId === controlId })
+      const requestId = typeof body?.requestId === 'string' ? body.requestId : randomUUID().replaceAll('-','')
+      const result = await submitApplicationSupport({ store,controlId,requestId,actorId:session?.user.id ?? 'anonymous-support',form:{name,email,message},send:async()=>{
+        const apiKey=process.env.RESEND_API_KEY,from=process.env.SUPPORT_FROM_EMAIL
+        if(!apiKey || !from) return false
+        const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(8000),headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
+          body:JSON.stringify({from,to:[SUPPORT_RECIPIENT],reply_to:email,subject:`【NuviloView:OEM】お問い合わせ: ${name}`,text:formatSupportEmail({name,email,message})})})
+        return response.ok
+      } })
+      return NextResponse.json({ ok:true,...result })
+    }catch(error){const failure=applicationError(error);return NextResponse.json(failure.body,{status:failure.status})}
+  }
   await pool.query(
     `INSERT INTO "support_request" ("userId", "name", "email", "message") VALUES ($1, $2, $3, $4)`,
     [session?.user?.id ?? null, name, email, message],

@@ -102,6 +102,7 @@ export async function POST(request: Request) {
   if (await isRateLimited(request, { scope: 'developer-guilds-write', limit: 10, windowSeconds: 60, identity: access.userId, failClosed: true })) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   }
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') return NextResponse.json({error:'Guild Block・削除の実行所有権は未移管です。旧Neonだけを変更しません。',code:'APP_GUILD_ADMIN_UNMIGRATED'},{status:503})
 
   const body = await request.json().catch(() => null)
   const action = body?.action === 'block' || body?.action === 'unblock' ? body.action : null

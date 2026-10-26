@@ -15,7 +15,12 @@ export async function isolatedTursoHttp(t) {
       const request = JSON.parse(body);
       if (req.url === '/v3/pipeline') {
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ baton: null, base_url: null, results: (request.requests ?? []).map(r => ({ type: 'ok', response: r.type === 'get_autocommit' ? { type: 'get_autocommit', is_autocommit: true } : { type: 'close' } })) }));
+        res.end(JSON.stringify({ baton: null, base_url: null, results: (request.requests ?? []).map(r => {
+          if(r.type==='get_autocommit')return{type:'ok',response:{type:'get_autocommit',is_autocommit:!db.isTransaction}};
+          if(r.type==='sequence'){db.exec(r.sql);return{type:'ok',response:{type:'sequence'}};}
+          if(r.type==='close')return{type:'ok',response:{type:'close'}};
+          throw Error('ISOLATED_UNSUPPORTED_HRANA_OPERATION');
+        }) }));
         return;
       }
       if (req.url !== '/v3/cursor') { res.writeHead(404).end(); return; }

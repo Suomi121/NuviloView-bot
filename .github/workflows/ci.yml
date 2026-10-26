@@ -65,6 +65,12 @@ jobs:
           restored_count=$(docker exec "$container" psql -U quorum_test -d nuviloview_hybrid_restore_test -Atc "SELECT count(*) FROM legacy.guild_quorum_transfer WHERE state='complete'")
           test "$source_count" = "1"
           test "$source_count" = "$restored_count"
+          recovery_prefix=$(node --input-type=module -e "import {recoveryPrefix} from './lib/multi-db/recovery-bootstrap.mjs';console.log(recoveryPrefix('isolated-recovery-20261026'))")
+          [[ "$recovery_prefix" =~ ^nvq_[a-f0-9]{16}_$ ]]
+          recovery_hash=$(docker exec "$container" psql -U quorum_test -d nuviloview_quorum_test -Atc "SELECT md5(string_agg(checksum, ',' ORDER BY guild_id,slot)) FROM recovery_test.${recovery_prefix}mdb_acceptor WHERE accepted_ballot IS NOT NULL")
+          restored_recovery_hash=$(docker exec "$container" psql -U quorum_test -d nuviloview_hybrid_restore_test -Atc "SELECT md5(string_agg(checksum, ',' ORDER BY guild_id,slot)) FROM recovery_test.${recovery_prefix}mdb_acceptor WHERE accepted_ballot IS NOT NULL")
+          test -n "$recovery_hash"
+          test "$recovery_hash" = "$restored_recovery_hash"
       - name: Bounded 100 Guild and 16000 revision failure load
         run: node --test tests/hybrid-load.test.mjs
         env:

@@ -12,6 +12,7 @@ import {
   type SpamAction,
 } from "@/lib/guild-spam-policy.mjs";
 import { createGuildSpamPolicyRequestGuard } from "@/lib/guild-spam-policy-request-guard.mjs";
+import {fetchJsonBounded} from '@/lib/bounded-json.mjs';
 
 type Guild = { id: string; name: string };
 const clonePolicy = (policy: Readonly<GuildSpamPolicy>): GuildSpamPolicy => ({ ...policy, ignoredRoleIds: [...policy.ignoredRoleIds], ignoredChannelIds: [...policy.ignoredChannelIds] });
@@ -40,8 +41,11 @@ export function GuildSpamPolicyPanel() {
   const [policy, setPolicy] = useState<GuildSpamPolicy | null>(null);
   const [savedPolicy, setSavedPolicy] = useState<GuildSpamPolicy | null>(null);
   const [isCustom, setIsCustom] = useState(false);
+  const [configurationState,setConfigurationState]=useState('loading');
+  const [recoveryId,setRecoveryId]=useState<string|null>(null);
+  const [ackRecovery,setAckRecovery]=useState(false);
   const [concurrency, setConcurrency] = useState<{ revision: number; checksum: string; epoch: string } | null>(null);
-  const [autoState, setAutoState] = useState<{ autoTimeout: boolean; emergencyStop: boolean; policyMissing: boolean; migrationState: string } | null>(null);
+  const [autoState, setAutoState] = useState<{ autoTimeout: boolean; emergencyStop: boolean; policyMissing: boolean; migrationState: string;consentState?:string;emergencyState?:string } | null>(null);
   const [loadingGuilds, setLoadingGuilds] = useState(true);
   const [loadingPolicy, setLoadingPolicy] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -65,8 +69,7 @@ export function GuildSpamPolicyPanel() {
 
   useEffect(() => {
     let active = true;
-    fetch("/api/guilds", { cache: "no-store" })
-      .then((response) => response.ok ? response.json() : Promise.reject())
+    fetchJsonBounded("/api/guilds", { cache: "no-store" })
       .then((data) => { if (active) setGuilds(Array.isArray(data.guilds) ? data.guilds : []); })
       .catch(() => { if (active) setStatus(en ? "Unable to load manageable servers." : "管理できるサーバーを読み込めませんでした。"); })
       .finally(() => { if (active) setLoadingGuilds(false); });
@@ -83,18 +86,24 @@ export function GuildSpamPolicyPanel() {
     policyLoadAbortRef.current?.abort();
     policyLoadAbortRef.current = controller;
     setPolicy(null); setSavedPolicy(null); setAutoState(null); setConcurrency(null); setLoadingPolicy(true); setStatus("");
-    fetch(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, { cache: "no-store", signal: controller.signal })
-      .then((response) => response.ok ? response.json() : Promise.reject())
+    setConfigurationState('loading');setRecoveryId(null);setAckRecovery(false);
+    fetchJsonBounded(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, { cache: "no-store", signal: controller.signal })
       .then((data) => {
-        if (!request.isCurrent() || !data.policy) return;
+        if (!request.isCurrent())return;
+        if(!data.policy)throw new Error('INVALID_POLICY_RESPONSE');
+        setConfigurationState(data.configurationState??(data.isCustom?'configured':'unset'));
+        setRecoveryId(data.recoveryId??null);
         const next = clonePolicy(data.policy);
         setAutoState(data.auto ?? null);
         setConcurrency(data.concurrency ?? null);
         setPolicy(next); setSavedPolicy(clonePolicy(next)); setIsCustom(Boolean(data.isCustom));
         setRoleIdsText(next.ignoredRoleIds.join(", ")); setChannelIdsText(next.ignoredChannelIds.join(", "));
       })
-      .catch(() => {
-        if (request.isCurrent() && !controller.signal.aborted) setStatus(en ? "Unable to load this server's spam settings." : "このサーバーのスパム設定を読み込めませんでした。");
+      .catch((error) => {
+        if (request.isCurrent() && !controller.signal.aborted) {
+          const state=error?.configurationState??'unavailable';setConfigurationState(state);
+          setStatus(state==='unset'?(en?'This Guild is not enrolled in the new epoch.':'このGuildは新Epochに未登録です。移管対象への追加が必要です。'):(en?'Configuration database unavailable or timed out. No saved values are assumed.':'設定DBに接続できないか応答期限を超えました。保存済み値は推測しません。'));
+        }
       })
       .finally(() => {
         if (request.isCurrent()) setLoadingPolicy(false);
@@ -119,13 +128,14 @@ export function GuildSpamPolicyPanel() {
     mutationAbortRef.current = null;
     setGuildId(nextGuildId);
     setConcurrency(null);
+    setConfigurationState('loading');setRecoveryId(null);setAckRecovery(false);
     setPolicy(null); setSavedPolicy(null); setIsCustom(false); setLoadingPolicy(Boolean(nextGuildId));
     setSaving(false); setStatus(""); setRoleIdsText(""); setChannelIdsText("");
   };
 
   const save = async () => {
     const targetGuildId = selectedGuildIdRef.current;
-    if (!targetGuildId || !draft) return;
+    if (!targetGuildId || !draft || (configurationState==='unconfirmed'&&!ackRecovery)) return;
     const request = requestGuardRef.current.begin("mutation", targetGuildId);
     const controller = new AbortController();
     mutationAbortRef.current?.abort();
@@ -133,21 +143,21 @@ export function GuildSpamPolicyPanel() {
     const submittedPolicy = clonePolicy(draft);
     setSaving(true); setStatus("");
     try {
-      const response = await fetch(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy: submittedPolicy, concurrency, requestId: crypto.randomUUID() }), signal: controller.signal,
+      const data = await fetchJsonBounded(`/api/guilds/${encodeURIComponent(targetGuildId)}/security/spam-policy`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy: submittedPolicy, concurrency, acknowledgeRecovery:ackRecovery?recoveryId:null,requestId: crypto.randomUUID() }), signal: controller.signal,
       });
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.policy) throw new Error(response.status === 409 ? 'REVISION_CONFLICT' : 'SAVE_FAILED');
+      if (!data?.policy) throw new Error('SAVE_FAILED');
       if (!request.isCurrent() || selectedGuildIdRef.current !== targetGuildId) return;
       const next = clonePolicy(data.policy);
       setConcurrency(data.concurrency ?? null);
+      setConfigurationState(data.configurationState??'configured');setRecoveryId(data.recoveryId??null);setAckRecovery(false);
       setAutoState(data.auto ?? autoState);
       setPolicy(next); setSavedPolicy(clonePolicy(next)); setIsCustom(true);
       setRoleIdsText(next.ignoredRoleIds.join(", ")); setChannelIdsText(next.ignoredChannelIds.join(", "));
       setStatus(en ? "Saved. The Bot refreshes this policy within 30 seconds." : "保存しました。Botには最大30秒以内に反映されます。");
     } catch (error) {
       if (request.isCurrent() && selectedGuildIdRef.current === targetGuildId && !controller.signal.aborted) {
-        setStatus(error instanceof Error && error.message === 'REVISION_CONFLICT'
+        setStatus(error instanceof Error && (error.message === 'REVISION_CONFLICT'||['MDB_REVISION_CONFLICT','MDB_IDEMPOTENCY_CONFLICT','MDB_EPOCH_CONFLICT'].includes(String((error as Error & {code?:string}).code)))
           ? (en ? 'Settings changed elsewhere. Reload before saving.' : 'ほかの操作で設定が更新されました。再読込してから保存してください。')
           : (en ? 'Database agreement is unavailable. Reload to verify the outcome.' : 'DBの合意を確認できません。再読込して保存結果を確認してください。'));
       }
@@ -178,10 +188,15 @@ export function GuildSpamPolicyPanel() {
     <label className="mt-5 block text-sm font-semibold">{labels.choose}<select aria-label={labels.choose} disabled={loadingGuilds || !guilds.length} value={guildId} onChange={(event) => selectGuild(event.target.value)} className="mt-2 h-11 w-full rounded-lg border border-border bg-background px-3 text-sm">{guilds.length ? <><option value="">{loadingGuilds ? labels.loading : labels.choose}</option>{guilds.map((guild) => <option value={guild.id} key={guild.id}>{guild.name}</option>)}</> : <option value="">{loadingGuilds ? labels.loading : labels.noGuilds}</option>}</select></label>
     {guildId && <>
       {loadingPolicy && <p className="mt-5 text-sm text-muted-foreground">{labels.loading}</p>}
+      {!loadingPolicy&&!policy&&status&&<p role="alert" className="mt-4 text-sm text-destructive">{status}</p>}
+      {configurationState==='unconfirmed'&&policy&&<div role="status" className="mt-4 rounded-lg border border-amber-500 p-3 text-sm">
+        <p>{en?'Previous settings are unconfirmed. These values are a NEW draft, not restored settings. Saving does not enable Auto Timeout.':'以前の設定は未確認です。以下は新しい設定案で、復元済みの値ではありません。保存してもAuto Timeoutは有効になりません。'}</p>
+        <label className="mt-2 flex items-center gap-2"><input type="checkbox" checked={ackRecovery} onChange={e=>setAckRecovery(e.target.checked)}/>{en?'I reviewed all fields and will save this as the new policy.':'全項目を確認し、この内容を新しい検知設定として保存します。'}</label>
+      </div>}
       {policy && draft && <>
         <p className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
-          Auto Timeout: {autoState ? (autoState.autoTimeout ? "ON" : "OFF") : "UNKNOWN / OFF"} · {autoState?.migrationState ?? "unavailable"}
-          {autoState?.emergencyStop && " · Emergency Stop"}{autoState?.policyMissing && " · Policy missing: execution denied"}<br />
+          Auto Timeout: {autoState?.consentState==='unconfirmed'?(en?'UNCONFIRMED / DENIED':'未確認 / 実行禁止'):autoState ? (autoState.autoTimeout ? "ON" : "OFF") : "UNKNOWN / OFF"} · {autoState?.migrationState ?? "unavailable"}
+          {autoState?.emergencyStop && " · Emergency Stop"}{autoState?.emergencyState==='unconfirmed'&& (en?' (unconfirmed / denied)':'（未確認 / 実行禁止）')}{autoState?.policyMissing && " · Policy missing: execution denied"}<br />
           {en ? "Default OFF. Use /spamprotection auto on or auto off explicitly. Detection settings below never enable automatic punishment. Bot emergency controls may also suppress execution." : "初期OFF。変更は /spamprotection auto on・auto off で明示してください。下記の検知設定の保存では自動処罰は有効になりません。Bot側の緊急停止によっても実行が抑止されます。"}
         </p>
         <label className="mt-5 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/50 p-4"><span className="text-sm font-bold">{labels.enabled}</span><span className="flex items-center gap-2 text-sm"><span>{policy.enabled ? labels.on : labels.off}</span><input type="checkbox" role="switch" aria-label={labels.enabled} checked={policy.enabled} onChange={(event) => setField("enabled", event.target.checked)} /></span></label>
@@ -202,9 +217,9 @@ export function GuildSpamPolicyPanel() {
           <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="flex items-center gap-2 rounded-lg border border-border bg-background/50 p-3 text-sm"><input type="checkbox" checked={policy.ignoreBots} onChange={(event) => setField("ignoreBots", event.target.checked)} />{labels.ignoreBots}</label><label className="flex items-center gap-2 rounded-lg border border-border bg-background/50 p-3 text-sm"><input type="checkbox" checked={policy.ignoreAdmins} onChange={(event) => setField("ignoreAdmins", event.target.checked)} />{labels.ignoreAdmins}</label></div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm font-semibold">{labels.roles}<textarea rows={2} value={roleIdsText} onChange={(event) => { setRoleIdsText(event.target.value); setField("ignoredRoleIds", event.target.value.split(/[\s,]+/).filter(Boolean)); }} placeholder="123456789012345678, …" className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs" /></label><label className="text-sm font-semibold">{labels.channels}<textarea rows={2} value={channelIdsText} onChange={(event) => { setChannelIdsText(event.target.value); setField("ignoredChannelIds", event.target.value.split(/[\s,]+/).filter(Boolean)); }} placeholder="123456789012345678, …" className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs" /></label></div>
         </details>
-        <div className="mt-4 grid gap-3 rounded-xl border border-border bg-background/40 p-3 text-xs sm:grid-cols-2"><p><span className="font-bold">{labels.current}:</span> {isCustom ? describe(savedPolicy) : en ? "Legacy default · environment may override code defaults (3 messages / 5 sec)" : "従来の既定 · Bot環境変数で上書きされる場合があります（コード既定 3件 / 5秒）"}</p><p><span className="font-bold">{labels.next}:</span> {describe(draft)}</p></div>
+        <div className="mt-4 grid gap-3 rounded-xl border border-border bg-background/40 p-3 text-xs sm:grid-cols-2"><p><span className="font-bold">{labels.current}:</span> {configurationState==='unconfirmed'?(en?'UNCONFIRMED — the form is a new draft':'未確認 — フォームは新しい設定案です'):isCustom ? describe(savedPolicy) : en ? "Legacy default · environment may override code defaults (3 messages / 5 sec)" : "従来の既定 · Bot環境変数で上書きされる場合があります（コード既定 3件 / 5秒）"}</p><p><span className="font-bold">{labels.next}:</span> {describe(draft)}</p></div>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p role="status" className={`text-sm ${status.includes("ません") || status.includes("Unable") || status.includes("Could not") ? "text-destructive" : "text-emerald-500"}`}>{status}</p></div>
-        {isDirty && <div className="mt-3 flex justify-end"><button type="button" disabled={saving || loadingPolicy} onClick={() => void save()} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-50">{saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{labels.save}</button></div>}
+        {isDirty && <div className="mt-3 flex justify-end"><button type="button" disabled={saving || loadingPolicy || (configurationState==='unconfirmed'&&!ackRecovery)} onClick={() => void save()} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-50">{saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{labels.save}</button></div>}
       </>}
     </>}
   </section>;

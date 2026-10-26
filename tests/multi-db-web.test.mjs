@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { normalizeGuildSpamPolicy } from '../lib/guild-spam-policy.mjs';
 import { securityFixture, guild } from './helpers/quorum-fixture.mjs';
+import {securityVerification} from '../lib/multi-db/recovery-state.mjs';
 
 function route(runtime, denied = null) {
   const source = fs.readFileSync(new URL('../app/api/guilds/[guildId]/security/spam-policy/route.ts', import.meta.url), 'utf8');
@@ -14,6 +15,7 @@ function route(runtime, denied = null) {
     process: { env: { SECURITY_V2_AUTO_EXECUTION: 'enabled' } },
     getSecurityCoordinator: async () => runtime,
     normalizeGuildSpamPolicy,
+    securityVerification,
     isTrustedMutation: r => r.trusted !== false, hasJsonBody: () => true,
     authorizeGuild: async (_, id) => denied ? { response: { status: denied } } : id === guild
       ? { session: { user: { id: 'fixture' } } } : { response: { status: 403 } },

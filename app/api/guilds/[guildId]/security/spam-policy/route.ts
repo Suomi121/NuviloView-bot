@@ -4,6 +4,7 @@ import { auth } from '@/lib/auth'
 import { authStorage } from '@/lib/auth-storage'
 import { pool } from '@/lib/db'
 import { getSecurityCoordinator } from '@/lib/multi-db/web-runtime'
+import { securityVerification } from '@/lib/multi-db/recovery-state.mjs'
 import { getManagedGuilds } from '@/lib/discord'
 import { hasJsonBody, isTrustedMutation } from '@/lib/request-security'
 import {
@@ -47,12 +48,14 @@ async function authorizeGuild(request: Request, guildId: string, scope: string) 
 
 function safeFailure(operation: string, error: unknown) {
   const code = String((error as { code?: unknown; name?: unknown })?.code ?? (error as { name?: unknown })?.name ?? 'DATABASE_ERROR').slice(0, 40)
+  if(code==='MDB_NOT_ENROLLED')return NextResponse.json({code,configurationState:'unset',readOnly:true,error:'このGuildは新Epochに未登録です。移管対象への追加が必要です。'},{status:409})
+  if(['MDB_RECOVERY_ACK_REQUIRED','MDB_POLICY_UNCONFIRMED','MDB_SAFETY_UNCONFIRMED'].includes(code))return NextResponse.json({code,configurationState:'unconfirmed',error:'以前の設定は未確認です。新しい設定案を明示的に確認してください。'},{status:409})
   if (code === '55000' && (error as { message?: string })?.message?.includes('SECURITY_QUORUM_AUTHORITY')) return quorumRequiredResponse()
-  if (code === 'MDB_REVISION_CONFLICT' || code === 'MDB_IDEMPOTENCY_CONFLICT') return NextResponse.json({ code, error: 'ほかの操作で設定が更新されました。再読込してください。' }, { status: 409 })
-  if (code.startsWith('MDB_')) return NextResponse.json({ code: 'MDB_UNAVAILABLE', readOnly: true, error: 'DBの合意を確認できません。保存結果は再読込で確認してください。' }, { status: 503 })
+  if (['MDB_REVISION_CONFLICT','MDB_IDEMPOTENCY_CONFLICT','MDB_EPOCH_CONFLICT'].includes(code)) return NextResponse.json({ code, error: 'ほかの操作で設定が更新されました。再読込してください。' }, { status: 409 })
+  if (code.startsWith('MDB_')) return NextResponse.json({ code: 'MDB_UNAVAILABLE', configurationState:'unavailable',readOnly: true, error: 'DBの合意を確認できません。保存結果は再読込で確認してください。' }, { status: 503 })
   if (code === '55000') return localAuthorityResponse()
   console.error(`Guild spam policy ${operation} failed: code=${code}`)
-  return NextResponse.json({ error: 'スパム設定を処理できませんでした。' }, { status: 503 })
+  return NextResponse.json({code:'CONFIGURATION_DB_UNAVAILABLE',configurationState:'unavailable',readOnly:true, error: '設定DBに接続できません。' }, { status: 503 })
 }
 
 function localAuthorityResponse() {
@@ -71,11 +74,13 @@ function publicPolicy(policy: Readonly<GuildSpamPolicy>) {
   return { ...policy, updatedBy: null }
 }
 
-function coordinatedResponse(state: { value: { revision: number; epoch: string; data: { policy: GuildSpamPolicy; autoTimeout: boolean; emergencyStop: boolean; migrationState: string } }; checksum: string }) {
+function coordinatedResponse(state: { value: { revision: number; epoch: string; data: { policy: GuildSpamPolicy; autoTimeout: boolean; emergencyStop: boolean; migrationState: string; verification?: Record<string,boolean>; recoveryId?: string } }; checksum: string }) {
   const data = state.value.data
-  return NextResponse.json({ policy: publicPolicy(data.policy), isCustom: true,
+  const verified=securityVerification(data)
+  return NextResponse.json({ policy: publicPolicy(data.policy), isCustom: verified.policy,policyConfirmed:verified.policy,
+    configurationState:verified.policy?'configured':'unconfirmed',recoveryId:data.recoveryId??null,verification:verified,
     concurrency: { revision: state.value.revision, checksum: state.checksum, epoch: state.value.epoch }, authority: 'cloud-quorum',
-    auto: { autoTimeout: data.autoTimeout, emergencyStop: data.emergencyStop || process.env.SECURITY_V2_AUTO_EXECUTION !== 'enabled', migrationState: data.migrationState, policyMissing: false } },
+    auto: { autoTimeout: data.autoTimeout,consentState:verified.autoTimeout?'confirmed':'unconfirmed',emergencyState:verified.emergencyStop?'confirmed':'unconfirmed', emergencyStop: data.emergencyStop || process.env.SECURITY_V2_AUTO_EXECUTION !== 'enabled', migrationState: data.migrationState, policyMissing: !verified.policy } },
   { headers: { 'Cache-Control': 'private, no-store' } })
 }
 
@@ -118,6 +123,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ gu
     if (runtime) return coordinatedResponse(await runtime.security.change({ guildId,
       actorId: `web:${access.session.user.id}`, requestId: body.requestId,
       expectedRevision: body.concurrency?.revision, expectedChecksum: body.concurrency?.checksum,
+      expectedEpoch:body.concurrency?.epoch,
+      acknowledgeRecovery:body.acknowledgeRecovery,
       operation: `auto:${body.operation}`, value: null,
       authorize: async () => !('response' in await authorizeGuild(request, guildId, 'guild-spam-auto-confirm')) }))
     const actor = `web:${access.session.user.id}`
@@ -144,6 +151,8 @@ export async function PUT(request: Request, { params }: { params: Promise<{ guil
     if (runtime) return coordinatedResponse(await runtime.security.change({ guildId,
       actorId: `web:${access.session.user.id}`, requestId: body.requestId,
       expectedRevision: body.concurrency?.revision, expectedChecksum: body.concurrency?.checksum,
+      expectedEpoch:body.concurrency?.epoch,
+      acknowledgeRecovery:body.acknowledgeRecovery,
       operation: 'policy', value: policy,
       authorize: async () => !('response' in await authorizeGuild(request, guildId, 'guild-spam-policy-confirm')) }))
   } catch (error) { return safeFailure('coordinated-write', error) }

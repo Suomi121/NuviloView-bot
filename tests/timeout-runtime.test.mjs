@@ -12,7 +12,7 @@ function harness(f,{apiError=null,protection=null,canTimeout=true,already=false}
   let timeouts=0,logs=0;
   const member={id:userId,user:{},moderatable:canTimeout,communicationDisabledUntilTimestamp:already?Date.now()+60000:null,
     timeout:async duration=>{timeouts++;assert.equal(duration,SECURITY_V2_TIMEOUT_MS);if(apiError)throw apiError;return {communicationDisabledUntilTimestamp:1790086400000};}};
-  const sandbox={timeoutIncidents:f.incidents,timeoutFailureStatus,mayAutomaticallyTimeout,SECURITY_V2_TIMEOUT_MS,resolveSpamPolicyAction,
+  const sandbox={spamPolicyAuthority:{enabled:false},timeoutIncidents:f.incidents,timeoutFailureStatus,mayAutomaticallyTimeout,SECURITY_V2_TIMEOUT_MS,resolveSpamPolicyAction,
     process:{env:{SECURITY_V2_AUTO_EXECUTION:'enabled'}},sql:{query:async()=>({rows:[{migration_state:'complete',enabled:true,emergency_stop:false}]})},
     client:{user:{}},spamWindowMs:5000,PermissionFlagsBits:{ModerateMembers:1},getSpamProtectedReason:()=>protection,
     moderationAuditReason:()=>'',sendSpamDetectionAlert:async()=>{logs++;}};

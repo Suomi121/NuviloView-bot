@@ -15,6 +15,14 @@ import {
   primaryKey,
 } from "drizzle-orm/pg-core";
 
+export const guildSpamPolicyAuthority = pgTable("guild_spam_policy_authority", {
+  guildId: text("guild_id").primaryKey(),
+  writerId: text("writer_id").notNull(),
+  epoch: text("epoch").notNull(),
+  snapshot: jsonb("snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 // --- Better Auth required tables -------------------------------------------
 // Column names are camelCase to match Better Auth's defaults. Do not rename.
 

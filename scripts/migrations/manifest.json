@@ -210,6 +210,22 @@
         { "kind": "table", "name": "guild_security_log_audit" },
         { "kind": "index", "name": "guild_security_log_audit_guild_created_idx" }
       ]
+    },
+    {
+      "id": "20261022-spam-policy-authority",
+      "file": "20261022-spam-policy-authority.sql",
+      "checksum": "49bc9283fa0ca83d87a71250874c94905581f533eae31c5adf23c4e015a6cdf8",
+      "description": "Explicit per-Guild SQLite detection authority fence; no automatic transfer or consent migration.",
+      "risk": "high",
+      "reversible": false,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        {
+          "name": "guild_spam_policy_authority",
+          "kind": "table"
+        }
+      ]
     }
   ]
 }

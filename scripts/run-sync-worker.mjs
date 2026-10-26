@@ -1,6 +1,9 @@
 import { pathToFileURL } from "node:url";
 import { createSecurityCoordinatorRuntime } from '../lib/multi-db/runtime.mjs';
 import { createQuorumReconciler } from '../lib/multi-db/reconciler.mjs';
+import { createApplicationPublisher } from '../lib/multi-db/application-worker.mjs';
+import { createApplicationRepairer } from '../lib/multi-db/application-repair.mjs';
+import { validateApplicationConfiguration } from '../lib/multi-db/application-config.mjs';
 import { installWorkerCrashDiagnostics } from "../lib/sync/worker-diagnostics.mjs";
 import { Pool } from "pg";
 import { createStorage } from "../lib/storage/index.mjs";
@@ -18,6 +21,7 @@ export async function runSyncWorker({ env = process.env, logger = console } = {}
     logger.info("Sync Worker is disabled. No SQLite or Cloud connection was opened.");
     return { started: false, reason: "disabled" };
   }
+  validateApplicationConfiguration(env,{role:'worker'});
   if (multiConfig.enabled) {
     const validation = validateMultiDbRuntimeConfig(multiConfig);
     if (!validation.ok) {
@@ -40,6 +44,10 @@ export async function runSyncWorker({ env = process.env, logger = console } = {}
       config: multiConfig,
       logger,
       quorumReconciler: quorumRuntime ? createQuorumReconciler({ coordinator: quorumRuntime.coordinator }) : null,
+      applicationPublisher: env.APPLICATION_DATA_MODE === 'quorum' && quorumRuntime ? createApplicationPublisher({ runtime: quorumRuntime, storage,
+        applicationId: env.SECURITY_COORDINATOR_RECOVERY_CONTROL_ID, publisherId: env.APPLICATION_PUBLISHER_ID, sourceEpoch: env.APPLICATION_SOURCE_EPOCH }) : null,
+      applicationRepairer: env.APPLICATION_DATA_MODE === 'quorum' && quorumRuntime ? createApplicationRepairer({ ...quorumRuntime, controlId:env.SECURITY_COORDINATOR_RECOVERY_CONTROL_ID,
+        key:/^[a-f0-9]{64}$/.test(env.APPLICATION_DATA_ENCRYPTION_KEY??'')?Buffer.from(env.APPLICATION_DATA_ENCRYPTION_KEY,'hex'):null,keyId:env.APPLICATION_DATA_ENCRYPTION_KEY_ID }) : null,
     });
     const onSignal = (signal) => {
       logger.info(`Multi-DB Sync Worker received ${signal}; finishing active batches.`);

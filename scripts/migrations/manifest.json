@@ -210,6 +210,40 @@
         { "kind": "table", "name": "guild_security_log_audit" },
         { "kind": "index", "name": "guild_security_log_audit_guild_created_idx" }
       ]
+    },
+    {
+      "id": "20261022-spam-policy-authority",
+      "file": "20261022-spam-policy-authority.sql",
+      "checksum": "49bc9283fa0ca83d87a71250874c94905581f533eae31c5adf23c4e015a6cdf8",
+      "description": "Explicit per-Guild SQLite detection authority fence; no automatic transfer or consent migration.",
+      "risk": "high",
+      "reversible": false,
+      "manualApprovalRequired": true,
+      "transactional": true,
+      "checks": [
+        {
+          "name": "guild_spam_policy_authority",
+          "kind": "table"
+        }
+      ]
+    },
+    {
+      "id": "20261025-security-quorum", "file": "20261025-security-quorum.sql",
+      "checksum": "41c5ad050cff435a7814c0a323290d91ed4bf9f6878fd859b40e94dcec4a96e7",
+      "description": "Fixed-membership consensus acceptors and legacy security writer fences; no data transfer or consent change.",
+      "risk": "high", "reversible": false, "manualApprovalRequired": true, "transactional": true,
+      "checks": [
+        { "kind": "table", "name": "mdb_membership" },
+        { "kind": "table", "name": "mdb_acceptor" },
+        { "kind": "table", "name": "guild_security_quorum_fence" }
+      ]
+    },
+    {
+      "id":"20261025-hybrid-data-plane","file":"20261025-hybrid-data-plane.sql",
+      "checksum":"7f052f60e729bff899481f4ede2c8564f8ec22b3f9c5fe09c2ee43d4335d64c3",
+      "description":"Immutable coded archive shards and crash-resumable fenced transfer journal; no existing data mutation.",
+      "risk":"high","reversible":false,"manualApprovalRequired":true,"transactional":true,
+      "checks":[{"kind":"table","name":"mdb_blob_shard"},{"kind":"table","name":"guild_quorum_transfer"}]
     }
   ]
 }

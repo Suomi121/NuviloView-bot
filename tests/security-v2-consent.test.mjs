@@ -61,12 +61,13 @@ test('all automatic timeout entry points use v2 consent and retained reset is in
 test('actual detection handler: OFF, lost consent, DB failure and emergency never call Discord timeout', async () => {
   const bot = readFileSync(new URL('../discord-bot.mjs', import.meta.url), 'utf8');
   const source = bot.slice(bot.indexOf('async function handleSpamDetection'), bot.indexOf('async function replySpamComponentError'));
-  for (const scenario of ['off', 'on', 'lost', 'db-error', 'emergency', 'fallback']) {
+  for (const scenario of ['off', 'on', 'lost', 'db-error', 'emergency', 'fallback', 'sqlite']) {
     const fixture = incidentFixture();
     let queries = 0, timeouts = 0, alerts = 0;
     const member = { id: userId, displayName: 'fixture', user: {}, moderatable: true,
       timeout: async duration => { assert.equal(duration, 86_400_000); timeouts++; } };
     const context = vm.createContext({
+      coordinatedSecurity: null, spamPolicyAuthority: { enabled: scenario === 'sqlite' },
       client: { user: {} }, resolveSpamPolicyAction, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS,
       timeoutIncidents: fixture.incidents,
       process: { env: { SECURITY_V2_AUTO_EXECUTION: scenario === 'emergency' ? '' : 'enabled' } },

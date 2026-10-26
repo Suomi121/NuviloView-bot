@@ -1,8 +1,13 @@
 import { enrollSecurityV2, readSecurityV2, setSecurityV2Auto, mayAutomaticallyTimeout, SECURITY_V2_TIMEOUT_MS } from "./lib/security-v2-consent.mjs";
+import { createNewsRuntime } from './lib/news-runtime.mjs';
+import { QuorumRuntimeOwner } from './lib/multi-db/runtime-owner.mjs';
 import { operatorRoleCommand, createOperatorRoleHandler } from "./lib/security-operators.mjs";
+import { createSecurityCoordinatorRuntime } from './lib/multi-db/runtime.mjs';
+import { handleQuorumSpamCommand } from './lib/multi-db/discord-spam.mjs';
 import { timeoutLogCommand, createTimeoutLogCommandHandler } from "./lib/security-log-settings.mjs";
 import { createTimeoutIncidentService, timeoutFailureStatus, safeIncidentError } from "./lib/timeout-incidents.mjs";
 import { sendTimeoutIncidentLog } from "./lib/timeout-discord-log.mjs";
+import { createSecurityEvidenceHandler, reportReceiverConfig } from "./lib/security-evidence-interactions.mjs";
 import {
   ActionRowBuilder,
   ActivityType,
@@ -131,6 +136,7 @@ import {
   createMessageHistoryImportWorker,
 } from "./lib/message-history-import-worker.mjs";
 import { createStorage } from "./lib/storage/index.mjs";
+import { createSpamPolicyAuthority } from "./lib/spam-policy-authority.mjs";
 import { createSnapshotService } from "./lib/sync/snapshots.mjs";
 import { createMessageDomainRouter } from "./lib/message-local-first.mjs";
 import { createEventDomainRouter } from "./lib/event-local-first.mjs";
@@ -151,8 +157,11 @@ const cloudDatabase = createCloudDatabase({
   env: process.env,
 });
 const sql = cloudDatabase.sql;
-const handleOperatorRoleCommand = createOperatorRoleHandler({ query: (text, values) => sql.query(text, values) });
-const handleTimeoutLogCommand = createTimeoutLogCommandHandler({ query: (text, values) => sql.query(text, values) });
+const messageStorage = createStorage({ env: process.env });
+const securityCoordinatorRuntime = await createSecurityCoordinatorRuntime(process.env, { storage: messageStorage });
+const coordinatedSecurity = securityCoordinatorRuntime?.security;
+const handleOperatorRoleCommand = createOperatorRoleHandler({ query: (text, values) => sql.query(text, values), security: coordinatedSecurity });
+const handleTimeoutLogCommand = createTimeoutLogCommandHandler({ query: (text, values) => sql.query(text, values), security: coordinatedSecurity });
 const runtimeConfig = getRuntimeConfig(process.env);
 const runtimeIdentity = createRuntimeIdentity(process.env);
 const runtimeRepository = createRuntimeLeaseRepository((text, parameters) =>
@@ -164,7 +173,8 @@ const messageRetentionDays = Number.isInteger(
   ? Math.min(Math.max(Number(process.env.MESSAGE_RETENTION_DAYS), 7), 365)
   : 90;
 const messageImportConfig = getMessageImportConfig(process.env);
-const messageStorage = createStorage({ env: process.env });
+const spamPolicyAuthority = createSpamPolicyAuthority({ storage: messageStorage,
+  enabled: process.env.SPAM_POLICY_AUTHORITY === 'sqlite', writerId: process.env.SPAM_POLICY_WRITER_ID });
 const localFirstAllGuildsEnabled = ["1", "true", "yes", "on"].includes(
   String(process.env.LOCAL_FIRST_ALL_GUILDS_ENABLED ?? "").trim().toLowerCase(),
 );
@@ -281,6 +291,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildVoiceStates,
@@ -290,9 +301,14 @@ const client = new Client({
 });
 
 const dashboardUrl = "https://nuviloview-oem.vercel.app/";
+const newsRuntime = await createNewsRuntime({ storage: messageStorage, client, env: process.env, coordinator: securityCoordinatorRuntime?.coordinator });
 const onboardGuild = createGuildOnboarding({ dashboardUrl });
 const applicationId = process.env.NUVILOVIEW_CLIENT_ID;
 const developerGuildId = process.env.DISCORD_DEV_GUILD_ID;
+const handleSecurityEvidence = createSecurityEvidenceHandler({
+  incidents: timeoutIncidents, audit: securityAuditService, query: (text, values) => sql.query(text, values), client,
+  receiver: reportReceiverConfig(process.env), security: coordinatedSecurity,
+});
 const developerOwnerUserId = process.env.DISCORD_OWNER_USER_ID?.trim() || null;
 const auditSigningKey = process.env.AUDIT_LOG_SIGNING_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim() || null;
 const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL?.trim() || null;
@@ -395,6 +411,8 @@ let spamPolicyTableExists = false;
 const guildSpamPolicyCache = createGuildSpamPolicyCache({
   ttlMs: 30_000,
   loadPolicy: async (guildId) => {
+    if (coordinatedSecurity) return (await coordinatedSecurity.read(guildId)).value.data.policy;
+    if (spamPolicyAuthority.enabled) return spamPolicyAuthority.read(guildId).policy;
     if (Date.now() - spamPolicyTableCheckedAt >= 30_000) {
       const tableResult = await sql.query(
         `SELECT to_regclass('public.guild_spam_policy') AS table_name`,
@@ -489,6 +507,7 @@ const SAVE_SPAM_POLICY_COMMAND_SQL = `
 
 
 async function handleSpamProtectionCommand(interaction) {
+  if (coordinatedSecurity) return handleQuorumSpamCommand(interaction, coordinatedSecurity);
   if (!interaction.inGuild()) {
     await interaction.reply({ content: "このコマンドはサーバー内でのみ使用できます。", flags: MessageFlags.Ephemeral });
     return;
@@ -511,7 +530,12 @@ async function handleSpamProtectionCommand(interaction) {
   let statusAcknowledgementAttempted = false;
   try {
     if (interaction.options.getSubcommandGroup?.(false) === "auto") {
+      statusAcknowledgementAttempted = true;
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (spamPolicyAuthority.enabled) {
+        await interaction.editReply({ content: 'Auto Timeout: OFF\nSQLite権威モードでは自動処罰を停止しています。同意は複製から復元・有効化しません。' });
+        return;
+      }
       const query = (text, values) => sql.query(text, values);
       if (operation !== "status") {
         await enrollSecurityV2(query, guildId);
@@ -525,10 +549,32 @@ async function handleSpamProtectionCommand(interaction) {
       await interaction.reply({ content: "Resetは廃止されたよ。設定は削除していません。検知設定は /spamprotection level などで変更してね。 [SPAM_RESET_RETIRED]", flags: MessageFlags.Ephemeral });
       return;
     }
-    // Acknowledge status before either database read can exceed Discord's deadline.
-    if (operation === "status" && !interaction.deferred && !interaction.replied) {
+    // ACK every active operation before storage or fresh member permission reads.
+    if (!interaction.deferred && !interaction.replied) {
       statusAcknowledgementAttempted = true;
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+    if (spamPolicyAuthority.enabled) {
+      const state = spamPolicyAuthority.read(guildId);
+      if (operation === 'status') {
+        await interaction.editReply({ content: `${replyStatus(state.policy)}\nAuthority: SQLite\nRevision: ${state.revision}\nAuto Timeout: OFF` });
+        return;
+      }
+      // Re-fetch permissions; a cached role or a replica is never authorization.
+      await interaction.guild.roles.fetch();
+      const member = await interaction.guild.members.fetch({ user: interaction.user.id, force: true });
+      if (!member.permissions.has(PermissionFlagsBits.Administrator) && !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        await interaction.editReply({ content: 'このコマンドを変更できるのはサーバー管理者のみです。' });
+        return;
+      }
+      const value = operation === 'level' ? interaction.options.getInteger('strength', true)
+        : ['messages', 'duplicate', 'mentions', 'links', 'cross-channel'].includes(operation)
+          ? interaction.options.getBoolean('enabled', true) : undefined;
+      const saved = spamPolicyAuthority.update({ guildId, actorId: interaction.user.id, operation, value,
+        requestId: interaction.id, expectedRevision: state.revision });
+      guildSpamPolicyCache.invalidate(guildId);
+      await interaction.editReply({ content: `${replyStatus(saved.policy)}\nAuthority: SQLite\nRevision: ${saved.revision}\nクラウド複製は非同期です。Auto Timeout: OFF` });
+      return;
     }
     guildSpamPolicyCache.invalidate(guildId);
     const context = await guildSpamPolicyCache.get(guildId);
@@ -539,7 +585,7 @@ async function handleSpamProtectionCommand(interaction) {
       return;
     }
     if (context.source === "fallback") {
-      await interaction.reply({ content: "現在設定を保存できません。少し待ってからもう一度お試しください。", flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: "現在設定を保存できません。少し待ってからもう一度お試しください。" });
       return;
     }
     const value = operation === "level"
@@ -549,12 +595,12 @@ async function handleSpamProtectionCommand(interaction) {
         : undefined;
     const next = normalizeSpamCommandPolicy(applySpamProtectionCommand(base, operation, value));
     if (!next) {
-      await interaction.reply({ content: "指定された設定値を確認してください。", flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: "指定された設定値を確認してください。" });
       return;
     }
     const changed = getChangedSpamPolicyFields(base, next);
     if (!changed.length) {
-      await interaction.reply({ content: replyStatus(base, context.source), flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: replyStatus(base, context.source) });
       return;
     }
     const fieldsToPersist = operation === "level"
@@ -568,7 +614,7 @@ async function handleSpamProtectionCommand(interaction) {
     const saved = parseGuildSpamPolicyRow(rows?.[0]?.policy ?? null);
     if (!saved) throw new Error("SPAM_POLICY_SAVE_INVALID_RESULT");
     guildSpamPolicyCache.invalidate(guildId);
-    await interaction.reply({ content: replyStatus(saved), flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: replyStatus(saved) });
   } catch (error) {
     const code = String(error?.code ?? error?.name ?? "SPAM_POLICY_COMMAND_ERROR").slice(0, 40);
     console.warn(`[spam-policy-command] setting update failed (${code}).`);
@@ -3629,7 +3675,7 @@ function getSpamProtectedReason(member) {
 }
 
 async function sendSpamDetectionAlert(message, { auditId, targetMember }) {
-  return sendTimeoutIncidentLog({ incidents: timeoutIncidents, query: (text, values) => sql.query(text, values),
+  return sendTimeoutIncidentLog({ incidents: timeoutIncidents, query: (text, values) => sql.query(text, values), security: coordinatedSecurity,
     guild: message.guild, incidentId: auditId, targetMember });
 }
 
@@ -3670,7 +3716,9 @@ async function handleSpamDetection(message, detection) {
     member: botMember,
   };
   const policyContext = detection.policyContext;
-  const automaticAllowed = policyContext?.source !== "fallback" && await mayAutomaticallyTimeout(
+  const automaticAllowed = coordinatedSecurity
+    ? policyContext?.source !== 'fallback' && await coordinatedSecurity.automaticAllowed(guildId, { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== 'enabled', expectedPolicy: policyContext?.policy })
+    : !spamPolicyAuthority.enabled && policyContext?.source !== "fallback" && await mayAutomaticallyTimeout(
     (text, values) => sql.query(text, values), message.guild.id,
     { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" },
   );
@@ -3707,9 +3755,18 @@ async function handleSpamDetection(message, detection) {
     return;
   }
   // Fresh, uncached consent immediately before the existing Discord side effect.
-  if (!await mayAutomaticallyTimeout((text, values) => sql.query(text, values), guildId,
-    { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" })) {
+  const freshAutomaticPermission = coordinatedSecurity
+    ? policyContext?.source !== 'fallback' && await coordinatedSecurity.automaticAllowed(guildId, { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== 'enabled', expectedPolicy: policyContext?.policy })
+    : !spamPolicyAuthority.enabled && await mayAutomaticallyTimeout((text, values) => sql.query(text, values), guildId,
+      { emergencyStop: process.env.SECURITY_V2_AUTO_EXECUTION !== "enabled" });
+  if (!freshAutomaticPermission) {
     timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'TIMEOUT_DENIED' });
+    return;
+  }
+  if (coordinatedSecurity && !await coordinatedSecurity.claimAutomaticIncident(guildId,auditId, {
+    emergencyStop:process.env.SECURITY_V2_AUTO_EXECUTION !== 'enabled',expectedPolicy:policyContext?.policy,
+  })) {
+    timeoutIncidents.timeoutResult(guildId,auditId,'skipped',{code:'TIMEOUT_DENIED'});
     return;
   }
   if (!timeoutIncidents.timeoutApi(guildId, auditId, SECURITY_V2_TIMEOUT_MS).inserted) return;
@@ -5142,6 +5199,11 @@ client.on("guildDelete", (guild) => {
 });
 
 client.on("interactionCreate", async (interaction) => {
+  if (await newsRuntime.interaction(interaction)) return;
+  if (interaction.isButton() && interaction.customId.startsWith("nvsec:")) {
+    await handleSecurityEvidence(interaction);
+    return;
+  }
   if (interaction.isAutocomplete()) {
     if (interaction.commandName === "translate") {
       await interaction
@@ -6121,6 +6183,7 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.on("messageCreate", async (message) => {
+  if (await newsRuntime.message(message)) return;
   if (!message.guild || isGuildBlocked(message.guild.id)) return;
 
   const trackSpam = async () => {
@@ -6652,6 +6715,7 @@ async function shutdown(
   if (shuttingDown) return;
   shuttingDown = true;
   if (localStopWatcher) clearInterval(localStopWatcher);
+  await newsRuntime.stop();
   console.log(`${signal} received. Disconnecting NuviloChan Bot...`);
   try {
     localRuntimeSnapshots?.writeRuntimeSnapshot({
@@ -6676,7 +6740,7 @@ async function shutdown(
       logCloudAwareError("cloud_heartbeat", "Failed to mark Bot as stopped", error);
     }
   }
-  if (runtimeCoordinator && cloudDatabase.isAvailable()) {
+  if (runtimeCoordinator && (cloudDatabase.isAvailable() || runtimeCoordinator instanceof QuorumRuntimeOwner)) {
     await runtimeCoordinator.stop({
       release: releaseLease,
       finalStatus: releaseLease ? "Stopped" : "LeaseLost",
@@ -6707,7 +6771,7 @@ async function startBot() {
     startupCloudProbe: cloudAvailable ? "PASS" : "DEGRADED",
   });
 
-  if (runtimeConfig.enabled) {
+  if (runtimeConfig.enabled || process.env.NUVILOVIEW_SINGLETON_AUTHORITY === 'quorum') {
     const configurationErrors = validateRuntimeConfig(runtimeConfig, runtimeIdentity);
     if (configurationErrors.length) {
       for (const error of configurationErrors) {
@@ -6715,7 +6779,8 @@ async function startBot() {
       }
       return RUNTIME_EXIT_CODES.CONFIGURATION_INVALID;
     }
-    if (!cloudAvailable) {
+    if (process.env.NUVILOVIEW_SINGLETON_AUTHORITY === 'quorum' && !securityCoordinatorRuntime) return RUNTIME_EXIT_CODES.CONFIGURATION_INVALID;
+    if (!cloudAvailable && process.env.NUVILOVIEW_SINGLETON_AUTHORITY !== 'quorum') {
       refreshCloudRuntimeStatus({ crossHostLeadership: "UNKNOWN_FAIL_CLOSED" });
       console.error(
         "[Singleton] Neon is unavailable and cross-host ownership cannot be proven; Discord login remains fail-closed.",
@@ -6723,7 +6788,9 @@ async function startBot() {
       return RUNTIME_EXIT_CODES.DATABASE_UNAVAILABLE;
     }
 
-    runtimeCoordinator = new RuntimeCoordinator({
+    const RuntimeOwner = process.env.NUVILOVIEW_SINGLETON_AUTHORITY === 'quorum' ? QuorumRuntimeOwner : RuntimeCoordinator;
+    runtimeCoordinator = new RuntimeOwner({
+      coordinator:securityCoordinatorRuntime?.coordinator,applicationId,
       repository: runtimeRepository,
       config: runtimeConfig,
       identity: runtimeIdentity,

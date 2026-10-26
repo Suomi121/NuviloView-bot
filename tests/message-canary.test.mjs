@@ -88,9 +88,9 @@ test("Canary Guild parser deduplicates and sorts valid Discord IDs", () => {
   assert.deepEqual(parseMessageCanaryGuildIds(`${guildB}, ${guildA},${guildB}`), [guildA, guildB]);
 });
 
-test("Phase 3A object names do not collide with 46 schema tables or active migrations", () => {
+test("Phase 3A object names do not collide with 52 schema tables or active migrations", () => {
   const schema = readFileSync(new URL("../lib/db/schema.ts", import.meta.url), "utf8");
-  assert.equal((schema.match(/pgTable\(/g) ?? []).length, 46);
+  assert.equal((schema.match(/pgTable\(/g) ?? []).length, 52);
   for (const name of [
     "message_event_replica",
     "message_tombstone",

@@ -15,6 +15,36 @@ import {
   primaryKey,
 } from "drizzle-orm/pg-core";
 
+export const mdbBlobShard = pgTable("mdb_blob_shard", {
+  artifactId:text("artifact_id").notNull(), version:text("version").notNull(),
+  shardIndex:integer("shard_index").notNull(), payload:text("payload").notNull(), checksum:text("checksum").notNull(),
+}, t => [primaryKey({columns:[t.artifactId,t.version,t.shardIndex]})]);
+export const guildQuorumTransfer = pgTable("guild_quorum_transfer", {
+  guildId:text("guild_id").primaryKey(), epoch:text("epoch").notNull(),planChecksum:text("plan_checksum").notNull(),
+  snapshot:text("snapshot").notNull(),snapshotChecksum:text("snapshot_checksum").notNull(),state:text("state").notNull(),
+  createdAt:timestamp("created_at",{withTimezone:true}).notNull().defaultNow(),
+});
+
+export const multiDbMembership = pgTable("mdb_membership", {
+  singleton: integer("singleton").primaryKey(), membership: text("membership").notNull(), providerId: text("provider_id").notNull(),
+});
+export const multiDbAcceptor = pgTable("mdb_acceptor", {
+  guildId: text("guild_id").notNull(), slot: integer("slot").notNull(), promised: text("promised").notNull(),
+  acceptedBallot: text("accepted_ballot"), value: text("value"), checksum: text("checksum"),
+}, table => [primaryKey({ columns: [table.guildId, table.slot] })]);
+export const guildSecurityQuorumFence = pgTable("guild_security_quorum_fence", {
+  guildId: text("guild_id").primaryKey(), epoch: text("epoch").notNull(), snapshotChecksum: text("snapshot_checksum").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const guildSpamPolicyAuthority = pgTable("guild_spam_policy_authority", {
+  guildId: text("guild_id").primaryKey(),
+  writerId: text("writer_id").notNull(),
+  epoch: text("epoch").notNull(),
+  snapshot: jsonb("snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 // --- Better Auth required tables -------------------------------------------
 // Column names are camelCase to match Better Auth's defaults. Do not rename.
 

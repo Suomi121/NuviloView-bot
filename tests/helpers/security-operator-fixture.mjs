@@ -2,15 +2,16 @@ import { PermissionFlagsBits } from 'discord.js';
 export const guildId = '100000000000000001', roleId = '200000000000000001', userId = '300000000000000001';
 export function operatorFixture({ kind = 'member', managed = false } = {}) {
   const calls = [], replies = [];
-  const role = { id: roleId, managed, tags: null };
+  const role = { id: roleId, managed, tags: null,
+    permissions: { has: permission => kind === 'admin' && permission === PermissionFlagsBits.Administrator } };
   const guild = { id: guildId, ownerId: kind === 'owner' ? userId : '300000000000000009',
     fetch: async () => { calls.push('guild'); return guild; },
-    roles: { cache: new Map([[roleId, role]]), fetch: async () => calls.push('roles') },
+    roles: { cache: new Map([[roleId, role]]), fetch: async () => { calls.push('roles'); return guild.roles.cache; } },
   };
   role.guild = guild;
   const member = { id: userId, guild,
     permissions: { has: permission => kind === 'admin' && permission === PermissionFlagsBits.Administrator || kind === 'manage' && permission === PermissionFlagsBits.ManageGuild },
-    roles: { cache: new Map(kind === 'operator' ? [[roleId, role]] : []), highest: { comparePositionTo: () => 1 } },
+    roles: { cache: new Map(['operator', 'admin'].includes(kind) ? [[roleId, role]] : []), highest: { comparePositionTo: () => 1 } },
   };
   guild.members = { fetch: async options => { calls.push(options); return member; }, fetchMe: async () => ({ roles: { highest: { comparePositionTo: () => 1 } } }) };
   const interaction = { guild, guildId, user: { id: userId }, inGuild: () => true,

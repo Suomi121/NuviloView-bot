@@ -38,14 +38,17 @@ for(const configured of [null,'400000000000000002']) test(`log routes once to ${
     assert.equal(l.sends.length,1);assert.equal(l.edits.length,1);
     assert.equal(l.fetches[0][0],l.selected);assert.equal(l.fetches[0][1].force,true);
     const before=l.sends[0].embeds[0].toJSON(),after=l.edits[0].embeds[0].toJSON();
-    assert.doesNotMatch(before.fields[0].value,/送信された/);
-    assert.match(after.fields[0].value,new RegExp(`<#${l.selected}> に送信されたよ`));
-    assert.match(after.fields[0].value,/<t:1790000000:F>（<t:1790000000:R>）/);
-    assert.match(after.fields[0].value,new RegExp(`<@${userId}> をスパム検知で1日タイムアウトしたよ`));
-    assert.doesNotMatch(after.fields[1].value,/@everyone|@here|<@123>/);
+    assert.equal(after.title,'スパム検知');
+    assert.doesNotMatch(before.description,/送信された/);
+    assert.match(after.description,new RegExp(`<#${l.selected}> に送信されたよ`));
+    assert.match(after.description,/<t:1790000000:F>（<t:1790000000:R>）/);
+    assert.match(after.description,new RegExp(`<@${userId}> をスパム検知で1日タイムアウトしたよ`));
+    assert.doesNotMatch(after.fields[0].value,/@everyone|@here|<@123>/);
     assert.deepEqual(l.sends[0].allowedMentions,{parse:[],repliedUser:false});
     assert.equal(l.sends[0].enforceNonce,true);assert.ok(l.sends[0].nonce.length<=25);
-    assert.equal(l.sends[0].components,undefined);assert.equal(l.sends[0].files,undefined);
+    const buttons=l.sends[0].components[0].toJSON().components;
+    assert.deepEqual(buttons.map(b=>b.label),['検知データを表示','誤検知を報告']);
+    assert.ok(buttons.every(b=>b.custom_id.length<=100));assert.equal(l.sends[0].files,undefined);
     const snapshot=f.incidents.snapshot(guildId,f.id);
     assert.equal(snapshot.log.status,'sent');assert.equal(snapshot.sent.payload.messageId,messageId);
     assert.equal(snapshot.timeout.payload.actualEndAt,1790086400000);
@@ -72,7 +75,7 @@ test('edit failure preserves actual delivery and never adds a second message',as
     const l=logFixture(f,{editError:true});await l.run();await l.run();
     assert.equal(l.sends.length,1);assert.equal(l.edits.length,1);
     assert.equal(f.incidents.snapshot(guildId,f.id).log.status,'sent_edit_failed');
-    assert.doesNotMatch(l.sends[0].embeds[0].toJSON().fields[0].value,/送信された/);
+    assert.doesNotMatch(l.sends[0].embeds[0].toJSON().description,/送信された/);
   }finally{f.storage.close();}
 });
 test('failed/skipped/unknown/pending timeouts never claim log or render a success',async()=>{
@@ -87,7 +90,7 @@ test('failed/skipped/unknown/pending timeouts never claim log or render a succes
 test('unknown user fields are explicit and duration reflects actual input',()=>{
   const f=completed();try{
     const p=timeoutLogPayload(f.incidents.snapshot(guildId,f.id),null).embeds[0].toJSON();
-    assert.match(p.fields[1].value,/表示名: 取得できません\nユーザー名: 取得できません/);
+    assert.match(p.fields[0].value,/表示名: 取得できません\nユーザー名: 取得できません/);
     assert.equal(formatTimeoutDuration(7200_000),'2時間');assert.equal(formatTimeoutDuration(90_000),'90秒');
     assert.throws(()=>f.incidents.snapshot('100000000000000002',f.id),/NOT_FOUND/);
   }finally{f.storage.close();}

@@ -5,6 +5,7 @@ import pg from 'pg';
 import { verifySecurityV2 } from './helpers/security-v2-postgres.mjs';
 import { verifyOperatorRoles } from './helpers/security-operators-postgres.mjs';
 import { verifyTimeoutLogSettings } from './helpers/security-timeout-log-postgres.mjs';
+import { verifySecurityEvidence } from './helpers/security-evidence-postgres.mjs';
 import { parseGuildSpamPolicyRow } from '../lib/guild-spam-policy.mjs';
 import { loadSpamCommand, interaction } from './helpers/spam-command-harness.mjs';
 
@@ -53,5 +54,6 @@ test('actual command SQL: 42P08 regression, persistence, retired reset, audit an
     await verifySecurityV2(client, url.href);
     await verifyOperatorRoles(client);
     await verifyTimeoutLogSettings(client, url.href);
+    await verifySecurityEvidence(client);
   } finally { await client.end(); }
 });

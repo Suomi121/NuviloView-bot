@@ -115,6 +115,11 @@ test('old publication is paused across epochs, not granted a fresh claim or blin
 });
 test('dedicated coordinator connection cannot reuse Auth database identity',async()=>{
  await assert.rejects(createSecurityCoordinatorRuntime({SECURITY_COORDINATOR_MODE:'quorum',SECURITY_COORDINATOR_SUPABASE_URL:'postgresql://user:dummy@127.0.0.1/auth',WEB_AUTH_SUPABASE_DATABASE_URL:'postgresql://user:dummy@127.0.0.1/auth'}),/MDB_DATABASE_SEPARATION_REQUIRED/);
+ for(const [coordinator,auth] of [
+  ['postgresql://postgres.projectref@pool.pooler.supabase.com:6543/postgres','postgresql://postgres@db.projectref.supabase.co:5432/postgres'],
+  ['postgresql://postgres@db.projectref.supabase.co:5432/postgres','postgresql://custom.projectref@pool.pooler.supabase.com:5432/postgres'],
+  ['postgresql://custom.projectref@pool.pooler.supabase.com:6543/postgres','postgresql://postgres.projectref@other.pooler.supabase.com:5432/postgres'],
+ ])await assert.rejects(createSecurityCoordinatorRuntime({SECURITY_COORDINATOR_MODE:'quorum',SECURITY_COORDINATOR_SUPABASE_URL:coordinator,WEB_AUTH_SUPABASE_DATABASE_URL:auth}),/MDB_DATABASE_SEPARATION_REQUIRED/);
 });
 test('numeric Guild identities and reusing retired epoch are rejected before any write',async t=>{
  const f=await recoveryFixture(t,{bootstrap:false});for(const patch of [{guilds:[100000000000000001]},{epoch:f.plan.retiredEpochs[0]},{controlId:100000000000000009}])assert.throws(()=>validateRecoveryPlan({...f.plan,...patch}),{code:'MDB_RECOVERY_PLAN'});

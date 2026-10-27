@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     if (!controlId) return NextResponse.json({ state: 'not_configured' }, { status: 503 })
     await runtime.coordinator.scoped('recovery').read(controlId)
     const sync = await withWebReadRouter(router => router.readSyncStatusSnapshot()).catch(() => null)
-    return NextResponse.json({ state: sync?.available ? 'available' : 'degraded',
+    return NextResponse.json({ state: sync?.available && sync.metadata.freshness === 'fresh' ? 'available' : 'degraded',
       quorum: runtime.coordinator.diagnostics(), syncRead: sync?.metadata ?? null,
       applicationMode: process.env.APPLICATION_DATA_MODE === 'quorum' ? 'quorum' : 'legacy',
       // Return only safe health fields, not arbitrary snapshot payload/errors.

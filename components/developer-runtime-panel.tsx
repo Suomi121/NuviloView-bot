@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
+import {fetchJsonBounded} from '@/lib/bounded-json.mjs'
 import { Activity, AlertTriangle, Cpu, Database, RefreshCw, Server } from 'lucide-react'
 
 type RuntimeLease = {
@@ -8,7 +9,7 @@ type RuntimeLease = {
   ownerInstanceId: string | null
   hostId: string | null
   fencingToken: string
-  leaseExpiresAt: string
+  leaseExpiresAt: string | null
   acquiredAt: string | null
   renewedAt: string | null
 }
@@ -18,7 +19,7 @@ type RuntimeHeartbeat = {
   hostId: string
   fencingToken: string | null
   platform: string
-  startedAt: string
+  startedAt: string | null
   lastHeartbeatAt: string
   status: string
   leaseState: string
@@ -28,6 +29,7 @@ type RuntimeHeartbeat = {
 }
 
 type RuntimeData = {
+  authority?: string
   enabled: boolean
   dbNow: string | null
   lease: RuntimeLease | null
@@ -57,35 +59,35 @@ export function DeveloperRuntimePanel() {
   const [error, setError] = useState(false)
   const [loading, setLoading] = useState(true)
   const [now, setNow] = useState(() => Date.now())
+  const loadSequence = useRef({version:0,active:true})
 
   const load = async () => {
+    const sequence = ++loadSequence.current.version
     try {
-      const [runtimeResponse, heartbeatResponse] = await Promise.all([
-        fetch('/api/developer/runtime/lease', { cache: 'no-store' }),
-        fetch('/api/developer/runtime/heartbeats?limit=50', { cache: 'no-store' }),
-      ])
-      if (!runtimeResponse.ok || !heartbeatResponse.ok) throw new Error('runtime unavailable')
       const [runtimeData, heartbeatData] = await Promise.all([
-        runtimeResponse.json(),
-        heartbeatResponse.json(),
+        fetchJsonBounded('/api/developer/runtime/lease', {cache:'no-store'}),
+        fetchJsonBounded('/api/developer/runtime/heartbeats?limit=50', {cache:'no-store'}),
       ])
+      if(!loadSequence.current.active || sequence !== loadSequence.current.version)return
       setRuntime(runtimeData)
       setHeartbeats(Array.isArray(heartbeatData.heartbeats) ? heartbeatData.heartbeats : [])
       setError(false)
       setNow(Date.now())
     } catch {
-      setError(true)
+      if(loadSequence.current.active && sequence === loadSequence.current.version)setError(true)
     } finally {
-      setLoading(false)
+      if(loadSequence.current.active && sequence === loadSequence.current.version)setLoading(false)
     }
   }
 
   useEffect(() => {
+    const lifecycle=loadSequence.current
+    lifecycle.active=true
     void load()
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void load()
     }, 30_000)
-    return () => window.clearInterval(timer)
+    return () => { window.clearInterval(timer); lifecycle.active=false }
   }, [])
 
   const visibleHosts = useMemo(() => {
@@ -107,7 +109,7 @@ export function DeveloperRuntimePanel() {
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="flex items-start gap-3">
         <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-primary"><Activity className="h-5 w-5" /></span>
-        <div><h2 className="font-bold">Runtime / Distributed Singleton</h2><p className="mt-1 text-xs text-muted-foreground">DB LeaseでWindows・Android・Render間の同時接続を防止します。</p></div>
+        <div><h2 className="font-bold">Runtime / Distributed Singleton</h2><p className="mt-1 text-xs text-muted-foreground">{runtime?.authority==='cloud-quorum'?'Quorum所有者と実際のheartbeatを照合します。時刻切れによる自動昇格は行いません。':'DB LeaseでWindows・Android・Render間の同時接続を防止します。'}</p></div>
       </div>
       <div className="flex items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${stateColor}`}>{state.toUpperCase()}</span><button onClick={() => { setLoading(true); void load() }} className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-secondary" aria-label="Runtimeを更新"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></button></div>
     </div>

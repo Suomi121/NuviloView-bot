@@ -22,6 +22,7 @@
 | 通知dismiss | 利用者/Guild別の暗号化MDS + CAS | 再起動後も保持。Auth FKやGET時INSERT不要 | API/UI実装 |
 | チャンネル表示Metadata | Botの実Discord観測 → MDS/Quorum | 欠損は不明、旧cacheを新Epochへ昇格しない | Bot/Web実装 |
 | API Rate Limit | 同一クラウドQuorumのbucket CAS | Quorum不足は拒否、プロセスメモリへの迂回なし | 実装 |
+| Runtime/Lease/heartbeat APIと管理画面 | Quorum owner + MDSの実Bot/Worker観測 | owner/heartbeatが一致しない、古い観測、Quorum不足はUnknown/Critical | 移管済み。過去Host履歴・未観測Version/起動時刻・TTL満了時刻を捏造しない |
 | 問い合わせ | 暗号化MDS + 送信前CLAIM | SENT/FAILED/UNKNOWN、UNKNOWN自動再送なし | API実装。外部メール自体のHAは保証しない |
 | News/Evidence/Incident | 既存Quorum/MDS/Local Audit/Claim | UNKNOWNを無条件再送しない | #43/#46を保持 |
 | Web Theme/Timezone/プロフィール | 既存の専用Auth storage | Supabase Auth構成ならNeonと独立 | 無断移管なし |
@@ -54,7 +55,6 @@ SQLiteは投票者ではない。Bot/Webの新しい設定はSQLiteだけを権�
 | Developer Guild blocklist | 旧テーブル/ローカルLKG参照が残る。新モードのWeb書込は禁止 | Guild別Quorum policy、未確認とallow/deny分離、Botの同期cache判定を実行前fresh gateへ置換 |
 | Bot reaction roles | legacy SQL設定とlocal LKGが残る | 安全な再確認・Quorum設定・イベントごとのfresh権限確認。旧cacheを最新扱いしない |
 | Translation usage | 外部有料Providerの月次quota予約/返却がNeon | 確認済残量からのQuorum予約・UNKNOWN請求区別。残量不明で外部有料呼出を許可しない |
-| Developer legacy heartbeat/lease UI | legacy SQL画面が残る | 新Quorum ownerとprojection contractへUI/endpointを統合。新data-health/monitor経路は実装済み |
 
 上記のため**「全体Multi-DB完成」「Production ready」とは判定しない**。未移管SQLを新しいDBへ無条件に振り替える解消方法は採らない。
 
@@ -82,7 +82,7 @@ CIは実PostgreSQL再起動、暗号化Goals/manifest復元、dump/restoreの断
 Mockでは認可、CSRF、API応答、期限、外部送信UNKNOWNを検証。実OAuth/本番DB/実Guild/本番メールは呼び出さない。
 本番のMigration/Deploy/再起動/同意・Guild設定変更はNONE。
 
-2026-10-26 local validation: Full 893 PASS / 16 SKIP / 0 FAIL、application focused 23 PASS、実PostgreSQL/Turso 2 PASS＋実DB再起動1 PASS。
+2026-10-27 local validation: Full 897 PASS / 16 SKIP / 0 FAIL、application focused 27 PASS、実PostgreSQL/Turso 2 PASS＋実DB再起動1 PASS。
 Build / TypeScript / Migration integrity / diff-check / 変更ファイルSecret scanはPASS。Lint 0 errors / 既存8 warnings。
 Production依存監査: Critical 0 / High 5 / Moderate 2 / Low 1（patched mainから依存変更なし）。開発依存の既知proxy-addr Criticalは別Security課題として残る。
 GitHub CIの結果はPRのchecksを参照。実Browser/Discord/Hosted DB試験は未実施。

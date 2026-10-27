@@ -4564,6 +4564,7 @@ async function recordBotHeartbeat() {
       runtimeMode: cloudDatabase.getStatus().runtimeMode,
       botStatus: "RUNNING",
       botHeartbeatAt: Date.now(),
+      botInstanceId: runtimeIdentity.instanceId,botHostId:runtimeIdentity.hostId,botCommit:runtimeIdentity.commitSha,botGuildCount:guildCount,
     });
   } catch (error) {
     console.error(
@@ -6756,6 +6757,7 @@ async function shutdown(
       runtimeMode: cloudDatabase.getStatus().runtimeMode,
       botStatus: "STOPPED",
       botHeartbeatAt: Date.now(),
+      botInstanceId: runtimeIdentity.instanceId,botHostId:runtimeIdentity.hostId,botCommit:runtimeIdentity.commitSha,
     });
   } catch (error) {
     console.error(

@@ -4,6 +4,7 @@ import { evaluateProjectionBotHealth } from '@/lib/production-bot-monitor.mjs'
 import { evaluateRuntimeSnapshot, getRuntimeMonitorConfig } from '@/lib/runtime-monitor.mjs'
 import { getMultiDbSyncConfig } from '@/lib/sync/multi-config.mjs'
 import { withWebReadRouter } from '@/lib/web-analytics-read'
+import {readApplicationRuntimeForWeb} from '@/lib/multi-db/application-runtime-web'
 
 export const dynamic = 'force-dynamic'
 
@@ -35,8 +36,13 @@ export async function GET(request: Request) {
   }
 
   try {
+    if(process.env.APPLICATION_DATA_MODE==='quorum') {
+      const runtime=await readApplicationRuntimeForWeb()
+      const available=['Healthy','Warning'].includes(runtime.diagnostic.state)
+      return NextResponse.json({status:available?'ok':'down'},{status:available?200:503,headers:noStoreHeaders})
+    }
     const multiDbConfig = getMultiDbSyncConfig(process.env)
-    if (process.env.APPLICATION_DATA_MODE === 'quorum' || (multiDbConfig.webReadEnabled && multiDbConfig.snapshotEnabled)) {
+    if (multiDbConfig.webReadEnabled && multiDbConfig.snapshotEnabled) {
       const assessment = await withWebReadRouter(async (router) => {
         const [runtimeRead, syncRead] = await Promise.all([
           router.readRuntimeSnapshot(),

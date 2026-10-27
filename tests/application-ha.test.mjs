@@ -110,6 +110,13 @@ test('repair catalog is durable, bounded and does not need private decryption ke
  await repair.processOnce();assert.equal(repair.status().state,'CONSISTENT');
  assert.ok(f.dbs[0].prepare(`SELECT count(*) n FROM ${f.tablePrefix}mdb_blob_shard`).get().n>0);
 });
+test('encrypted checkpoint archives themselves enter the durable repair catalog',async t=>{
+ const f=await applicationFixture(t);
+ for(let n=1;n<=3;n++)await f.save('goals',{goals:[{type:'messages',target:n}]},{ownerId:user});
+ const repair=createApplicationRepairer({coordinator:f.coordinator,dataPlane:f.dataPlane,controlId:f.plan.controlId,key:Buffer.alloc(32,7),keyId:'isolated-test-key',intervalMs:0,checkpointInterval:3});
+ await repair.processOnce();assert.notEqual(repair.status().state,'DEGRADED');
+ const catalog=await f.coordinator.scoped('application-repair').read(guildId);assert.equal(catalog.value.data.artifactIds.length,2);
+});
 test('worker publication failure is visible, never advances snapshot delivery and cannot fall back to Neon SQL',async t=>{
  const f=await applicationFixture(t),publisher=createApplicationPublisher({runtime:{coordinator:f.coordinator,dataPlane:f.dataPlane},storage:{snapshots:{listGuildSnapshots:()=>[]}},applicationId:f.plan.controlId,publisherId:'uninitialized',sourceEpoch:'source-1'});
  await publisher.processOnce();assert.equal(publisher.status().state,'DEGRADED');assert.equal(publisher.status().lastSuccess,null);

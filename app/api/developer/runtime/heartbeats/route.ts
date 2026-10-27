@@ -3,6 +3,7 @@ import { getDeveloperAccess } from '@/lib/developer-access'
 import { pool } from '@/lib/db'
 import { isRateLimited } from '@/lib/request-security'
 import { getRuntimeMonitorConfig } from '@/lib/runtime-monitor.mjs'
+import {readApplicationRuntimeForWeb} from '@/lib/multi-db/application-runtime-web'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,6 +22,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   }
 
+  if(process.env.APPLICATION_DATA_MODE==='quorum') {
+    try {const {heartbeats,historyCoverage,readMeta}=await readApplicationRuntimeForWeb();return NextResponse.json({heartbeats,historyCoverage,readMeta},{headers:noStoreHeaders})}
+    catch {return NextResponse.json({error:'Runtime quorum is unavailable',code:'APP_RUNTIME_UNAVAILABLE'},{status:503,headers:noStoreHeaders})}
+  }
   const config = getRuntimeMonitorConfig(process.env)
   const requestedLimit = Number(new URL(request.url).searchParams.get('limit'))
   const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 200) : 100

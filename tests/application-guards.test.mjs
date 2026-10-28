@@ -17,7 +17,7 @@ test('full DB inventory covers direct Neon callers and flags remaining work rath
  assert.equal(result.rows.filter(r=>r.classification==='REVIEW_REQUIRED').length,0);
 });
 test('unmigrated destructive paths and private search cannot silently fall back to stale Neon after cutover',()=>{
- for(const [path,marker] of [['lib/guild-reset-api.ts','FEATURE_DISABLED'],['app/api/developer/guilds/route.ts','APP_GUILD_ADMIN_UNMIGRATED'],['app/api/history-import/route.ts','APP_IMPORT_UNMIGRATED'],['app/api/messages/search/route.ts','APP_SEARCH_UNMIGRATED']]){
+ for(const [path,marker] of [['lib/guild-reset-api.ts','FEATURE_DISABLED'],['app/api/history-import/route.ts','APP_IMPORT_UNMIGRATED'],['app/api/messages/search/route.ts','APP_SEARCH_UNMIGRATED']]){
   const source=fs.readFileSync(new URL('../'+path,import.meta.url),'utf8');assert.ok(source.includes("APPLICATION_DATA_MODE === 'quorum'"));assert.ok(source.includes(marker));
  }
 });

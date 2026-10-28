@@ -4,6 +4,8 @@ import { pool } from '@/lib/db'
 import { hasJsonBody, isRateLimited, isTrustedMutation } from '@/lib/request-security'
 import { createAuditLogHash, verifyAuditLogHash } from '@/lib/audit-log'
 import { getGuildResetConfig } from '@/lib/guild-reset-utils.mjs'
+import {getApplicationGuildAccess,getDeveloperGuildRegistry} from '@/lib/multi-db/guild-access-web'
+import {applicationError} from '@/lib/multi-db/application-web'
 
 export const dynamic = 'force-dynamic'
 
@@ -33,6 +35,17 @@ export async function GET(request: Request) {
 
   try {
     const includeAudit = new URL(request.url).searchParams.get('includeAudit') !== 'false'
+    if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+      const service = await getApplicationGuildAccess(), rows = await service.list()
+      const registry=await getDeveloperGuildRegistry(rows.map(r=>r.guildId))
+      return NextResponse.json({guilds:rows.map(r=>({guildId:r.guildId,name:registry.get(r.guildId)?.name??null,iconUrl:registry.get(r.guildId)?.iconUrl??null,
+        ownerId:registry.get(r.guildId)?.ownerId??null,memberCount:registry.get(r.guildId)?.memberCount??null,isConnected:registry.get(r.guildId)?.isConnected??null,lastSeenAt:registry.get(r.guildId)?.lastSeenAt??null,
+        reason:r.decision==='block'?r.data.reason:null,blockedBy:r.decision==='block'?r.data.actorId:null,blockedAt:r.decision==='block'?new Date(r.data.occurredAt).toISOString():null,
+        decision:r.decision,state:r.state,token:{epoch:r.epoch,revision:r.revision,checksum:r.checksum}})),guildResetAvailable:false,
+        ...(includeAudit?{audit:rows.flatMap(r=>(r.data?.audit??[]).map((a:{requestId:string;decision:string;reason:string;actorId:string;occurredAt:number})=>({id:a.requestId,guildId:r.guildId,action:a.decision==='block'?'block':'unblock',reason:a.reason,
+          performedBy:a.actorId,performedByName:null,source:'quorum',createdAt:new Date(a.occurredAt).toISOString()}))),auditIntegrity:{valid:true,checked:rows.length}}:{}),
+        historyCoverage:'current_epoch_bounded_view',bot:{online:false,lastSeenAt:null,state:'unknown'},authority:'cloud-quorum'})
+    }
     const [guilds, audit, heartbeat] = await Promise.all([
       pool.query<{
         guildId: string; name: string | null; iconUrl: string | null; ownerId: string | null
@@ -88,6 +101,7 @@ export async function GET(request: Request) {
         : {}),
     })
   } catch (error) {
+    if (process.env.APPLICATION_DATA_MODE === 'quorum') {const result=applicationError(error);return NextResponse.json(result.body,{status:result.status})}
     console.error('Failed to load developer guild management data:', error)
     return NextResponse.json({ error: 'Unable to load developer data' }, { status: 500 })
   }
@@ -102,8 +116,6 @@ export async function POST(request: Request) {
   if (await isRateLimited(request, { scope: 'developer-guilds-write', limit: 10, windowSeconds: 60, identity: access.userId, failClosed: true })) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   }
-  if (process.env.APPLICATION_DATA_MODE === 'quorum') return NextResponse.json({error:'Guild Block・削除の実行所有権は未移管です。旧Neonだけを変更しません。',code:'APP_GUILD_ADMIN_UNMIGRATED'},{status:503})
-
   const body = await request.json().catch(() => null)
   const action = body?.action === 'block' || body?.action === 'unblock' ? body.action : null
   const guildId = typeof body?.guildId === 'string' ? body.guildId.trim() : ''
@@ -113,6 +125,13 @@ export async function POST(request: Request) {
   if (action === 'block' && reason.length < 3) return NextResponse.json({ error: 'A reason of at least 3 characters is required' }, { status: 400 })
 
   try {
+    if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+      const service = await getApplicationGuildAccess()
+      await service.change({guildId,decision:action==='block'?'block':'allow',reason,actorId:access.discordUserId,
+        requestId:body?.requestId,expected:body?.token,acknowledgeUnconfirmed:body?.acknowledgeUnconfirmed===true,
+        authorize:async()=>Boolean(await getDeveloperAccess(request)),occurredAt:Date.now()})
+      return NextResponse.json({ok:true,message:'Guildの利用可否を保存しました。データ削除・Auto Timeout同意の変更は行っていません。'})
+    }
     if (action === 'block') {
       await pool.query(`
         INSERT INTO "bot_guild_blocklist" ("guildId", "reason", "blockedBy")
@@ -136,6 +155,7 @@ export async function POST(request: Request) {
     `, [guildId, action, auditReason, access.discordUserId, access.displayName, createdAt, previousHash, entryHash])
     return NextResponse.json({ ok: true, message: action === 'block' ? 'Guildをブロックしました。Botは15秒以内に停止・退出します。' : 'Guildのブロックを解除しました。' })
   } catch (error) {
+    if (process.env.APPLICATION_DATA_MODE === 'quorum') {const result=applicationError(error);return NextResponse.json(result.body,{status:result.status})}
     console.error('Failed to change guild block status:', error)
     return NextResponse.json({ error: 'Unable to update block status' }, { status: 500 })
   }

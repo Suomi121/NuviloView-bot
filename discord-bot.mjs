@@ -6,6 +6,9 @@ import { createSecurityCoordinatorRuntime } from './lib/multi-db/runtime.mjs';
 import { createApplicationStore } from './lib/multi-db/application-store.mjs';
 import { appendApplicationAlert } from './lib/multi-db/application-alerts.mjs';
 import { validateApplicationConfiguration } from './lib/multi-db/application-config.mjs';
+import { createTranslationQuota, translateWithQuota } from './lib/multi-db/translation-quota.mjs';
+import { createGuildAccess } from './lib/multi-db/guild-access.mjs';
+import { createReactionRoleSettings, handleQuorumReactionRoleCommand } from './lib/multi-db/reaction-roles.mjs';
 import { handleQuorumSpamCommand } from './lib/multi-db/discord-spam.mjs';
 import { timeoutLogCommand, createTimeoutLogCommandHandler } from "./lib/security-log-settings.mjs";
 import { createTimeoutIncidentService, timeoutFailureStatus, safeIncidentError } from "./lib/timeout-incidents.mjs";
@@ -38,7 +41,7 @@ import {
   TextDisplayBuilder,
 } from "discord.js";
 import { neon } from "@neondatabase/serverless";
-import { createHmac, randomInt, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { createGuildResetService } from "./lib/guild-reset-service.mjs";
@@ -164,8 +167,22 @@ const messageStorage = createStorage({ env: process.env });
 validateApplicationConfiguration(process.env,{role:'bot'});
 const securityCoordinatorRuntime = await createSecurityCoordinatorRuntime(process.env, { storage: messageStorage });
 const coordinatedSecurity = securityCoordinatorRuntime?.security;
+const applicationGuildAccess = process.env.APPLICATION_DATA_MODE === 'quorum' && securityCoordinatorRuntime
+  ? createGuildAccess({ coordinator: securityCoordinatorRuntime.coordinator }) : null;
+const applicationTranslationQuota = process.env.APPLICATION_DATA_MODE === 'quorum' && securityCoordinatorRuntime
+  ? createTranslationQuota({ coordinator: securityCoordinatorRuntime.coordinator, controlId: process.env.SECURITY_COORDINATOR_RECOVERY_CONTROL_ID }) : null;
 const applicationStore = process.env.APPLICATION_DATA_MODE === 'quorum' && securityCoordinatorRuntime ? createApplicationStore({ ...securityCoordinatorRuntime,
-  authorize: async ({ operation, domain }) => operation === 'read' || ['alerts','channel-metadata'].includes(domain) }) : null;
+  authorize: async ({ operation, domain }) => operation === 'read' || ['alerts','channel-metadata','reaction-roles','guild-registry'].includes(domain) }) : null;
+const applicationReactionRoles = applicationStore ? createReactionRoleSettings({ store: applicationStore,
+  proveOwner: async () => { if (!(runtimeCoordinator instanceof QuorumRuntimeOwner)) throw new Error('APP_RUNTIME_FENCED'); await runtimeCoordinator.prove(); },
+  allowGuild: guildId => applicationGuildAccess.allowed(guildId), safetyError: getReactionRoleSafetyError,
+  audit: entry => messageStorage.transaction(() => {
+    const eventId = `${entry.effectId}:${entry.state}`, occurredAt = Date.now();
+    messageStorage.security.appendAudit({ eventId, guildId: entry.guildId, category: 'reaction-role', action: entry.adding ? 'add' : 'remove', actorId: entry.actorId,
+      status: entry.state, occurredAt, payload: entry });
+    messageStorage.outbox.enqueue({ eventId, domain: 'security', eventType: 'reaction_role_effect_v1', aggregateId: `reaction-role:${entry.guildId}:${entry.roleId}`,
+      payload: entry, schemaVersion: 1, createdAt: occurredAt });
+  }) }) : null;
 const handleOperatorRoleCommand = createOperatorRoleHandler({ query: (text, values) => sql.query(text, values), security: coordinatedSecurity });
 const handleTimeoutLogCommand = createTimeoutLogCommandHandler({ query: (text, values) => sql.query(text, values), security: coordinatedSecurity });
 const runtimeConfig = getRuntimeConfig(process.env);
@@ -1548,12 +1565,25 @@ async function releaseTranslationCharacters(characterCount) {
   `;
 }
 
-async function translateMessageText({ content, targetLanguage, userId }) {
+async function translateMessageText({ content, targetLanguage, userId, requestId }) {
   if (!content.trim()) {
     throw translationError("EMPTY_MESSAGE", "テキストを含むメッセージだけ翻訳できます。");
   }
   consumeTranslationRateLimit(userId);
   const characterCount = [...content].length;
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    if (!applicationTranslationQuota || !requestId || !(runtimeCoordinator instanceof QuorumRuntimeOwner)) throw translationError('APP_QUOTA_UNCONFIRMED', '翻訳利用枠を確認できません。管理者による確認が必要です。');
+    return translateWithQuota({ quota: applicationTranslationQuota, requestId: `${requestId}:${targetLanguage}`,
+      content, targetLanguage, fence: randomBytes(32).toString('hex'), proveOwner: () => runtimeCoordinator.prove(),
+      translate: async () => {
+        const response = await fetch(`${libreTranslateUrl}/translate`, { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15000),
+          body: JSON.stringify({ q: content, source: detectTranslationSource(content), target: targetLanguage, format: 'text' }) });
+        const body = await response.json();
+        if (!response.ok || typeof body?.translatedText !== 'string') throw new Error('Translation unavailable');
+        return { text: decodeTranslatedText(body.translatedText), detectedLanguage: body.detectedLanguage?.language ?? null };
+      } });
+  }
   const usedCharacters = await reserveTranslationCharacters(characterCount);
   if (usedCharacters === null) {
     throw translationError(
@@ -1772,6 +1802,7 @@ async function handleTranslateSlashCommand(interaction) {
       content,
       targetLanguage: target.code,
       userId: interaction.user.id,
+      requestId: interaction.id,
     });
     await interaction.editReply({
       embeds: [
@@ -1802,6 +1833,11 @@ function isGuildBlocked(guildId) {
   return blockedGuildIds.has(guildId);
 }
 
+async function guildOperationDenied(guildId) {
+  if (process.env.APPLICATION_DATA_MODE !== 'quorum') return isGuildBlocked(guildId);
+  return !applicationGuildAccess || !await applicationGuildAccess.allowed(guildId);
+}
+
 const blockedGuildCacheKey = "runtime:blocked-guilds";
 let blockedGuildCacheLoaded = false;
 
@@ -1823,6 +1859,12 @@ function applyBlockedGuildRows(rows, source, cachedAt = null) {
 }
 
 async function loadBlockedGuilds() {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    if (!applicationGuildAccess) throw new Error('APP_CONFIGURATION');
+    const rows = await applicationGuildAccess.list();
+    applyBlockedGuildRows(rows.filter(r => r.decision === 'block'), 'CLOUD_QUORUM');
+    return { source: 'CLOUD_QUORUM', count: blockedGuildIds.size };
+  }
   if (cloudDatabase.canQuery()) {
     try {
       const rows = await sql`SELECT "guildId" FROM "bot_guild_blocklist"`;
@@ -1871,7 +1913,12 @@ async function recordBlockAudit({ guildId, action, reason = null, performedBy, p
 }
 
 async function syncGuildRegistry(guild) {
-  if (isGuildBlocked(guild.id)) {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    if (await guildOperationDenied(guild.id)) return;
+    return publishGuildRegistry(guild.id,{name:guild.name.slice(0,100),iconUrl:guild.iconURL({extension:'png',size:128})??null,
+      ownerId:guild.ownerId??null,memberCount:guild.memberCount,isConnected:true,lastSeenAt:new Date().toISOString()});
+  }
+  if (await guildOperationDenied(guild.id)) {
     await markGuildDisconnected(guild.id);
     return;
   }
@@ -1891,11 +1938,23 @@ async function syncGuildRegistry(guild) {
 }
 
 async function markGuildDisconnected(guildId) {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') return publishGuildRegistry(guildId,{isConnected:false});
   await sql`
     UPDATE "bot_guild_registry"
     SET "isConnected" = false, "updatedAt" = now()
     WHERE "guildId" = ${guildId}
   `;
+}
+
+async function publishGuildRegistry(guildId, patch) {
+  if (!applicationStore || !(runtimeCoordinator instanceof QuorumRuntimeOwner)) throw new Error('APP_CONFIGURATION');
+  await runtimeCoordinator.prove();
+  const current = await applicationStore.read({domain:'guild-registry',guildId,actorId:runtimeIdentity.instanceId});
+  const data = {...(current.data??{name:null,iconUrl:null,ownerId:null,memberCount:null,lastSeenAt:null}),...patch};
+  await runtimeCoordinator.prove();
+  return applicationStore.write({domain:'guild-registry',guildId,actorId:runtimeIdentity.instanceId,expectedEpoch:current.epoch,
+    expectedRevision:current.revision,expectedChecksum:current.checksum,acknowledgeUnconfirmed:true,
+    requestId:`guild-registry:${guildId}:${randomUUID()}`,data});
 }
 
 async function enforceBlockedGuilds() {
@@ -1928,6 +1987,10 @@ async function purgeGuildData(guildId) {
 }
 
 async function leaveBlockedGuild(guild, source) {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    const state = await applicationGuildAccess.read(guild.id);
+    if (state.decision !== 'block') return false;
+  }
   if (!isGuildBlocked(guild.id)) return false;
   try {
     await guild.leave();
@@ -2164,6 +2227,18 @@ function applyReactionRoleRows(rows, guildId = null) {
 }
 
 async function loadReactionRoleRules(guildId = null) {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    // This map is advisory inventory only. Effects always fresh-read quorum.
+    const ids = guildId ? [guildId] : [...client.guilds.cache.keys()];
+    for (const id of ids) {
+      clearGuildReactionRoleRules(id);
+      if (!applicationReactionRoles) continue;
+      try { const state = await applicationReactionRoles.load(id, runtimeIdentity.instanceId);
+        if (state.state === 'confirmed') applyReactionRoleRows(state.data.rules.map(r => ({ ...r, guildId: id })), id);
+      } catch { /* No old cache fallback on missing policy or lost quorum. */ }
+    }
+    return { source: 'CLOUD_QUORUM', count: reactionRoleRules.size };
+  }
   if (cloudDatabase.canQuery()) {
     try {
       const rows = guildId
@@ -2249,6 +2324,7 @@ async function requireReactionRoleAdministrator(interaction) {
 }
 
 async function handleSetRollCommand(interaction) {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') return handleQuorumReactionRoleCommand(interaction, applicationReactionRoles);
   if (!(await requireReactionRoleAdministrator(interaction))) return;
   const guild = interaction.guild;
   const subcommand = interaction.options.getSubcommand(true);
@@ -2424,6 +2500,10 @@ async function handleSetRollCommand(interaction) {
 }
 
 async function applyReactionRoleChange(reaction, user, adding) {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    if (!applicationReactionRoles) return;
+    return applicationReactionRoles.apply({ reaction, user, adding });
+  }
   if (user.bot || !reaction.message.guild || isGuildBlocked(reaction.message.guild.id)) return;
   if (reaction.partial) await reaction.fetch();
   if (reaction.message.partial) await reaction.message.fetch();
@@ -3775,6 +3855,9 @@ async function handleSpamDetection(message, detection) {
     timeoutIncidents.timeoutResult(guildId,auditId,'skipped',{code:'TIMEOUT_DENIED'});
     return;
   }
+  if (await guildOperationDenied(guildId)) {
+    timeoutIncidents.timeoutResult(guildId, auditId, 'skipped', { code: 'GUILD_ACCESS_DENIED' }); return;
+  }
   if (!timeoutIncidents.timeoutApi(guildId, auditId, SECURITY_V2_TIMEOUT_MS).inserted) return;
   let timedOut;
   try {
@@ -4544,7 +4627,7 @@ async function reconcileVoiceAfterMemberRemoval(guild) {
 }
 
 async function updateMemberCount(guild) {
-  if (isGuildBlocked(guild.id)) return;
+  if (await guildOperationDenied(guild.id)) return;
   if (eventRouter.isLocalFirstGuild("member", guild.id)) return;
   await sql`
     INSERT INTO "daily_stats" ("guildId", "memberCount", "messageCount", "date")
@@ -4604,7 +4687,7 @@ async function recordBotHeartbeat() {
 }
 
 async function syncChannelAccess(guild) {
-  if (isGuildBlocked(guild.id)) return;
+  if (await guildOperationDenied(guild.id)) return;
   const botMember = guild.members.me ?? (await guild.members.fetchMe());
   const channels = await guild.channels.fetch();
   const channelAccess = [...channels.values()]
@@ -4692,7 +4775,7 @@ function analyticsRoleIds(member) {
 }
 
 async function recordGuildMemberEvent(member, eventType, source = "gateway") {
-  if (isGuildBlocked(member.guild.id)) return;
+  if (await guildOperationDenied(member.guild.id)) return;
   const occurredAt = eventType === "join" && member.joinedAt ? member.joinedAt : new Date();
   const roleIds = JSON.stringify(analyticsRoleIds(member));
   if (source === "discord_sync") {
@@ -4713,7 +4796,7 @@ async function recordGuildMemberEvent(member, eventType, source = "gateway") {
 }
 
 async function syncAnalyticsInventory(guild, { fetchMembers = false } = {}) {
-  if (isGuildBlocked(guild.id)) return;
+  if (await guildOperationDenied(guild.id)) return;
   if (fetchMembers) {
     try {
       await guild.members.fetch();
@@ -4799,7 +4882,7 @@ async function updateVoiceAnalytics(oldState, newState) {
   const guild = newState.guild;
   if (eventRouter.isLocalFirstGuild("voice", guild.id)) return;
   const member = newState.member ?? oldState.member;
-  if (!member || member.user.bot || isGuildBlocked(guild.id)) return;
+  if (!member || member.user.bot || await guildOperationDenied(guild.id)) return;
   if (oldState.channelId) {
     await sql`
       UPDATE "voice_session" SET "endedAt" = now()
@@ -4854,7 +4937,7 @@ async function emitGuildAlert({ guildId, type, severity = "warning", title, body
 }
 
 async function checkGuildAlerts(guild) {
-  if (isGuildBlocked(guild.id)) return;
+  if (await guildOperationDenied(guild.id)) return;
   if (process.env.APPLICATION_DATA_MODE === 'quorum') {
     // New observations only. Missing old history cannot prove inactivity or
     // disconnection; never synthesize those warnings from missing rows.
@@ -4930,7 +5013,7 @@ async function recordActivity({
   actorName,
   channelName = null,
 }) {
-  if (isGuildBlocked(guildId)) return;
+  if (await guildOperationDenied(guildId)) return;
   await sql`
     INSERT INTO "recent_activity" ("guildId", "type", "actorName", "channelName")
     VALUES (${guildId}, ${type}, ${actorName}, ${channelName})
@@ -4938,7 +5021,7 @@ async function recordActivity({
 }
 
 async function recordActiveMember({ guildId, userId }) {
-  if (isGuildBlocked(guildId)) return;
+  if (await guildOperationDenied(guildId)) return;
   await sql`
     INSERT INTO "daily_active_member" ("guildId", "userId", "date")
     VALUES (${guildId}, ${userId}, CURRENT_DATE)
@@ -4950,7 +5033,7 @@ async function recordActiveMember({ guildId, userId }) {
 // events. Read the recent channel history once so today's active-member count
 // starts with people who have already spoken today.
 async function restoreTodayActiveMembers(guild) {
-  if (isGuildBlocked(guild.id)) return;
+  if (await guildOperationDenied(guild.id)) return;
   const startOfToday = new Date();
   startOfToday.setUTCHours(0, 0, 0, 0);
   const channels = await guild.channels.fetch();
@@ -4985,7 +5068,7 @@ async function restoreTodayActiveMembers(guild) {
 async function storeMessage(message) {
   if (
     !message.guild ||
-    isGuildBlocked(message.guild.id) ||
+    await guildOperationDenied(message.guild.id) ||
     message.author.bot ||
     !message.content.trim()
   )
@@ -5087,7 +5170,7 @@ function hasHumanVoiceActivity(guild) {
 // A server session advances only once while at least one human is connected to
 // any voice channel. Moving channels or adding members does not split it.
 async function syncServerVoiceSession(guild) {
-  if (isGuildBlocked(guild.id)) return;
+  if (await guildOperationDenied(guild.id)) return;
   if (eventRouter.isLocalFirstGuild("voice", guild.id)) return;
   if (hasHumanVoiceActivity(guild)) {
     await sql`
@@ -5355,6 +5438,7 @@ client.on("interactionCreate", async (interaction) => {
         content: request.content,
         targetLanguage,
         userId: interaction.user.id,
+        requestId,
       });
       translationRequests.delete(requestId);
       const embed = createTranslationResultEmbed({
@@ -5404,6 +5488,7 @@ client.on("interactionCreate", async (interaction) => {
         content: request.content,
         targetLanguage,
         userId: interaction.user.id,
+        requestId,
       });
       translationRequests.delete(requestId);
       const embed = createTranslationResultEmbed({
@@ -5424,6 +5509,28 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (!interaction.isChatInputCommand()) return;
+  if (process.env.APPLICATION_DATA_MODE === 'quorum' && ['guildblock','guildunblock','guildblocks'].includes(interaction.commandName)) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const reply = content => interaction.editReply({ content, allowedMentions: { parse: [] } });
+    if (!canUseBotServers(interaction)) { await reply('開発者専用の操作です。'); return; }
+    try {
+      if (!applicationGuildAccess) throw new Error('APP_CONFIGURATION');
+      if (interaction.commandName === 'guildblocks') {
+        const rows = await applicationGuildAccess.list();
+        await reply(rows.map(r => `${r.guildId}: ${r.decision === 'unknown' ? '未確認（実行禁止）' : r.decision}`).join('\n').slice(0, 1800) || '確認済みのGuildはありません。');
+      } else {
+        const guildId = interaction.options.getString('server_id', true).trim();
+        if (guildId === developerGuildId) throw new Error('APP_PROTECTED_GUILD');
+        const current = await applicationGuildAccess.read(guildId);
+        await applicationGuildAccess.change({ guildId, decision: interaction.commandName === 'guildblock' ? 'block' : 'allow',
+          reason: interaction.commandName === 'guildblock' ? interaction.options.getString('reason', true).trim() : '',
+          actorId: interaction.user.id, requestId: interaction.id, expected: current, acknowledgeUnconfirmed: true,
+          authorize: async () => canUseBotServers(interaction), occurredAt: Date.now() });
+        await reply('Guildの利用可否をQuorumへ保存しました。データ削除・Auto Timeout同意の変更は行っていません。');
+      }
+    } catch { await reply('権限またはDB合意を確認できません。最新状態を再確認してください。成功とは扱っていません。'); }
+    return;
+  }
   if (interaction.commandName === "tosetlog") {
     await handleTimeoutLogCommand(interaction);
     return;
@@ -6219,7 +6326,7 @@ client.on("interactionCreate", async (interaction) => {
 
 client.on("messageCreate", async (message) => {
   if (await newsRuntime.message(message)) return;
-  if (!message.guild || isGuildBlocked(message.guild.id)) return;
+  if (!message.guild || await guildOperationDenied(message.guild.id)) return;
 
   const trackSpam = async () => {
     if (
@@ -6356,7 +6463,7 @@ client.on("messageUpdate", async (_before, after) => {
     const message = after.partial ? await after.fetch() : after;
     if (
       !message.guild ||
-      isGuildBlocked(message.guild.id) ||
+      await guildOperationDenied(message.guild.id) ||
       message.author.bot ||
       !message.content.trim()
     ) return;
@@ -6516,7 +6623,7 @@ client.on("messageReactionAdd", async (reaction, user) => {
   if (
     user.bot ||
     !reaction.message.guild ||
-    isGuildBlocked(reaction.message.guild.id)
+    await guildOperationDenied(reaction.message.guild.id)
   )
     return;
   await applyReactionRoleChange(reaction, user, true).catch((error) =>
@@ -6538,7 +6645,7 @@ client.on("messageReactionRemove", async (reaction, user) => {
   if (
     user.bot ||
     !reaction.message.guild ||
-    isGuildBlocked(reaction.message.guild.id)
+    await guildOperationDenied(reaction.message.guild.id)
   ) return;
   try {
     if (reaction.partial) await reaction.fetch();
@@ -6549,9 +6656,9 @@ client.on("messageReactionRemove", async (reaction, user) => {
   }
 });
 
-client.on("voiceStateUpdate", (oldState, newState) => {
+client.on("voiceStateUpdate", async (oldState, newState) => {
   if (oldState.channelId === newState.channelId) return;
-  if (isGuildBlocked(newState.guild.id)) return;
+  if (await guildOperationDenied(newState.guild.id)) return;
   void eventRouter.voice(oldState, newState).catch((error) =>
     logCloudAwareError("voice_analytics", "Failed to sync member voice analytics", error),
   );
@@ -6559,8 +6666,8 @@ client.on("voiceStateUpdate", (oldState, newState) => {
 
 client.on(
   "guildMemberAdd",
-  (member) => {
-    if (isGuildBlocked(member.guild.id)) return;
+  async (member) => {
+    if (await guildOperationDenied(member.guild.id)) return;
     void Promise.all([
       eventRouter.member(member, "join"),
       syncMemberEventCloudSummaries(member.guild),
@@ -6571,8 +6678,8 @@ client.on(
 );
 client.on(
   "guildMemberRemove",
-  (member) => {
-    if (isGuildBlocked(member.guild.id)) return;
+  async (member) => {
+    if (await guildOperationDenied(member.guild.id)) return;
     void Promise.all([
       eventRouter.member(member, "leave"),
       syncMemberEventCloudSummaries(member.guild),
@@ -6625,10 +6732,10 @@ client.rest.on("rateLimited", (rateLimit) => {
 });
 
 for (const eventName of ["channelCreate", "channelDelete", "channelUpdate", "roleCreate", "roleDelete", "roleUpdate"]) {
-  client.on(eventName, (...args) => {
+  client.on(eventName, async (...args) => {
     const subject = args.at(-1) ?? args[0];
     const guild = subject?.guild;
-    if (!guild || isGuildBlocked(guild.id)) return;
+    if (!guild || await guildOperationDenied(guild.id)) return;
     void Promise.allSettled([
       syncAnalyticsInventory(guild),
       syncChannelAccess(guild),
@@ -6646,8 +6753,8 @@ for (const eventName of ["channelCreate", "channelDelete", "channelUpdate", "rol
   });
 }
 
-client.on("guildMemberUpdate", (before, after) => {
-  if (isGuildBlocked(after.guild.id)) return;
+client.on("guildMemberUpdate", async (before, after) => {
+  if (await guildOperationDenied(after.guild.id)) return;
   const rolesChanged =
     before.roles.cache.size !== after.roles.cache.size ||
     [...before.roles.cache.keys()].some((roleId) => !after.roles.cache.has(roleId));

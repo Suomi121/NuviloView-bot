@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 export function classifyDatabaseAccess(path) {
   if (/auth-storage|lib\/auth\.ts|auth-provider|auth-unlink|lib\/discord\.ts|developer-access|social-login-state|account-connections|api\/guilds\/route|settings\/(theme|timezone)/.test(path)) return 'DEDICATED_AUTH_AUTHORITY';
   if (/multi-db\//.test(path)) return 'QUORUM_AND_ERASURE';
+  if (path === 'app/api/developer/guilds/route.ts') return 'APPLICATION_HA_WITH_LEGACY_COMPAT';
   if (/sync\/|run-sync-worker|storage\/|local-first|canary/.test(path)) return 'LOCAL_FIRST_REPLICATION';
   if (/goals\/|notifications\/|request-security|web-analytics-read|web-read-router|channel-metadata|analytics\/|monitor\/bot|backend\/status/.test(path)) return 'APPLICATION_HA_WITH_LEGACY_COMPAT';
   if (/spam|security-|timeout-|news-/.test(path)) return 'SECURITY_OR_NEWS_QUORUM_WITH_LEGACY_COMPAT';

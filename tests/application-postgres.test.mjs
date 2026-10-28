@@ -8,6 +8,8 @@ import { createSqlAcceptor } from '../lib/multi-db/acceptor.mjs';
 import { createDataPlane,createShardStore } from '../lib/multi-db/data-plane.mjs';
 import { createApplicationStore } from '../lib/multi-db/application-store.mjs';
 import { checksum,createCoordinator } from '../lib/multi-db/coordinator.mjs';
+import {createGuildAccess} from '../lib/multi-db/guild-access.mjs';
+import {createTranslationQuota} from '../lib/multi-db/translation-quota.mjs';
 
 test('real isolated PostgreSQL + Turso SDK: application data survives Neon outage, repair, restart and conflicting writers',{skip:!process.env.TEST_COORDINATOR_DATABASE_URL},async t=>{
   const url=new URL(process.env.TEST_COORDINATOR_DATABASE_URL);
@@ -25,6 +27,17 @@ test('real isolated PostgreSQL + Turso SDK: application data survives Neon outag
   const s=make(),input={domain:'goals',guildId,ownerId:'fixture-user',actorId:'fixture-user'},data={goals:[{type:'messages',target:1300}]};
   const saved=await s.write({...input,expectedEpoch:plan.epoch,expectedRevision:0,expectedChecksum:'GENESIS',acknowledgeUnconfirmed:true,requestId:'goals-on-two-real-databases',data});
   assert.deepEqual((await make().read(input)).data,data);
+  const access=createGuildAccess(r),review=await access.read(guildId);
+  assert.equal(review.decision,'unknown');
+  await access.change({guildId,expected:review,decision:'allow',actorId:'isolated-review',requestId:'pg-access-review',occurredAt:1,acknowledgeUnconfirmed:true,authorize:async()=>true});
+  assert.equal(await access.allowed(guildId),true);
+  const roleInput={domain:'reaction-roles',guildId,actorId:'isolated-admin'},rules={rules:[{channelId:'100000000000000011',messageId:'100000000000000012',emojiKey:'unicode:✅',emojiDisplay:'✅',roleIds:['100000000000000013']}]};
+  await s.write({...roleInput,expectedEpoch:plan.epoch,expectedRevision:0,expectedChecksum:'GENESIS',acknowledgeUnconfirmed:true,requestId:'pg-reaction-role-save',data:rules});
+  assert.deepEqual((await make().read(roleInput)).data,rules);
+  const quota=createTranslationQuota({coordinator:r.coordinator,controlId:plan.controlId,now:()=>Date.parse('2026-10-28T00:00:00Z')});
+  await quota.initialize({period:'2026-10',limit:100,baseline:10,reviewed:true,actorId:'isolated-review',reviewId:'pg-quota-review'});
+  await quota.reserve({id:checksum('pg-request'),characters:15,intent:checksum('synthetic-input')});
+  assert.equal((await quota.status()).remainingCharacters,75);
   turso.setOffline(true);await assert.rejects(s.read(input));turso.setOffline(false);
   assert.equal((await s.read(input)).checksum,saved.checksum);
   // Only now initialize the third (new-epoch) voter and recover its state.

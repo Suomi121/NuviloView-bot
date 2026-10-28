@@ -52,11 +52,20 @@ SQLiteは投票者ではない。Bot/Webの新しい設定はSQLiteだけを権�
 | History Import | PostgreSQL job lock/cursor/worker claimに依存。新モードでは明示503 | Quorum command/claim + generation fence、SQLite cursorとの二重実行防止、全状態遷移と中断/再開試験 |
 | Message search | raw message全文Indexは未移管。新モードは明示503 | 既存保持/削除契約を維持した暗号化Index再構築、削除tombstone、全版の保持/GC、認可範囲試験 |
 | Guild reset/データ削除 | 旧SQLだけの削除ではMDS/replicaが残る。新モードは実行拒否 | 全DB tombstone/世代barrier + 承認済backup + 各provider削除receipt + fail-resume protocol |
-| Developer Guild blocklist | 旧テーブル/ローカルLKG参照が残る。新モードのWeb書込は禁止 | Guild別Quorum policy、未確認とallow/deny分離、Botの同期cache判定を実行前fresh gateへ置換 |
-| Bot reaction roles | legacy SQL設定とlocal LKGが残る | 安全な再確認・Quorum設定・イベントごとのfresh権限確認。旧cacheを最新扱いしない |
-| Translation usage | 外部有料Providerの月次quota予約/返却がNeon | 確認済残量からのQuorum予約・UNKNOWN請求区別。残量不明で外部有料呼出を許可しない |
 
 上記のため**「全体Multi-DB完成」「Production ready」とは判定しない**。未移管SQLを新しいDBへ無条件に振り替える解消方法は採らない。
+
+## 2026-10-28: #44統合と追加の3経路
+
+- #44 `b8e6bb9`を統合。明示設定→7日間の人間の活動量→名前/用途を使わない安定ID順Fallback。最終確認で本文/Guild/チャンネルを固定し、失敗時に別チャンネルへ移さない。新Epochの未移管の過去の配信先を復元済みとは表示しない。
+- Blocklistは独立した`guild-access` Quorumスコープ。未確認/allow/blockを分離。Web Developer APIと既存guildblock/unblock/blocksコマンドが同じCASレコードを使用。未確認→許可は開発者の明示判断だけ。旧Neonのブロック解除/データpurgeへはFallbackしない。
+- Botイベント入口と自動Timeout API直前、リアクションロール、ニュース送信直前、Webのアプリストアで新鮮な利用可否を確認。DB障害/未確認で許可しない。セキュリティの設定変更・自動実行にも同じGateを使用し、`auto off`/緊急停止ONは停止操作として例外的に維持。
+- リアクションロールはGuild別MDS設定。既存`/setroll`を早期ACK後に処理。管理者・Bot・対象Role・設定Revisionを再確認し、個別Roleの冪等PUT/DELETEだけを1回実行。Audit/Outboxを先に保存し、API結果不明はUNKNOWN、無条件再送しない。旧LKGは実行権限に使わない。
+- 翻訳は既存のグローバル月次文字数枠を月別Quorumスコープへ移管。予約→DISPATCHED→SUCCEEDED/UNKNOWN。DISPATCHED後は返却禁止、外部APIの応答不明/再起動後も二重呼出をしない。入力本文・訳文は保存せずハッシュだけ使用。
+- 月次初期化はレビュー済みの既存利用量・上限・reviewIdを渡す管理用`createTranslationQuota.initialize`のみ。ランタイムは初期化しない。未確認の月、新しい月、2,000予約の容量上限、合意不能は明示拒否。過去の利用量不明をゼロ使用とは扱わない。月初の検証済残量レビュー/初期化が運用前提。
+- 管理画面のBlocklist履歴表示は新Epochの直近100件/Guild。過去の全履歴が移管済みと表示しない。過去のQuorumログは削除しない。
+
+これらは開発版の実装/隔離試験であり、実Discord・Hosted DB・本番移管を完了したという意味ではない。上記3経路以外にも、History Import、全文検索、全DB削除の内部ブロッカーが残る。
 
 ## Auth/外部サービスの残依存
 
@@ -86,3 +95,9 @@ Mockでは認可、CSRF、API応答、期限、外部送信UNKNOWNを検証。�
 Build / TypeScript / Migration integrity / diff-check / 変更ファイルSecret scanはPASS。Lint 0 errors / 既存8 warnings。
 Production依存監査: Critical 0 / High 5 / Moderate 2 / Low 1（patched mainから依存変更なし）。開発依存の既知proxy-addr Criticalは別Security課題として残る。
 GitHub CIの結果はPRのchecksを参照。実Browser/Discord/Hosted DB試験は未実施。
+
+2026-10-28再検証: Full 946 PASS / 16 SKIP / 0 FAIL、application focused 43 PASS / 2 SKIP、実隔離PostgreSQL＋Turso SDK 2 PASS、実DB再起動1 PASS。Build/TypeScript PASS、Syntax 306 modules PASS、Migration 17+Auth1 checksum PASS。依存ファイルはpatched mainから変更なし。
+
+**現行の依存監査はFAIL**: Production Critical 1 / High 9 / Moderate 3 / Low 4。前日のCritical 0を現在値として再利用しない。Criticalは`better-auth`の`GHSA-965c-763c-88jm`（Magic LinkとOAuth状態の組合せ）。公式Advisoryは1.7.7を修正版としているが、2026-10-28に参照した本文ではリリース予定扱い。現行`lib/auth.ts`はMagic Link/OAuth Proxy/Device Authorizationプラグインを設定していないため、このCriticalの記載された成立条件は現行コードでは確認されない。これはaudit PASSや脆弱パッケージ解消を意味しない。認証の無審査更新やCI監査の除外は行わない。
+
+Source: https://github.com/advisories/GHSA-965c-763c-88jm

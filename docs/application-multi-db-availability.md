@@ -96,7 +96,9 @@ Build / TypeScript / Migration integrity / diff-check / 変更ファイルSecret
 Production依存監査: Critical 0 / High 5 / Moderate 2 / Low 1（patched mainから依存変更なし）。開発依存の既知proxy-addr Criticalは別Security課題として残る。
 GitHub CIの結果はPRのchecksを参照。実Browser/Discord/Hosted DB試験は未実施。
 
-2026-10-28再検証: Full 946 PASS / 16 SKIP / 0 FAIL、application focused 43 PASS / 2 SKIP、実隔離PostgreSQL＋Turso SDK 2 PASS、実DB再起動1 PASS。Build/TypeScript PASS、Syntax 306 modules PASS、Migration 17+Auth1 checksum PASS。依存ファイルはpatched mainから変更なし。
+2026-10-28再検証: Full 947 PASS / 16 SKIP / 0 FAIL、application focused 44 PASS / 2 SKIP、実隔離PostgreSQL＋Turso SDK 2 PASS、実DB再起動1 PASS。Build/TypeScript PASS、Syntax 306 modules PASS、Migration 17+Auth1 checksum PASS。依存ファイルはpatched mainから変更なし。
+
+新Epochモードでは、旧Import/ResetのBotポーラーも入口で停止し、旧PostgreSQL Jobを消費しない。Discord dev-reset-*、旧Neon専用purgeも実行拒否。これは未完成の全DB削除を実装済みとするものではなく、移管までの危険な旧経路の封鎖である。
 
 **現行の依存監査はFAIL**: Production Critical 1 / High 9 / Moderate 3 / Low 4。前日のCritical 0を現在値として再利用しない。Criticalは`better-auth`の`GHSA-965c-763c-88jm`（Magic LinkとOAuth状態の組合せ）。公式Advisoryは1.7.7を修正版としているが、2026-10-28に参照した本文ではリリース予定扱い。現行`lib/auth.ts`はMagic Link/OAuth Proxy/Device Authorizationプラグインを設定していないため、このCriticalの記載された成立条件は現行コードでは確認されない。これはaudit PASSや脆弱パッケージ解消を意味しない。認証の無審査更新やCI監査の除外は行わない。
 

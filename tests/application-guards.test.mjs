@@ -1,4 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import {fileURLToPath} from 'node:url';
+import vm from 'node:vm';
 import {validateApplicationConfiguration} from '../lib/multi-db/application-config.mjs';
 import {auditDatabaseAccess} from '../scripts/audit-database-access.mjs';
 test('application cutover rejects missing encryption, Local First, publisher and runtime fencing configuration',()=>{
@@ -9,6 +10,20 @@ test('application cutover rejects missing encryption, Local First, publisher and
  assert.throws(()=>validateApplicationConfiguration({...base,LOCAL_FIRST_ALL_GUILDS_ENABLED:'false'},{role:'worker'}),{code:'APP_LOCAL_FIRST_REQUIRED'});
  assert.throws(()=>validateApplicationConfiguration({...base,NUVILOVIEW_SINGLETON_AUTHORITY:'neon'},{role:'bot'}),{code:'APP_RUNTIME_FENCE_REQUIRED'});
  assert.throws(()=>validateApplicationConfiguration({...base,APPLICATION_DATA_MODE:'typo'}),{code:'APP_CONFIGURATION'});
+});
+test('actual Bot pollers cannot consume old Neon import/reset jobs in the new epoch',async()=>{
+ const source=fs.readFileSync(new URL('../discord-bot.mjs',import.meta.url),'utf8');
+ for(const [name,next] of [['pollHistoryImportJobs','let guildResetRequestPolling'],['pollGuildResetRequests','function hasHumanVoiceActivity']]){
+  const body=source.slice(source.indexOf(`async function ${name}`),source.indexOf(next,source.indexOf(`async function ${name}`)));
+  const run=vm.runInNewContext(body+`\n${name}`,{process:{env:{APPLICATION_DATA_MODE:'quorum'}}});
+  // No repositories, configuration or DB clients are injected: any attempt to
+  // reach old code throws. The actual new-mode entry must return first.
+  await run();
+ }
+ const purge=source.slice(source.indexOf('async function purgeGuildData'),source.indexOf('async function leaveBlockedGuild'));
+ const run=vm.runInNewContext(purge+'\npurgeGuildData',{process:{env:{APPLICATION_DATA_MODE:'quorum'}}});
+ await assert.rejects(run('100000000000000001'),/APP_ALL_DATABASE_DELETION_UNMIGRATED/);
+ assert.ok(source.includes("interaction.commandName.startsWith('dev-reset-')"));
 });
 test('full DB inventory covers direct Neon callers and flags remaining work rather than declaring complete availability',()=>{
  const result=auditDatabaseAccess(fileURLToPath(new URL('..',import.meta.url)));

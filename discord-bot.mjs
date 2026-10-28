@@ -1966,6 +1966,7 @@ async function enforceBlockedGuilds() {
 }
 
 async function purgeGuildData(guildId) {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') throw new Error('APP_ALL_DATABASE_DELETION_UNMIGRATED');
   await Promise.all([
     sql`DELETE FROM "daily_stats" WHERE "guildId" = ${guildId}`,
     sql`DELETE FROM "daily_active_member" WHERE "guildId" = ${guildId}`,
@@ -5146,12 +5147,14 @@ function delay(milliseconds) {
 }
 
 async function pollHistoryImportJobs() {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') return null;
   if (!messageImportConfig.enabled) return null;
   return messageHistoryImportWorker.poll();
 }
 
 let guildResetRequestPolling = false;
 async function pollGuildResetRequests() {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') return;
   if (!guildResetConfig.enabled || guildResetRequestPolling) return;
   guildResetRequestPolling = true;
   try {
@@ -5509,6 +5512,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (!interaction.isChatInputCommand()) return;
+  if (process.env.APPLICATION_DATA_MODE === 'quorum' && interaction.commandName.startsWith('dev-reset-')) {
+    await interaction.reply({content:'全DBの削除・復元プロトコルは未移管です。旧Neonだけの初期化は実行しません。',flags:MessageFlags.Ephemeral});
+    return;
+  }
   if (process.env.APPLICATION_DATA_MODE === 'quorum' && ['guildblock','guildunblock','guildblocks'].includes(interaction.commandName)) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const reply = content => interaction.editReply({ content, allowedMentions: { parse: [] } });

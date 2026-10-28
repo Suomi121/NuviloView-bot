@@ -43,6 +43,7 @@ async function authorizeGuildRequest(request: Request, guildId: string) {
   if (!(await mayManageGuild(session.user.id, guildId))) {
     return { response: invalidRequest("Forbidden", 403) };
   }
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') return { response: NextResponse.json({error:'履歴Importの実行所有権は未移管です。',code:'APP_IMPORT_UNMIGRATED',state:'unconfirmed'},{status:503}) };
   return { userId: session.user.id };
 }
 

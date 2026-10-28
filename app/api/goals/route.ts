@@ -5,6 +5,7 @@ import { getManagedGuilds } from '@/lib/discord'
 import { buildProjectionGoalMetrics } from '@/lib/projection-analytics'
 import { hasJsonBody, isRateLimited, isTrustedMutation } from '@/lib/request-security'
 import { withWebReadRouter } from '@/lib/web-analytics-read'
+import { applicationHaEnabled, getApplicationStore, applicationError } from '@/lib/multi-db/application-web'
 
 const guildIdPattern = /^\d{16,22}$/
 const goalTypes = ['member_growth', 'messages', 'voice_seconds'] as const
@@ -30,6 +31,16 @@ export async function GET(request: Request) {
     .toISOString()
     .slice(0, 10)
   const endDate = now.toISOString().slice(0, 10)
+
+  if (applicationHaEnabled()) {
+    try {
+      const store = await getApplicationStore(session.user.id, [guildId])
+      const record = await store!.read({ domain: 'goals', guildId, ownerId: session.user.id, actorId: session.user.id })
+      const metrics = await withWebReadRouter(async router => buildProjectionGoalMetrics(await router.readAnalyticsBundle({ guildId, dateFrom: startDate, dateTo: endDate }), startDate, endDate)).catch(() => null)
+      return NextResponse.json({ goals: (record.data?.goals ?? []).map((goal: { type: GoalType; target: number }) => ({ ...goal, current: metrics?.values[goal.type] ?? null })),
+        configurationState: record.state, token: { epoch: record.epoch, revision: record.revision, checksum: record.checksum }, readMeta: metrics?.readMeta ?? { freshness: 'unavailable', degraded: true } })
+    } catch (error) { const failure = applicationError(error); return NextResponse.json(failure.body, { status: failure.status }) }
+  }
 
   const [stored, metrics] = await Promise.all([
     pool.query<{ type: GoalType; target: number }>(
@@ -66,6 +77,19 @@ export async function PUT(request: Request) {
     if (!goalTypes.includes(goal?.type) || !Number.isInteger(goal?.target) || goal.target < 0 || goal.target > 100_000_000) {
       return NextResponse.json({ error: 'Invalid goals' }, { status: 400 })
     }
+  }
+  if (applicationHaEnabled()) {
+    try {
+      const store = await getApplicationStore(session.user.id, [guildId])
+      const existing = await store!.read({ domain: 'goals', guildId, ownerId: session.user.id, actorId: session.user.id })
+      const updated = new Map<string, { type: GoalType; target: number }>((existing.data?.goals ?? []).map((goal: { type: GoalType; target: number }) => [goal.type, goal]))
+      for (const goal of goals) { if (goal.target === 0) updated.delete(goal.type); else updated.set(goal.type, goal) }
+      const record = await store!.write({ domain: 'goals', guildId, ownerId: session.user.id, actorId: session.user.id,
+        expectedEpoch: body?.token?.epoch, expectedRevision: body?.token?.revision, expectedChecksum: body?.token?.checksum,
+        requestId: body?.requestId, acknowledgeUnconfirmed: body?.acknowledgeUnconfirmed === true,
+        data: { goals: [...updated.values()].sort((a,b) => a.type.localeCompare(b.type)) } })
+      return NextResponse.json({ ok: true, token: { epoch: record.epoch, revision: record.revision, checksum: record.checksum } })
+    } catch (error) { const failure = applicationError(error); return NextResponse.json(failure.body, { status: failure.status }) }
   }
   for (const goal of goals as Array<{ type: GoalType; target: number }>) {
     if (goal.target === 0) {

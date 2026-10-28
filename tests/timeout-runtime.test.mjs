@@ -9,11 +9,11 @@ import { incidentFixture, guildId, userId, channelId, messageId } from './helper
 import { securityFixture } from './helpers/quorum-fixture.mjs';
 const bot=readFileSync(new URL('../discord-bot.mjs',import.meta.url),'utf8');
 const source=bot.slice(bot.indexOf('async function handleSpamDetection'),bot.indexOf('async function replySpamComponentError'));
-function harness(f,{apiError=null,protection=null,canTimeout=true,already=false,coordinatedSecurity=null,securityPolicy=null}={}){
+function harness(f,{apiError=null,protection=null,canTimeout=true,already=false,coordinatedSecurity=null,securityPolicy=null,guildDenied=false}={}){
   let timeouts=0,logs=0;
   const member={id:userId,user:{},moderatable:canTimeout,communicationDisabledUntilTimestamp:already?Date.now()+60000:null,
     timeout:async duration=>{timeouts++;assert.equal(duration,SECURITY_V2_TIMEOUT_MS);if(apiError)throw apiError;return {communicationDisabledUntilTimestamp:1790086400000};}};
-  const sandbox={coordinatedSecurity,spamPolicyAuthority:{enabled:false},timeoutIncidents:f.incidents,timeoutFailureStatus,mayAutomaticallyTimeout,SECURITY_V2_TIMEOUT_MS,resolveSpamPolicyAction,
+  const sandbox={coordinatedSecurity,guildOperationDenied:async()=>guildDenied,spamPolicyAuthority:{enabled:false},timeoutIncidents:f.incidents,timeoutFailureStatus,mayAutomaticallyTimeout,SECURITY_V2_TIMEOUT_MS,resolveSpamPolicyAction,
     process:{env:{SECURITY_V2_AUTO_EXECUTION:'enabled'}},sql:{query:async()=>({rows:[{migration_state:'complete',enabled:true,emergency_stop:false}]})},
     client:{user:{}},spamWindowMs:5000,PermissionFlagsBits:{ModerateMembers:1},getSpamProtectedReason:()=>protection,
     moderationAuditReason:()=>'',sendSpamDetectionAlert:async()=>{logs++;}};
@@ -28,6 +28,11 @@ test('actual timeout path runs once on duplicate/concurrent delivery',async()=>{
     assert.deepEqual(h.counts(),{timeouts:1,logs:1});
     const snapshot=f.incidents.snapshot(guildId,f.begin().incidentId);
     assert.equal(snapshot.timeout.status,'success');assert.equal(snapshot.timeout.payload.actualEndAt,1790086400000);
+  }finally{f.storage.close();}
+});
+test('fresh Guild access deny prevents timeout after consent and incident claim',async()=>{
+  const f=incidentFixture();try{const h=harness(f,{guildDenied:true});await h.run();assert.deepEqual(h.counts(),{timeouts:0,logs:0});
+    assert.equal(f.incidents.snapshot(guildId,f.begin().incidentId).timeout.status,'skipped');
   }finally{f.storage.close();}
 });
 for(const [name,options,status] of [['forbidden',{apiError:{status:403,message:'secret'}},'failed'],

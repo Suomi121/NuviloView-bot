@@ -16,6 +16,8 @@ type ManagedGuild = {
   reason: string | null
   blockedBy: string | null
   blockedAt: string | null
+  decision?: 'allow' | 'block' | 'unknown'
+  token?: {epoch:string;revision:number;checksum:string}
 }
 
 type AuditEntry = {
@@ -40,7 +42,7 @@ export default function DeveloperPage() {
   const [guilds, setGuilds] = useState<ManagedGuild[]>([])
   const [audit, setAudit] = useState<AuditEntry[]>([])
   const [auditIntegrity, setAuditIntegrity] = useState<{ valid: boolean; checked: number }>({ valid: true, checked: 0 })
-  const [bot, setBot] = useState<{ online: boolean; lastSeenAt: string | null }>({ online: false, lastSeenAt: null })
+  const [bot, setBot] = useState<{ online: boolean; lastSeenAt: string | null; state?:string }>({ online: false, lastSeenAt: null })
   const [guildResetAvailable, setGuildResetAvailable] = useState(false)
   const [query, setQuery] = useState('')
   const [pending, setPending] = useState<PendingAction | null>(null)
@@ -56,7 +58,7 @@ export default function DeveloperPage() {
     try {
       const response = await fetch(
         includeAudit ? '/api/developer/guilds' : '/api/developer/guilds?includeAudit=false',
-        { cache: 'no-store' },
+        { cache: 'no-store', signal:AbortSignal.timeout(15000) },
       )
       if (response.status === 403) {
         setForbidden(true)
@@ -108,7 +110,9 @@ export default function DeveloperPage() {
       const response = await fetch('/api/developer/guilds', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: pending.action, guildId: pending.guild.guildId, reason }),
+        body: JSON.stringify({ action: pending.action, guildId: pending.guild.guildId, reason,
+          token:pending.guild.token,requestId:crypto.randomUUID(),acknowledgeUnconfirmed:pending.guild.decision==='unknown' }),
+        signal:AbortSignal.timeout(15000),
       })
       const data = await response.json().catch(() => null)
       if (!response.ok) throw new Error(data?.error || '操作に失敗しました。')
@@ -155,12 +159,13 @@ export default function DeveloperPage() {
       </div>
 
       <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatusCard label="Bot接続状態" value={bot.online ? 'オンライン' : 'オフライン'} detail={bot.lastSeenAt ? `最終記録: ${formatDate(bot.lastSeenAt)}` : '生存記録はまだありません'} tone={bot.online ? 'good' : 'bad'} />
+        <StatusCard label="Bot接続状態" value={bot.state==='unknown'?'未確認':bot.online ? 'オンライン' : 'オフライン'} detail={bot.state==='unknown'?'現在の稼働状態は下のRuntime診断で確認してください':bot.lastSeenAt ? `最終記録: ${formatDate(bot.lastSeenAt)}` : '生存記録はまだありません'} tone={bot.state==='unknown'?'neutral':bot.online ? 'good' : 'bad'} />
         <StatusCard label="管理対象Guild" value={`${guilds.length}件`} detail="ブロック済みを含む" tone="neutral" />
         <StatusCard label="ブロック済み" value={`${guilds.filter((guild) => Boolean(guild.reason)).length}件`} detail="解除しても操作履歴は残ります" tone="bad" />
       </div>
 
       <DeveloperRuntimePanel />
+      {guilds.some(guild=>guild.token)&&<p className="mt-4 rounded border border-border p-3 text-sm text-muted-foreground">利用可否は新Epochの確認済み判断だけを使用します。未確認を許可へ推測しません。下の履歴表示は新Epochの直近100件/Guildです。旧履歴は未移管で、完全な過去履歴ではありません。ブロックしてもデータ削除は行いません。</p>}
 
       {message && <p className="mt-5 rounded-xl border border-border bg-card px-4 py-3 text-sm">{message}</p>}
       <div className="mt-7 grid gap-7 lg:grid-cols-[1.55fr_.85fr]">
@@ -181,11 +186,13 @@ function StatusCard({ label, value, detail, tone }: { label: string; value: stri
 }
 
 function GuildRow({ guild, guildResetAvailable, onBlock, onUnblock }: { guild: ManagedGuild; guildResetAvailable: boolean; onBlock: () => void; onUnblock: () => void }) {
+  if(guild.token) return <article className="rounded-xl border border-border p-4 text-sm"><p className="font-bold">Guild {guild.guildId}</p><p className="my-2 text-muted-foreground">{guild.decision==='unknown'?'以前の利用可否は未確認です。Botの実行を許可していません。':guild.decision==='allow'?'新Epochで利用を明示許可済み':'新Epochでブロック済み'} · Revision {guild.token.revision}</p><div className="flex gap-3"><button onClick={onBlock} className="rounded border px-3 py-2">ブロック</button><button onClick={onUnblock} className="rounded border px-3 py-2">利用を明示許可</button></div></article>
   const blocked = Boolean(guild.reason)
   return <article className="flex flex-col gap-3 rounded-xl border border-border bg-background/45 p-3.5 sm:flex-row sm:items-center"><div className="flex min-w-0 flex-1 items-center gap-3">{guild.iconUrl ? <img src={guild.iconUrl} alt="" className="h-10 w-10 rounded-xl object-cover" /> : <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-primary"><Server className="h-5 w-5" /></span>}<div className="min-w-0"><p className="truncate text-sm font-bold">{guild.name || `Guild ${guild.guildId}`}</p><p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{guild.guildId} · {guild.memberCount?.toLocaleString() ?? '—'} members</p><p className="mt-1 text-[11px] text-muted-foreground">{blocked ? `理由: ${guild.reason}` : guild.isConnected ? `接続中 · 最終確認 ${formatDate(guild.lastSeenAt)}` : 'Botは現在このGuildにいません'}</p></div></div><div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${blocked ? 'bg-rose-500/15 text-rose-400' : guild.isConnected ? 'bg-emerald-500/15 text-emerald-400' : 'bg-muted text-muted-foreground'}`}>{blocked ? 'BLOCKED' : guild.isConnected ? 'CONNECTED' : 'OFFLINE'}</span>{!blocked && guild.isConnected && (guildResetAvailable ? <a href={`/developer/guilds/${guild.guildId}/reset`} className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 px-3 py-2 text-xs font-bold text-primary hover:bg-primary/10"><RefreshCcw className="h-3.5 w-3.5" />初期化</a> : <span className="rounded-lg border border-border px-3 py-2 text-xs font-bold text-muted-foreground">初期化 OFF</span>)}{blocked ? <button onClick={onUnblock} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 px-3 py-2 text-xs font-bold text-emerald-400 hover:bg-emerald-500/10"><Unlock className="h-3.5 w-3.5" />解除</button> : <button onClick={onBlock} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 px-3 py-2 text-xs font-bold text-rose-400 hover:bg-rose-500/10"><Ban className="h-3.5 w-3.5" />ブロック</button>}</div></article>
 }
 
 function ConfirmDialog({ pending, reason, setReason, saving, onClose, onSubmit }: { pending: PendingAction; reason: string; setReason: (value: string) => void; saving: boolean; onClose: () => void; onSubmit: () => void }) {
   const blocking = pending.action === 'block'
+  if(pending.guild.token) return <div className="fixed inset-0 z-[80] grid place-items-center bg-black/70 p-5"><section className="max-w-md rounded-xl bg-card p-6"><h2 className="font-bold">Guild {pending.guild.guildId} を{blocking?'ブロック':'明示許可'}しますか？</h2><p className="my-4 text-sm">{pending.guild.decision==='unknown'?'以前の利用可否は未確認です。この操作を新Epochの確認済み判断として保存します。':'表示したRevisionに対して保存します。競合した場合は再確認が必要です。'} データ削除やAuto Timeoutの同意変更は行いません。</p>{blocking&&<textarea aria-label="ブロック理由" value={reason} onChange={e=>setReason(e.target.value)} maxLength={300} className="w-full rounded border bg-background p-2"/>}<div className="mt-4 flex gap-3"><button disabled={saving} onClick={onClose}>キャンセル</button><button disabled={saving||(blocking&&reason.trim().length<3)} onClick={onSubmit}>{saving?'確認中…':'判断を確定'}</button></div></section></div>
   return <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-5 backdrop-blur-sm"><div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl"><div className={`flex h-11 w-11 items-center justify-center rounded-xl ${blocking ? 'bg-rose-500/15 text-rose-400' : 'bg-emerald-500/15 text-emerald-400'}`}>{blocking ? <ShieldAlert className="h-5 w-5" /> : <ShieldCheck className="h-5 w-5" />}</div><h2 className="mt-4 text-lg font-extrabold">{blocking ? 'Guildをブロックしますか？' : 'Guildのブロックを解除しますか？'}</h2><p className="mt-2 text-sm leading-relaxed text-muted-foreground">{blocking ? 'Botは分析データを削除し、15秒以内にこのGuildから退出します。この操作は履歴に残ります。' : 'Botは自動では再参加しません。必要な場合は招待URLから改めて導入してください。'}</p><p className="mt-3 rounded-lg bg-background px-3 py-2 font-mono text-xs text-muted-foreground">{pending.guild.guildId}</p>{blocking && <label className="mt-5 block text-sm font-bold">ブロック理由<textarea autoFocus value={reason} onChange={(event) => setReason(event.target.value)} minLength={3} maxLength={300} rows={3} placeholder="例: 利用規約違反の調査対応" className="mt-2 w-full rounded-lg border border-border bg-background p-3 text-sm font-normal outline-none focus:border-primary" /></label>}<div className="mt-6 flex justify-end gap-3"><button disabled={saving} onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-bold text-muted-foreground hover:bg-secondary">キャンセル</button><button disabled={saving || (blocking && reason.trim().length < 3)} onClick={onSubmit} className={`rounded-lg px-4 py-2 text-sm font-bold text-white disabled:opacity-50 ${blocking ? 'bg-rose-500 hover:bg-rose-400' : 'bg-emerald-600 hover:bg-emerald-500'}`}>{saving ? '処理中…' : blocking ? 'ブロックを確定' : '解除を確定'}</button></div></div></div>
 }

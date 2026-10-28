@@ -6,8 +6,8 @@ export const owner = '100000000000000001', other = '100000000000000002';
 export const channel = '200000000000000001', message = '300000000000000001';
 export const guilds = n => Array.from({length:n},(_,i)=>String(400000000000000000n+BigInt(i)));
 export const target = guild => String(BigInt(guild)+100000000000000000n);
-export function newsFixture(t, { databasePath=':memory:', ready=async()=>true, storageWrap=s=>s } = {}) {
-  const db=createLocalStorage({ databasePath, providerDefinitions:getProviderPolicyDefinitions({MULTI_DB_SYNC_ENABLED:'true',SYNC_SUPABASE_ENABLED:'true',SYNC_TURSO_ENABLED:'true',SYNC_NEON_ENABLED:'true'}) });
+export function newsFixture(t, { databasePath=':memory:', ready=async()=>true, storageWrap=s=>s, storageNow=Date.now } = {}) {
+  const db=createLocalStorage({ databasePath, now:storageNow, providerDefinitions:getProviderPolicyDefinitions({MULTI_DB_SYNC_ENABLED:'true',SYNC_SUPABASE_ENABLED:'true',SYNC_TURSO_ENABLED:'true',SYNC_NEON_ENABLED:'true'}) });
   t.after(()=>db.close());
   const storage=storageWrap(db), maps=new Map(), faults={};
   const providers=['neon','supabase','turso'].map(id=>{

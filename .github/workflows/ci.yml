@@ -38,7 +38,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: node --test tests/multi-db-coordinator.test.mjs tests/multi-db-security.test.mjs tests/multi-db-postgres.test.mjs tests/hybrid-*.test.mjs
+      - run: node --test tests/multi-db-coordinator.test.mjs tests/multi-db-security.test.mjs tests/multi-db-postgres.test.mjs tests/hybrid-*.test.mjs tests/application-*.test.mjs
       - name: Restart isolated PostgreSQL service (never Production)
         run: |
           docker restart "${{ job.services.postgres.id }}"
@@ -48,7 +48,7 @@ jobs:
           done
           exit 1
       - name: Verify persisted consensus after actual database restart
-        run: node --test tests/hybrid-restart-postgres.test.mjs
+        run: node --test tests/hybrid-restart-postgres.test.mjs tests/application-restart.test.mjs
         env:
           TEST_HYBRID_RESTART: "1"
       - name: Custom-format backup and isolated fresh database restore
@@ -71,6 +71,12 @@ jobs:
           restored_recovery_hash=$(docker exec "$container" psql -U quorum_test -d nuviloview_hybrid_restore_test -Atc "SELECT md5(string_agg(checksum, ',' ORDER BY guild_id,slot)) FROM recovery_test.${recovery_prefix}mdb_acceptor WHERE accepted_ballot IS NOT NULL")
           test -n "$recovery_hash"
           test "$recovery_hash" = "$restored_recovery_hash"
+          application_prefix=$(node --input-type=module -e "import {recoveryPrefix} from './lib/multi-db/recovery-bootstrap.mjs';console.log(recoveryPrefix('isolated-application-20261026'))")
+          [[ "$application_prefix" =~ ^nvq_[a-f0-9]{16}_$ ]]
+          application_hash=$(docker exec "$container" psql -U quorum_test -d nuviloview_quorum_test -Atc "SELECT md5(string_agg(checksum, ',' ORDER BY artifact_id,version,shard_index)) FROM application_test.${application_prefix}mdb_blob_shard")
+          restored_application_hash=$(docker exec "$container" psql -U quorum_test -d nuviloview_hybrid_restore_test -Atc "SELECT md5(string_agg(checksum, ',' ORDER BY artifact_id,version,shard_index)) FROM application_test.${application_prefix}mdb_blob_shard")
+          test -n "$application_hash"
+          test "$application_hash" = "$restored_application_hash"
       - name: Bounded 100 Guild and 16000 revision failure load
         run: node --test tests/hybrid-load.test.mjs
         env:
@@ -148,6 +154,9 @@ jobs:
 
       - name: Check static schema drift
         run: pnpm run migration:drift:static
+
+      - name: Inventory all Bot Web Worker database call sites
+        run: node scripts/audit-database-access.mjs --check
 
       - name: Scan repository for token leaks
         run: pnpm run security:tokens

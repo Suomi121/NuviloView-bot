@@ -36,6 +36,15 @@ async function relationExists(name: string) {
 }
 
 async function loadChannelMetadata(guildId: string) {
+  if (process.env.APPLICATION_DATA_MODE === 'quorum') {
+    const { getSecurityCoordinator } = await import('@/lib/multi-db/web-runtime');
+    const { createApplicationStore } = await import('@/lib/multi-db/application-store.mjs');
+    const runtime = await getSecurityCoordinator();
+    if (!runtime) throw Object.assign(new Error('Metadata unavailable'), { code: 'APP_CONFIGURATION' });
+    const store = createApplicationStore({ ...runtime, authorize: async ({ operation, guildId: id }: { operation: string; guildId: string }) => operation === 'read' && id === guildId });
+    const record = await store.read({ domain: 'channel-metadata', guildId, actorId: 'web-metadata-reader' });
+    return Object.freeze((record.data?.channels ?? {}) as Record<string, ChannelMetadata>);
+  }
   const { pool } = await import("@/lib/db");
   const result: Record<string, ChannelMetadata> = {};
   if (await relationExists("guild_channel_registry")) {
@@ -94,7 +103,8 @@ export async function getGuildChannelMetadata(guildId: string) {
         ? String(error.code)
         : "metadata_unavailable";
       console.warn("Channel metadata lookup unavailable:", code);
-      const fallback = cached?.value ?? Object.freeze({});
+      // Labels are advisory; never resurrect an old epoch's metadata cache.
+      const fallback = process.env.APPLICATION_DATA_MODE === 'quorum' ? Object.freeze({}) : cached?.value ?? Object.freeze({});
       cache.set(guildId, { value: fallback, expiresAt: Date.now() + 60_000 });
       return fallback;
     }

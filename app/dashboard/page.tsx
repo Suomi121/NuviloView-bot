@@ -1,7 +1,8 @@
 "use client";
 import { SecurityNavigationLink } from '@/components/security-navigation-link';
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
+import { fetchJsonBounded } from '@/lib/bounded-json.mjs';
 import {
   Activity,
   AlertCircle,
@@ -90,12 +91,13 @@ type SearchMessage = {
   createdAt: string;
 };
 type DashboardNotification = {
-  id: number;
+  id: number | string;
   guildId: string;
   type: string;
   title: string;
   body: string;
   createdAt: string;
+  token?: { epoch: string; revision: number; checksum: string; acknowledgeUnconfirmed: boolean };
 };
 type ChannelInsight = {
   channelName: string;
@@ -245,6 +247,11 @@ export default function DashboardPage() {
     member_growth: "", messages: "", voice_seconds: "",
   });
   const [savingGoals, setSavingGoals] = useState(false);
+  const [goalRecord, setGoalRecord] = useState<{ guildId: string; configurationState: string; token?: { epoch: string; revision: number; checksum: string } } | null>(null);
+  const [goalAcknowledged, setGoalAcknowledged] = useState(false);
+  const [goalError, setGoalError] = useState('');
+  const activeGoalGuild = useRef(guildId);
+  useEffect(() => { activeGoalGuild.current = guildId; }, [guildId]);
 
   const selectedGuild = guilds.find((guild) => guild.id === guildId);
   const displayIdentity = useDisplayIdentity(session?.user);
@@ -359,8 +366,7 @@ export default function DashboardPage() {
         // The guild-list request populates the short-lived authorization
         // cache. Load notifications afterwards so both endpoints do not hit
         // Discord simultaneously on a cold page load.
-        void fetch("/api/notifications")
-          .then((res) => res.json())
+        void fetchJsonBounded("/api/notifications")
           .then((notificationData) =>
             active &&
             setNotifications(
@@ -431,21 +437,23 @@ export default function DashboardPage() {
     return () => { active = false; };
   }, [authorizedGuildId, guildId]);
 
-  const dismissNotification = async (id: number) => {
-    setNotifications((current) =>
-      current.filter((notification) => notification.id !== id),
-    );
+  const dismissNotification = async (id: number | string) => {
+    const notification = notifications.find(n => n.id === id);
     try {
-      await fetch(`/api/notifications/${id}`, { method: "DELETE" });
+      await fetchJsonBounded(`/api/notifications/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: notification?.token ? JSON.stringify({ guildId: notification.guildId, token: notification.token, requestId: crypto.randomUUID().replaceAll('-','') }) : undefined });
+      setNotifications(current => current.filter(n => n.id !== id));
     } catch {
       /* It will return on the next reload if deletion failed. */
     }
   };
 
   const loadGoals = async (selectedGuildId: string) => {
-    const response = await fetch(`/api/goals?guildId=${encodeURIComponent(selectedGuildId)}`, { cache: "no-store" });
-    if (!response.ok) return;
-    const data = await response.json();
+    setGoalRecord(null); setGoalAcknowledged(false); setGoalError('');
+    try {
+    const data = await fetchJsonBounded(`/api/goals?guildId=${encodeURIComponent(selectedGuildId)}`, { cache: 'no-store' });
+    if (activeGoalGuild.current !== selectedGuildId) return;
+    setGoalRecord({ guildId: selectedGuildId, configurationState: data.configurationState ?? 'confirmed', token: data.token });
     const nextGoals = Array.isArray(data.goals) ? data.goals as GrowthGoal[] : [];
     setGoals(nextGoals);
     setGoalTargets({
@@ -453,18 +461,23 @@ export default function DashboardPage() {
       messages: String(nextGoals.find((goal) => goal.type === "messages")?.target ?? ""),
       voice_seconds: String(Math.round((nextGoals.find((goal) => goal.type === "voice_seconds")?.target ?? 0) / 3600) || ""),
     });
+    } catch { if (activeGoalGuild.current === selectedGuildId) setGoalError('目標を取得できません。再読み込みしてください。'); }
   };
 
   const saveGoals = async () => {
-    if (!guildId || savingGoals) return;
+    if (!guildId || savingGoals || goalRecord?.guildId !== guildId || (goalRecord.configurationState === 'unconfirmed' && !goalAcknowledged)) return;
+    const selectedGuildId = guildId;
     const numberOf = (type: GoalType) => Math.max(0, Math.floor(Number(goalTargets[type]) || 0));
     setSavingGoals(true);
     try {
-      const response = await fetch("/api/goals", {
+      await fetchJsonBounded("/api/goals", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           guildId,
+          token: goalRecord.token,
+          requestId: crypto.randomUUID().replaceAll('-',''),
+          acknowledgeUnconfirmed: goalAcknowledged,
           goals: [
             { type: "member_growth", target: numberOf("member_growth") },
             { type: "messages", target: numberOf("messages") },
@@ -472,7 +485,8 @@ export default function DashboardPage() {
           ],
         }),
       });
-      if (response.ok) await loadGoals(guildId);
+      if (activeGoalGuild.current === selectedGuildId) await loadGoals(selectedGuildId);
+    } catch { if (activeGoalGuild.current === selectedGuildId) setGoalError('保存結果を確認できません。変更競合・接続状態を確認し、再読み込みしてください。');
     } finally {
       setSavingGoals(false);
     }
@@ -2153,15 +2167,20 @@ export default function DashboardPage() {
 
           <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,0.85fr)]">
             <ChannelInsightsPanel insights={channelInsights} en={en} periodLabel={periodLabel} previousPeriodLabel={previousPeriodLabel} />
+            <div>
+            {goalError && <p role="alert" className="mb-2 text-sm text-red-400">{goalError}</p>}
+            {goalRecord?.guildId === guildId && goalRecord.configurationState === 'unconfirmed' && <label className="mb-2 flex gap-2 text-sm"><input type="checkbox" checked={goalAcknowledged} onChange={event => setGoalAcknowledged(event.target.checked)} />以前の目標は未確認です。入力した値を新しい目標として保存します。</label>}
             <GrowthGoalsPanel
               goals={goals}
               targets={goalTargets}
               onTargetChange={(type, value) => setGoalTargets((current) => ({ ...current, [type]: value }))}
               onSave={() => void saveGoals()}
               saving={savingGoals}
+              disabled={goalRecord?.guildId !== guildId || (goalRecord?.configurationState === 'unconfirmed' && !goalAcknowledged)}
               en={en}
               timeZone={timeZone}
             />
+            </div>
           </div>
           </div>
           </>}
@@ -2228,12 +2247,13 @@ function ChannelInsightsPanel({ insights, en, periodLabel, previousPeriodLabel }
   );
 }
 
-function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en, timeZone }: {
+function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, disabled, en, timeZone }: {
   goals: GrowthGoal[];
   targets: Record<GoalType, string>;
   onTargetChange: (type: GoalType, value: string) => void;
   onSave: () => void;
   saving: boolean;
+  disabled: boolean;
   en: boolean;
   timeZone: string;
 }) {
@@ -2282,7 +2302,7 @@ function GrowthGoalsPanel({ goals, targets, onTargetChange, onSave, saving, en, 
           </div>;
         })}
       </div>
-      <button onClick={onSave} disabled={saving} className="mt-4 w-full rounded-lg bg-primary px-3 py-2.5 text-xs font-bold text-primary-foreground transition-opacity disabled:opacity-60">
+      <button onClick={onSave} disabled={saving || disabled} className="mt-4 w-full rounded-lg bg-primary px-3 py-2.5 text-xs font-bold text-primary-foreground transition-opacity disabled:opacity-60">
         {saving ? (en ? "Saving..." : "保存中...") : (en ? "Save goals" : "目標を保存")}
       </button>
     </section>

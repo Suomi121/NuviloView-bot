@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
 import { pool } from '@/lib/db'
 import { isRateLimited, isTrustedMutation } from '@/lib/request-security'
+import { getManagedGuilds } from '@/lib/discord'
+import { applicationHaEnabled, getApplicationStore, applicationError } from '@/lib/multi-db/application-web'
+import { dismissApplicationNotification } from '@/lib/multi-db/notifications.mjs'
 
 export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
   if (!isTrustedMutation(request)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -12,6 +15,16 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
   }
 
   const { id } = await params
+  if (applicationHaEnabled()) {
+    try {
+      const body = await request.json().catch(() => null)
+      const guilds = await getManagedGuilds(session.user.id)
+      if (!guilds.some(g => g.id === body?.guildId)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      const store = await getApplicationStore(session.user.id, [body.guildId])
+      await dismissApplicationNotification({ store: store!, userId: session.user.id, guildId: body.guildId, id, token: body.token, requestId: body.requestId })
+      return NextResponse.json({ ok: true })
+    } catch (error) { const failure = applicationError(error); return NextResponse.json(failure.body, { status: failure.status }) }
+  }
   if (!/^\d+$/.test(id)) return NextResponse.json({ error: 'Invalid notification id' }, { status: 400 })
 
   await pool.query(`

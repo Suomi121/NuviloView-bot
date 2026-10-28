@@ -10,6 +10,8 @@ import { createDataPlane,createShardStore,SHARD_SCHEMA } from '../lib/multi-db/d
 import { createQuorumNewsControl } from '../lib/multi-db/news-control.mjs';
 import { normalizeSyncEnvelope } from '../lib/sync/conflict-policy.mjs';
 import { stageTransfer,resumeTransfer,snapshotLegacy } from '../lib/multi-db/transfer.mjs';
+import { autoFixture } from './helpers/news-auto-fixture.mjs';
+import { drain } from './helpers/news-fixture.mjs';
 
 test('real PostgreSQL + Turso HTTP SDK: CAS, write failure, recovery and old SQL writer fences', { skip: !process.env.TEST_COORDINATOR_DATABASE_URL }, async t => {
   const url = new URL(process.env.TEST_COORDINATOR_DATABASE_URL);
@@ -46,6 +48,10 @@ test('real PostgreSQL + Turso HTTP SDK: CAS, write failure, recovery and old SQL
   await news.setDestination('isolated',guildId,'200000000000000001');
   const e=normalizeSyncEnvelope({eventId:`news:${'b'.repeat(32)}:${guildId}:1:claim`,domain:'security',eventType:'news_delivery_claim_v1',aggregateId:'isolated',createdAt:1,payload:{claimNonce:'isolated'}});
   await news.claim(e);assert.equal(await news.verify(e.eventId,e.checksum),true);
+  const auto=autoFixture(t,{destinationControl:news,cloud:news}),publication=await auto.queued();
+  assert.equal(publication.targets[0].selection.mode,'fallback');
+  await drain(auto.service,publication.id,auto.ui.transport);await drain(auto.service,publication.id,auto.ui.transport);
+  assert.equal(auto.sends.length,1,'Neon read-only: actual PostgreSQL + Turso SDK auto-destination claim remains safe');
   await a.query('SET default_transaction_read_only=off');
   await security.read(guildId);
   assert.equal((await plane.repair({guildId,artifactId:'c'.repeat(32)})).complete,true);

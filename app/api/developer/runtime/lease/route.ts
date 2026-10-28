@@ -3,6 +3,7 @@ import { getDeveloperAccess } from '@/lib/developer-access'
 import { pool } from '@/lib/db'
 import { isRateLimited } from '@/lib/request-security'
 import { evaluateRuntimeSnapshot, getRuntimeMonitorConfig } from '@/lib/runtime-monitor.mjs'
+import {readApplicationRuntimeForWeb} from '@/lib/multi-db/application-runtime-web'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,6 +22,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   }
 
+  if(process.env.APPLICATION_DATA_MODE==='quorum') {
+    try {const {heartbeats: _heartbeats,...result}=await readApplicationRuntimeForWeb();void _heartbeats;return NextResponse.json(result,{headers:noStoreHeaders})}
+    catch {return NextResponse.json({error:'Runtime quorum is unavailable',code:'APP_RUNTIME_UNAVAILABLE'},{status:503,headers:noStoreHeaders})}
+  }
   const config = getRuntimeMonitorConfig(process.env)
   const client = await pool.connect()
   try {
